@@ -90,22 +90,23 @@ function toSafeErrorMessage(error) {
 var OpenAICompatibleProvider = class {
   constructor(options) {
     this.options = options;
-    this.providerId = "openai-compatible";
-    var _a;
+    var _a, _b, _c;
+    this.providerId = (_a = options.providerId) != null ? _a : "openai-compatible";
     this.model = options.model;
-    this.endpoint = (_a = options.endpoint) != null ? _a : "https://api.openai.com/v1/chat/completions";
+    this.endpoint = resolveChatCompletionsEndpoint((_b = options.baseUrl) != null ? _b : "https://api.openai.com/v1");
+    this.requiresApiKey = (_c = options.requiresApiKey) != null ? _c : true;
   }
   async generateProposal(request) {
     var _a, _b, _c, _d, _e, _f;
-    const apiKey = this.options.secretStore.getSecret(this.options.secretRef);
-    if (!apiKey) {
+    const apiKey = this.options.secretRef ? this.options.secretStore.getSecret(this.options.secretRef) : null;
+    if (this.requiresApiKey && !apiKey) {
       throw new Error("API key is missing for the configured secret reference.");
     }
     const response = await fetch(this.endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`
+        ...apiKey ? { Authorization: `Bearer ${apiKey}` } : {}
       },
       body: JSON.stringify({
         model: this.model,
@@ -134,16 +135,16 @@ var OpenAICompatibleProvider = class {
     return {
       rawText,
       parsedJson: tryParseJson(rawText),
-      usage: normalizeUsage(payload == null ? void 0 : payload.usage, this.model)
+      usage: normalizeUsage(payload == null ? void 0 : payload.usage, this.providerId, this.model)
     };
   }
 };
-function normalizeUsage(usage, model) {
+function normalizeUsage(usage, providerId, model) {
   if (!usage) {
     return void 0;
   }
   return {
-    provider: "openai-compatible",
+    provider: providerId,
     model,
     inputTokens: typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : void 0,
     outputTokens: typeof usage.completion_tokens === "number" ? usage.completion_tokens : void 0,
@@ -158,6 +159,13 @@ function tryParseJson(rawText) {
   } catch (e) {
     return void 0;
   }
+}
+function resolveChatCompletionsEndpoint(baseUrl) {
+  const normalized = baseUrl.trim().replace(/\/+$/, "");
+  if (normalized.endsWith("/chat/completions")) {
+    return normalized;
+  }
+  return `${normalized}/chat/completions`;
 }
 
 // src/adapters/obsidian/ObsidianNoteRepository.ts
@@ -237,8 +245,25 @@ var ObsidianSecretStore = class {
     this.app = app;
   }
   isAvailable() {
+    return this.getDiagnostics().available;
+  }
+  getDiagnostics() {
+    var _a, _b;
     const maybeSecretStorage = this.app.secretStorage;
-    return typeof (maybeSecretStorage == null ? void 0 : maybeSecretStorage.getSecret) === "function" && typeof (maybeSecretStorage == null ? void 0 : maybeSecretStorage.setSecret) === "function";
+    const hasSecretStorage = maybeSecretStorage !== void 0 && maybeSecretStorage !== null;
+    const getSecretType = typeof (maybeSecretStorage == null ? void 0 : maybeSecretStorage.getSecret);
+    const setSecretType = typeof (maybeSecretStorage == null ? void 0 : maybeSecretStorage.setSecret);
+    const available = getSecretType === "function" && setSecretType === "function";
+    return {
+      available,
+      hasSecretStorage,
+      secretStorageType: maybeSecretStorage === null ? "null" : typeof maybeSecretStorage,
+      secretStorageConstructorName: hasSecretStorage ? (_b = (_a = maybeSecretStorage.constructor) == null ? void 0 : _a.name) != null ? _b : "unknown" : "n/a",
+      getSecretType,
+      setSecretType,
+      ownKeys: hasSecretStorage ? Object.keys(maybeSecretStorage) : [],
+      reason: available ? "secretStorage.getSecret/setSecret are both available." : "secretStorage is missing, or getSecret/setSecret is not exposed as functions."
+    };
   }
   setSecret(secretRef, value) {
     this.ensureAvailable();
@@ -305,12 +330,16 @@ function sanitizeSettings(settings) {
     language: settings.language,
     historyLimit: settings.historyLimit,
     draftFolder: settings.draftFolder,
-    provider: settings.provider ? {
-      type: settings.provider.type,
-      ...settings.provider.model ? { model: settings.provider.model } : {},
-      ...settings.provider.secretRef ? { secretRef: settings.provider.secretRef } : {}
-    } : void 0,
+    provider: settings.provider ? sanitizeProvider(settings.provider) : void 0,
     promptOverrides: (_a = settings.promptOverrides) != null ? _a : {}
+  };
+}
+function sanitizeProvider(provider) {
+  return {
+    type: provider.type,
+    ...provider.model ? { model: provider.model } : {},
+    ...provider.secretRef ? { secretRef: provider.secretRef } : {},
+    ...provider.baseUrl ? { baseUrl: provider.baseUrl } : {}
   };
 }
 
@@ -1496,6 +1525,56 @@ var ProposalSessionStore = class {
   }
 };
 
+// src/settings/ProviderConfig.ts
+var PROVIDER_PRESETS = {
+  mock: {
+    type: "mock",
+    requiresSecret: false,
+    allowsBaseUrlEdit: false
+  },
+  "openai-compatible": {
+    type: "openai-compatible",
+    defaultModel: "gpt-4.1-mini",
+    defaultSecretRef: "obsidian-refined-layer-openai",
+    defaultBaseUrl: "https://api.openai.com/v1",
+    requiresSecret: true,
+    allowsBaseUrlEdit: false
+  },
+  deepseek: {
+    type: "deepseek",
+    defaultModel: "deepseek-v4-flash",
+    defaultSecretRef: "obsidian-refined-layer-deepseek",
+    defaultBaseUrl: "https://api.deepseek.com/v1",
+    requiresSecret: true,
+    allowsBaseUrlEdit: false
+  },
+  "custom-openai-compatible": {
+    type: "custom-openai-compatible",
+    defaultSecretRef: "obsidian-refined-layer-custom",
+    defaultBaseUrl: "https://your-provider.example.com/v1",
+    requiresSecret: true,
+    allowsBaseUrlEdit: true
+  },
+  "local-openai-compatible": {
+    type: "local-openai-compatible",
+    defaultBaseUrl: "http://127.0.0.1:11434/v1",
+    requiresSecret: false,
+    allowsBaseUrlEdit: true
+  }
+};
+function getProviderPreset(type) {
+  return PROVIDER_PRESETS[type];
+}
+function getDefaultProviderSettings(type) {
+  const preset = getProviderPreset(type);
+  return {
+    type,
+    ...preset.defaultModel ? { model: preset.defaultModel } : {},
+    ...preset.defaultSecretRef ? { secretRef: preset.defaultSecretRef } : {},
+    ...preset.defaultBaseUrl ? { baseUrl: preset.defaultBaseUrl } : {}
+  };
+}
+
 // src/ui/i18n/en.ts
 var enStrings = {
   "review.title": "Refined Proposal Review",
@@ -1522,36 +1601,59 @@ var enStrings = {
   "review.placeholder.cancel": "Review modal closed.",
   "settings.title.providerType": "Provider type",
   "settings.title.providerModel": "Provider model",
+  "settings.title.baseUrl": "API base URL",
   "settings.title.secretRef": "Secret reference",
   "settings.title.apiKey": "API key",
+  "settings.title.secretDiagnostics": "SecretStorage diagnostics",
   "settings.title.language": "Language",
   "settings.title.historyLimit": "History limit",
   "settings.title.draftFolder": "Draft folder",
   "settings.title.promptProfile": "Prompt Override Profile",
   "settings.title.systemPrompt": "System Prompt Override",
   "settings.title.userPrompt": "User Prompt Override",
-  "settings.desc.language": "Controls the language used for plugin UI strings.",
-  "settings.desc.historyLimit": "How many proposal sessions to keep per note.",
-  "settings.desc.draftFolder": "Target folder for future Save as Draft output.",
-  "settings.desc.promptProfile": "Only raw-refined profile override is supported in v0.1.0.",
+  "settings.desc.language": "Switch the plugin UI language.",
+  "settings.desc.historyLimit": "Maximum saved proposal sessions per note.",
+  "settings.desc.draftFolder": "Output folder for Save as Draft.",
+  "settings.desc.promptProfile": "Only raw-refined prompt override is supported.",
   "settings.desc.promptVariables": "Available variables: {{notePath}} {{noteTitle}} {{noteContent}}",
-  "settings.desc.systemPrompt": "Low-level override only. No highlighting, autocomplete, or advanced validation.",
-  "settings.desc.userPrompt": "Low-level override only. No highlighting, autocomplete, or advanced validation.",
-  "settings.desc.providerType": "Choose mock-llm or openai-compatible provider.",
-  "settings.desc.providerModel": "Required only for openai-compatible provider.",
-  "settings.desc.secretRef": "Lowercase letters, numbers, and dashes only. data.json stores only this reference.",
-  "settings.desc.apiKey": "Stored only in Obsidian SecretStorage when available.",
+  "settings.desc.systemPrompt": "Advanced override only. No highlighting or advanced validation.",
+  "settings.desc.userPrompt": "Advanced override only. No highlighting or advanced validation.",
+  "settings.desc.providerType": "Choose where the model call should go.",
+  "settings.desc.providerModel": "Enter the model name to call.",
+  "settings.desc.baseUrl": "Only needed for custom or local providers. Usually stop at `/v1`.",
+  "settings.desc.secretRef": "Secure storage name for the API key. `data.json` stores only this name.",
+  "settings.desc.apiKey": "Saved only to Obsidian SecretStorage, never to plugin settings.",
+  "settings.desc.secretDiagnostics": "Expand only when debugging SecretStorage issues.",
   "settings.warning.secretUnavailable": "This environment does not support secure secret storage. Direct LLM calls are disabled and the plugin will fall back to mock-llm.",
+  "settings.placeholder.apiKeyUnavailable": "SecretStorage is not exposed in this runtime, so API key input is disabled",
+  "settings.placeholder.model.openai-compatible": "Example: gpt-4.1-mini",
+  "settings.placeholder.model.deepseek": "Example: deepseek-v4-flash",
+  "settings.placeholder.model.custom-openai-compatible": "Enter a model supported by your service",
+  "settings.placeholder.model.local-openai-compatible": "Example: qwen2.5:7b, gpt-oss, local-model",
+  "settings.placeholder.baseUrl.custom-openai-compatible": "Example: https://your-provider.example.com/v1",
+  "settings.placeholder.baseUrl.local-openai-compatible": "Example: http://127.0.0.1:11434/v1",
+  "settings.placeholder.secretRef.openai-compatible": "Example: obsidian-refined-layer-openai",
+  "settings.placeholder.secretRef.deepseek": "Example: obsidian-refined-layer-deepseek",
+  "settings.placeholder.secretRef.custom-openai-compatible": "Example: obsidian-refined-layer-custom",
+  "settings.help.provider.mock": "Local mock flow only. No external API call. Good for checking eligibility, review, and apply.",
+  "settings.help.provider.openai-compatible": "Connect to the official OpenAI API. You only need model, secret reference, and API key.",
+  "settings.help.provider.deepseek": "Connect to the official DeepSeek OpenAI-compatible API. `deepseek-v4-flash` is the recommended default.",
+  "settings.help.provider.custom-openai-compatible": "Connect to any remote service that supports OpenAI Chat Completions. Requires model, base URL, and API key.",
+  "settings.help.provider.local-openai-compatible": "Connect to a local OpenAI-compatible server such as Ollama, LM Studio, or vLLM. API key is usually not required.",
   "settings.option.language.zh-CN": "Simplified Chinese",
   "settings.option.language.en": "English",
-  "settings.option.provider.mock": "mock-llm",
-  "settings.option.provider.openai": "openai-compatible",
+  "settings.option.provider.mock": "Mock",
+  "settings.option.provider.openai": "OpenAI",
+  "settings.option.provider.deepseek": "DeepSeek",
+  "settings.option.provider.custom": "Custom compatible service",
+  "settings.option.provider.local": "Local compatible service",
   "notice.review.reopened": "Reopened last proposal: {sessionId} \xB7 {title} \xB7 token usage {mode}",
   "notice.review.noSession": "No saved proposal session for the current note: {path}",
   "notice.provider.downgradedMock": "Secure secret storage is unavailable. Falling back to mock-llm.",
-  "notice.provider.missingModel": "OpenAI-compatible provider requires a model name.",
-  "notice.provider.missingSecretRef": "OpenAI-compatible provider requires a secret reference.",
-  "notice.provider.missingApiKey": "No API key is stored for the configured secret reference.",
+  "notice.provider.missingModel": "{provider} requires a model name.",
+  "notice.provider.missingBaseUrl": "{provider} requires an API base URL.",
+  "notice.provider.missingSecretRef": "{provider} requires a secret reference.",
+  "notice.provider.missingApiKey": "No API key is stored for {provider}.",
   "notice.provider.secretSaved": "API key saved to secure secret storage.",
   "notice.provider.secretBlocked": "Cannot save API key because secure secret storage is unavailable.",
   "notice.provider.secretInvalidRef": "Secret reference must use lowercase letters, numbers, and dashes only.",
@@ -1584,36 +1686,59 @@ var zhCNStrings = {
   "review.placeholder.cancel": "\u5DF2\u5173\u95ED\u5BA1\u6838\u7A97\u53E3\u3002",
   "settings.title.providerType": "Provider \u7C7B\u578B",
   "settings.title.providerModel": "Provider \u6A21\u578B",
+  "settings.title.baseUrl": "API Base URL",
   "settings.title.secretRef": "Secret Reference",
   "settings.title.apiKey": "API Key",
+  "settings.title.secretDiagnostics": "SecretStorage \u8BCA\u65AD",
   "settings.title.language": "\u754C\u9762\u8BED\u8A00",
   "settings.title.historyLimit": "\u5386\u53F2\u8BB0\u5F55\u4E0A\u9650",
   "settings.title.draftFolder": "\u8349\u7A3F\u76EE\u5F55",
   "settings.title.promptProfile": "Prompt Override Profile",
   "settings.title.systemPrompt": "System Prompt Override",
   "settings.title.userPrompt": "User Prompt Override",
-  "settings.desc.language": "\u8BFB\u53D6\u5E76\u663E\u793A\u63D2\u4EF6 UI \u6587\u6848\u8BED\u8A00\u3002",
-  "settings.desc.historyLimit": "\u6309\u7B14\u8BB0\u4FDD\u7559\u7684 proposal session \u6570\u91CF\u3002",
-  "settings.desc.draftFolder": "\u672A\u6765 Save as Draft \u7684\u76EE\u6807\u76EE\u5F55\u3002",
-  "settings.desc.promptProfile": "\u5F53\u524D\u4EC5\u8986\u76D6 raw-refined profile\u3002",
+  "settings.desc.language": "\u5207\u6362\u63D2\u4EF6\u754C\u9762\u8BED\u8A00\u3002",
+  "settings.desc.historyLimit": "\u6BCF\u7BC7\u7B14\u8BB0\u6700\u591A\u4FDD\u7559\u591A\u5C11\u6761 proposal \u5386\u53F2\u3002",
+  "settings.desc.draftFolder": "Save as Draft \u7684\u8F93\u51FA\u76EE\u5F55\u3002",
+  "settings.desc.promptProfile": "\u5F53\u524D\u53EA\u652F\u6301 raw-refined \u7684 prompt \u8986\u76D6\u3002",
   "settings.desc.promptVariables": "\u53EF\u7528\u53D8\u91CF\uFF1A{{notePath}} {{noteTitle}} {{noteContent}}",
-  "settings.desc.systemPrompt": "\u4F4E\u7EA7\u8986\u76D6\u9879\uFF0C\u4E0D\u63D0\u4F9B\u9AD8\u4EAE\u3001\u8865\u5168\u6216\u590D\u6742\u6821\u9A8C\u3002",
-  "settings.desc.userPrompt": "\u4F4E\u7EA7\u8986\u76D6\u9879\uFF0C\u4E0D\u63D0\u4F9B\u9AD8\u4EAE\u3001\u8865\u5168\u6216\u590D\u6742\u6821\u9A8C\u3002",
-  "settings.desc.providerType": "\u9009\u62E9 mock-llm \u6216 openai-compatible provider\u3002",
-  "settings.desc.providerModel": "\u4EC5\u5728 openai-compatible provider \u4E0B\u5FC5\u586B\u3002",
-  "settings.desc.secretRef": "\u4EC5\u5141\u8BB8\u5C0F\u5199\u5B57\u6BCD\u3001\u6570\u5B57\u548C\u8FDE\u5B57\u7B26\uFF1Bdata.json \u53EA\u4FDD\u5B58\u8FD9\u4E2A\u5F15\u7528\u3002",
-  "settings.desc.apiKey": "\u53EF\u7528\u65F6\u4EC5\u4FDD\u5B58\u5230 Obsidian SecretStorage\u3002",
+  "settings.desc.systemPrompt": "\u4EC5\u9650\u9AD8\u7EA7\u7528\u6CD5\uFF1B\u4E0D\u505A\u9AD8\u4EAE\u6216\u590D\u6742\u6821\u9A8C\u3002",
+  "settings.desc.userPrompt": "\u4EC5\u9650\u9AD8\u7EA7\u7528\u6CD5\uFF1B\u4E0D\u505A\u9AD8\u4EAE\u6216\u590D\u6742\u6821\u9A8C\u3002",
+  "settings.desc.providerType": "\u9009\u62E9\u8981\u8FDE\u63A5\u7684\u6A21\u578B\u6765\u6E90\u3002",
+  "settings.desc.providerModel": "\u586B\u5199\u8981\u8C03\u7528\u7684\u6A21\u578B\u540D\u3002",
+  "settings.desc.baseUrl": "\u4EC5\u81EA\u5B9A\u4E49/\u672C\u5730 provider \u9700\u8981\u586B\u5199\uFF1B\u901A\u5E38\u5199\u5230 `/v1` \u5373\u53EF\u3002",
+  "settings.desc.secretRef": "API key \u7684\u5B89\u5168\u5B58\u50A8\u540D\u3002`data.json` \u53EA\u4FDD\u5B58\u8FD9\u4E2A\u540D\u5B57\uFF0C\u4E0D\u4FDD\u5B58 key\u3002",
+  "settings.desc.apiKey": "\u53EA\u5199\u5165 Obsidian SecretStorage\uFF0C\u4E0D\u843D\u76D8\u5230\u63D2\u4EF6\u8BBE\u7F6E\u3002",
+  "settings.desc.secretDiagnostics": "\u4EC5\u5728\u6392\u67E5 SecretStorage \u95EE\u9898\u65F6\u5C55\u5F00\u67E5\u770B\u3002",
   "settings.warning.secretUnavailable": "\u5F53\u524D\u73AF\u5883\u4E0D\u652F\u6301\u5B89\u5168\u5B58\u50A8 API key\uFF0C\u771F\u5B9E LLM \u76F4\u8FDE\u80FD\u529B\u5DF2\u7981\u7528\uFF0C\u63D2\u4EF6\u5C06\u964D\u7EA7\u4E3A mock-llm\u3002",
+  "settings.placeholder.apiKeyUnavailable": "\u5F53\u524D\u8FD0\u884C\u65F6\u672A\u66B4\u9732 SecretStorage\uFF0C\u65E0\u6CD5\u8F93\u5165 API key",
+  "settings.placeholder.model.openai-compatible": "\u4F8B\u5982\uFF1Agpt-4.1-mini",
+  "settings.placeholder.model.deepseek": "\u4F8B\u5982\uFF1Adeepseek-v4-flash",
+  "settings.placeholder.model.custom-openai-compatible": "\u586B\u5199\u4F60\u7684\u670D\u52A1\u652F\u6301\u7684\u6A21\u578B\u540D",
+  "settings.placeholder.model.local-openai-compatible": "\u4F8B\u5982\uFF1Aqwen2.5:7b\u3001gpt-oss\u3001local-model",
+  "settings.placeholder.baseUrl.custom-openai-compatible": "\u4F8B\u5982\uFF1Ahttps://your-provider.example.com/v1",
+  "settings.placeholder.baseUrl.local-openai-compatible": "\u4F8B\u5982\uFF1Ahttp://127.0.0.1:11434/v1",
+  "settings.placeholder.secretRef.openai-compatible": "\u4F8B\u5982\uFF1Aobsidian-refined-layer-openai",
+  "settings.placeholder.secretRef.deepseek": "\u4F8B\u5982\uFF1Aobsidian-refined-layer-deepseek",
+  "settings.placeholder.secretRef.custom-openai-compatible": "\u4F8B\u5982\uFF1Aobsidian-refined-layer-custom",
+  "settings.help.provider.mock": "\u672C\u5730 mock \u6D41\u7A0B\uFF0C\u4E0D\u4F1A\u8C03\u7528\u5916\u90E8 API\u3002\u9002\u5408\u5148\u9A8C\u8BC1 eligibility\u3001review\u3001apply \u6D41\u7A0B\u3002",
+  "settings.help.provider.openai-compatible": "\u8FDE\u63A5 OpenAI \u5B98\u65B9\u63A5\u53E3\u3002\u53EA\u9700\u8981\u6A21\u578B\u540D\u3001Secret Reference \u548C API Key\u3002",
+  "settings.help.provider.deepseek": "\u8FDE\u63A5 DeepSeek \u5B98\u65B9 OpenAI-compatible \u63A5\u53E3\u3002\u9ED8\u8BA4\u6A21\u578B\u5EFA\u8BAE\u4F7F\u7528 deepseek-v4-flash\u3002",
+  "settings.help.provider.custom-openai-compatible": "\u8FDE\u63A5\u4EFB\u610F\u517C\u5BB9 OpenAI Chat Completions \u7684\u8FDC\u7A0B\u670D\u52A1\u3002\u9700\u8981\u6A21\u578B\u540D\u3001Base URL \u548C API Key\u3002",
+  "settings.help.provider.local-openai-compatible": "\u8FDE\u63A5\u672C\u5730 OpenAI-compatible \u670D\u52A1\uFF0C\u4F8B\u5982 Ollama\u3001LM Studio\u3001vLLM\u3002\u901A\u5E38\u4E0D\u9700\u8981 API Key\u3002",
   "settings.option.language.zh-CN": "\u7B80\u4F53\u4E2D\u6587",
   "settings.option.language.en": "English",
-  "settings.option.provider.mock": "mock-llm",
-  "settings.option.provider.openai": "openai-compatible",
+  "settings.option.provider.mock": "Mock",
+  "settings.option.provider.openai": "OpenAI",
+  "settings.option.provider.deepseek": "DeepSeek",
+  "settings.option.provider.custom": "\u81EA\u5B9A\u4E49\u517C\u5BB9\u670D\u52A1",
+  "settings.option.provider.local": "\u672C\u5730\u517C\u5BB9\u670D\u52A1",
   "notice.review.reopened": "\u5DF2\u6062\u590D\u6700\u8FD1 proposal\uFF1A{sessionId} \xB7 {title} \xB7 token usage {mode}",
   "notice.review.noSession": "\u5F53\u524D\u7B14\u8BB0\u6CA1\u6709\u53EF\u6062\u590D\u7684 proposal session\uFF1A{path}",
   "notice.provider.downgradedMock": "\u5F53\u524D\u73AF\u5883\u4E0D\u652F\u6301\u5B89\u5168 secret \u5B58\u50A8\uFF0C\u5DF2\u964D\u7EA7\u4E3A mock-llm\u3002",
-  "notice.provider.missingModel": "openai-compatible provider \u9700\u8981\u914D\u7F6E\u6A21\u578B\u540D\u3002",
-  "notice.provider.missingSecretRef": "openai-compatible provider \u9700\u8981\u914D\u7F6E secret reference\u3002",
-  "notice.provider.missingApiKey": "\u5F53\u524D secret reference \u4E0B\u6CA1\u6709\u4FDD\u5B58 API key\u3002",
+  "notice.provider.missingModel": "{provider} \u9700\u8981\u914D\u7F6E\u6A21\u578B\u540D\u3002",
+  "notice.provider.missingBaseUrl": "{provider} \u9700\u8981\u914D\u7F6E API Base URL\u3002",
+  "notice.provider.missingSecretRef": "{provider} \u9700\u8981\u914D\u7F6E secret reference\u3002",
+  "notice.provider.missingApiKey": "{provider} \u5F53\u524D secret reference \u4E0B\u6CA1\u6709\u4FDD\u5B58 API key\u3002",
   "notice.provider.secretSaved": "API key \u5DF2\u4FDD\u5B58\u5230\u5B89\u5168 SecretStorage\u3002",
   "notice.provider.secretBlocked": "\u5F53\u524D\u73AF\u5883\u4E0D\u652F\u6301\u5B89\u5168 secret \u5B58\u50A8\uFF0C\u65E0\u6CD5\u4FDD\u5B58 API key\u3002",
   "notice.provider.secretInvalidRef": "Secret reference \u53EA\u80FD\u5305\u542B\u5C0F\u5199\u5B57\u6BCD\u3001\u6570\u5B57\u548C\u8FDE\u5B57\u7B26\u3002",
@@ -1917,9 +2042,14 @@ var SettingsTab = class extends import_obsidian3.PluginSettingTab {
     this.plugin = plugin;
   }
   display() {
+    var _a;
     const { containerEl } = this;
     const settings = this.plugin.getSettings();
+    const provider = settings.provider;
+    const providerType = (_a = provider == null ? void 0 : provider.type) != null ? _a : "mock";
+    const providerPreset = getProviderPreset(providerType);
     const secretAvailable = this.plugin.hasSecureSecretStorage();
+    const secretDiagnostics = this.plugin.getSecretStorageDiagnostics();
     containerEl.empty();
     new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.language")).setDesc(t(settings.language, "settings.desc.language")).addDropdown((dropdown) => {
       dropdown.addOption("zh-CN", t(settings.language, "settings.option.language.zh-CN")).addOption("en", t(settings.language, "settings.option.language.en")).setValue(settings.language).onChange(async (value) => {
@@ -1942,38 +2072,79 @@ var SettingsTab = class extends import_obsidian3.PluginSettingTab {
     });
     const providerSetting = new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.providerType")).setDesc(secretAvailable ? t(settings.language, "settings.desc.providerType") : t(settings.language, "settings.warning.secretUnavailable"));
     providerSetting.addDropdown((dropdown) => {
-      var _a, _b;
-      dropdown.addOption("mock", t(settings.language, "settings.option.provider.mock")).addOption("openai-compatible", t(settings.language, "settings.option.provider.openai")).setValue((_b = (_a = settings.provider) == null ? void 0 : _a.type) != null ? _b : "mock").setDisabled(!secretAvailable).onChange(async (value) => {
-        await this.plugin.updateProviderSettings({
-          type: value
-        });
+      dropdown.addOption("mock", t(settings.language, "settings.option.provider.mock")).addOption("openai-compatible", t(settings.language, "settings.option.provider.openai")).addOption("deepseek", t(settings.language, "settings.option.provider.deepseek")).addOption("custom-openai-compatible", t(settings.language, "settings.option.provider.custom")).addOption("local-openai-compatible", t(settings.language, "settings.option.provider.local")).setValue(providerType).onChange(async (value) => {
+        await this.plugin.switchProviderType(value);
         this.display();
       });
     });
-    const modelSetting = new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.providerModel")).setDesc(t(settings.language, "settings.desc.providerModel")).setDisabled(!secretAvailable);
-    modelSetting.addText((text) => {
-      var _a, _b;
-      text.setValue((_b = (_a = settings.provider) == null ? void 0 : _a.model) != null ? _b : "").setDisabled(!secretAvailable).onChange(async (value) => {
-        await this.plugin.updateProviderSettings({ model: value.trim() });
-      });
+    containerEl.createEl("p", {
+      cls: "obsidian-refined-layer-settings-note",
+      text: t(settings.language, `settings.help.provider.${providerType}`)
     });
-    const secretRefSetting = new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.secretRef")).setDesc(t(settings.language, "settings.desc.secretRef")).setDisabled(!secretAvailable);
-    secretRefSetting.addText((text) => {
-      var _a, _b;
-      text.setValue((_b = (_a = settings.provider) == null ? void 0 : _a.secretRef) != null ? _b : "").setDisabled(!secretAvailable).onChange(async (value) => {
-        await this.plugin.updateProviderSettings({ secretRef: value.trim() });
-      });
-    });
-    const apiKeySetting = new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.apiKey")).setDesc(t(settings.language, "settings.desc.apiKey")).setDisabled(!secretAvailable);
-    if (secretAvailable) {
-      const secretComponent = new import_obsidian3.SecretComponent(this.app, apiKeySetting.controlEl);
-      secretComponent.setValue("");
-      secretComponent.onChange(async (value) => {
-        var _a, _b;
-        const secretRef = (_b = (_a = this.plugin.getSettings().provider) == null ? void 0 : _a.secretRef) != null ? _b : "";
-        await this.plugin.saveProviderApiKey(secretRef, value);
+    if (providerType !== "mock") {
+      const modelSetting = new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.providerModel")).setDesc(t(settings.language, "settings.desc.providerModel"));
+      modelSetting.addText((text) => {
+        var _a2;
+        text.setValue((_a2 = provider == null ? void 0 : provider.model) != null ? _a2 : "").setPlaceholder(t(settings.language, `settings.placeholder.model.${providerType}`)).onChange(async (value) => {
+          await this.plugin.updateProviderSettings({ model: value.trim() });
+        });
       });
     }
+    if (providerPreset.allowsBaseUrlEdit) {
+      const baseUrlSetting = new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.baseUrl")).setDesc(t(settings.language, "settings.desc.baseUrl"));
+      baseUrlSetting.addText((text) => {
+        var _a2;
+        text.setValue((_a2 = provider == null ? void 0 : provider.baseUrl) != null ? _a2 : "").setPlaceholder(t(settings.language, `settings.placeholder.baseUrl.${providerType}`)).onChange(async (value) => {
+          await this.plugin.updateProviderSettings({ baseUrl: value.trim() });
+        });
+      });
+    }
+    if (providerPreset.requiresSecret) {
+      const secretRefSetting = new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.secretRef")).setDesc(t(settings.language, "settings.desc.secretRef")).setDisabled(!secretAvailable);
+      secretRefSetting.addText((text) => {
+        var _a2;
+        text.setValue((_a2 = provider == null ? void 0 : provider.secretRef) != null ? _a2 : "").setPlaceholder(t(settings.language, `settings.placeholder.secretRef.${providerType}`)).setDisabled(!secretAvailable).onChange(async (value) => {
+          await this.plugin.updateProviderSettings({ secretRef: value.trim() });
+        });
+      });
+      const apiKeySetting = new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.apiKey")).setDesc(t(settings.language, "settings.desc.apiKey")).setDisabled(!secretAvailable);
+      if (secretAvailable) {
+        const secretComponent = new import_obsidian3.SecretComponent(this.app, apiKeySetting.controlEl);
+        secretComponent.setValue("");
+        secretComponent.onChange(async (value) => {
+          var _a2, _b;
+          const secretRef = (_b = (_a2 = this.plugin.getSettings().provider) == null ? void 0 : _a2.secretRef) != null ? _b : "";
+          await this.plugin.saveProviderApiKey(secretRef, value);
+        });
+      } else {
+        apiKeySetting.addText((text) => {
+          text.setPlaceholder(t(settings.language, "settings.placeholder.apiKeyUnavailable")).setDisabled(true);
+        });
+      }
+    }
+    const diagnosticsContainer = containerEl.createEl("details", {
+      cls: "obsidian-refined-layer-settings-details"
+    });
+    diagnosticsContainer.createEl("summary", {
+      text: t(settings.language, "settings.title.secretDiagnostics")
+    });
+    diagnosticsContainer.createEl("p", {
+      cls: "obsidian-refined-layer-settings-note",
+      text: t(settings.language, "settings.desc.secretDiagnostics")
+    });
+    diagnosticsContainer.createEl("pre", {
+      cls: "obsidian-refined-layer-settings-diagnostics",
+      text: [
+        `available: ${String(secretDiagnostics.available)}`,
+        `hasSecretStorage: ${String(secretDiagnostics.hasSecretStorage)}`,
+        `secretStorageType: ${secretDiagnostics.secretStorageType}`,
+        `secretStorageConstructorName: ${secretDiagnostics.secretStorageConstructorName}`,
+        `getSecretType: ${secretDiagnostics.getSecretType}`,
+        `setSecretType: ${secretDiagnostics.setSecretType}`,
+        `ownKeys: ${secretDiagnostics.ownKeys.length > 0 ? secretDiagnostics.ownKeys.join(", ") : "(none)"}`,
+        `reason: ${secretDiagnostics.reason}`
+      ].join("\n")
+    });
     new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.promptProfile")).setDesc(t(settings.language, "settings.desc.promptProfile"));
     this.addPromptOverrideField(
       containerEl,
@@ -2095,6 +2266,9 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
   hasSecureSecretStorage() {
     return this.secretStore.isAvailable();
   }
+  getSecretStorageDiagnostics() {
+    return this.secretStore.getDiagnostics();
+  }
   async updateSettings(partial) {
     this.settings = {
       ...this.settings,
@@ -2114,7 +2288,23 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
         type: currentProvider.type,
         ...currentProvider.model ? { model: currentProvider.model } : {},
         ...currentProvider.secretRef ? { secretRef: currentProvider.secretRef } : {},
+        ...currentProvider.baseUrl ? { baseUrl: currentProvider.baseUrl } : {},
         ...partial
+      }
+    };
+    await this.settingsStore.save(this.settings);
+  }
+  async switchProviderType(type) {
+    var _a;
+    const currentProvider = (_a = this.settings.provider) != null ? _a : DEFAULT_PLUGIN_SETTINGS.provider;
+    const nextProvider = getDefaultProviderSettings(type);
+    this.settings = {
+      ...this.settings,
+      provider: {
+        ...nextProvider,
+        ...type === currentProvider.type && currentProvider.model ? { model: currentProvider.model } : {},
+        ...type === currentProvider.type && currentProvider.secretRef ? { secretRef: currentProvider.secretRef } : {},
+        ...type === currentProvider.type && currentProvider.baseUrl ? { baseUrl: currentProvider.baseUrl } : {}
       }
     };
     await this.settingsStore.save(this.settings);
@@ -2216,15 +2406,16 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
     new import_obsidian4.Notice(`Refined Layer: save draft failed - ${result.message}`, 8e3);
   }
   selectLlmProvider() {
-    var _a, _b, _c;
+    var _a, _b, _c, _d, _e, _f;
     const providerConfig = (_a = this.settings.provider) != null ? _a : DEFAULT_PLUGIN_SETTINGS.provider;
-    if (providerConfig.type !== "openai-compatible") {
+    const providerPreset = getProviderPreset(providerConfig.type);
+    if (providerConfig.type === "mock") {
       return {
         kind: "provider",
         provider: new MockLlmProvider()
       };
     }
-    if (!this.secretStore.isAvailable()) {
+    if (providerPreset.requiresSecret && !this.secretStore.isAvailable()) {
       return {
         kind: "provider",
         provider: new MockLlmProvider(),
@@ -2234,35 +2425,54 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
     if (!((_b = providerConfig.model) == null ? void 0 : _b.trim())) {
       return {
         kind: "error",
-        message: t(this.settings.language, "notice.provider.missingModel")
+        message: t(this.settings.language, "notice.provider.missingModel", {
+          provider: providerConfig.type
+        })
       };
     }
-    if (!((_c = providerConfig.secretRef) == null ? void 0 : _c.trim())) {
+    if (providerPreset.allowsBaseUrlEdit && !((_c = providerConfig.baseUrl) == null ? void 0 : _c.trim())) {
       return {
         kind: "error",
-        message: t(this.settings.language, "notice.provider.missingSecretRef")
+        message: t(this.settings.language, "notice.provider.missingBaseUrl", {
+          provider: providerConfig.type
+        })
       };
     }
-    try {
-      const apiKey = this.secretStore.getSecret(providerConfig.secretRef.trim());
-      if (!apiKey) {
+    if (providerPreset.requiresSecret && !((_d = providerConfig.secretRef) == null ? void 0 : _d.trim())) {
+      return {
+        kind: "error",
+        message: t(this.settings.language, "notice.provider.missingSecretRef", {
+          provider: providerConfig.type
+        })
+      };
+    }
+    if (providerPreset.requiresSecret) {
+      try {
+        const apiKey = this.secretStore.getSecret(providerConfig.secretRef.trim());
+        if (!apiKey) {
+          return {
+            kind: "error",
+            message: t(this.settings.language, "notice.provider.missingApiKey", {
+              provider: providerConfig.type
+            })
+          };
+        }
+      } catch (e) {
         return {
           kind: "error",
-          message: t(this.settings.language, "notice.provider.missingApiKey")
+          message: t(this.settings.language, "notice.provider.secretInvalidRef")
         };
       }
-    } catch (e) {
-      return {
-        kind: "error",
-        message: t(this.settings.language, "notice.provider.secretInvalidRef")
-      };
     }
     return {
       kind: "provider",
       provider: new OpenAICompatibleProvider({
+        providerId: providerConfig.type,
         secretStore: this.secretStore,
-        secretRef: providerConfig.secretRef.trim(),
-        model: providerConfig.model.trim()
+        ...((_e = providerConfig.secretRef) == null ? void 0 : _e.trim()) ? { secretRef: providerConfig.secretRef.trim() } : {},
+        model: providerConfig.model.trim(),
+        ...((_f = providerConfig.baseUrl) == null ? void 0 : _f.trim()) ? { baseUrl: providerConfig.baseUrl.trim() } : {},
+        requiresApiKey: providerPreset.requiresSecret
       })
     };
   }

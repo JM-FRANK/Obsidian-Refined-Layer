@@ -74,3 +74,25 @@
   color: var(--text-muted);
   font-size: var(--font-ui-small);
 }
+
+.obsidian-refined-layer-settings-details {
+  margin: 0.75rem 0 1rem;
+}
+
+.obsidian-refined-layer-settings-details > summary {
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+}
+
+.obsidian-refined-layer-settings-diagnostics {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  margin: 0.5rem 0 1rem;
+  padding: 0.75rem;
+  white-space: pre-wrap;
+}

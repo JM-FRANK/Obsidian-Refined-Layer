@@ -4,7 +4,7 @@ import { MockLlmProvider } from "./adapters/llm/MockLlmProvider";
 import { OpenAICompatibleProvider } from "./adapters/llm/OpenAICompatibleProvider";
 import type { LlmProvider } from "./adapters/llm/LlmProvider";
 import { ObsidianNoteRepository } from "./adapters/obsidian/ObsidianNoteRepository";
-import { ObsidianSecretStore } from "./adapters/obsidian/ObsidianSecretStore";
+import { ObsidianSecretStore, type SecretStorageDiagnostics } from "./adapters/obsidian/ObsidianSecretStore";
 import { ObsidianSettingsStore } from "./adapters/obsidian/ObsidianSettingsStore";
 import { ApplyDecisionUseCase } from "./application/ApplyDecisionUseCase";
 import { BuildApplyPlanUseCase } from "./application/BuildApplyPlanUseCase";
@@ -15,6 +15,7 @@ import { SaveDraftUseCase } from "./application/SaveDraftUseCase";
 import { rawRefinedProfile } from "./core/profile/rawRefinedProfile";
 import type { UserDecision } from "./core/review/UserDecision";
 import { ProposalSessionStore } from "./runtime/ProposalSessionStore";
+import { getDefaultProviderSettings, getProviderPreset, type ProviderType } from "./settings/ProviderConfig";
 import type { PluginSettings } from "./settings/PluginSettings";
 import { DEFAULT_PLUGIN_SETTINGS } from "./settings/PluginSettings";
 import { t } from "./ui/i18n";
@@ -118,6 +119,10 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     return this.secretStore.isAvailable();
   }
 
+  getSecretStorageDiagnostics(): SecretStorageDiagnostics {
+    return this.secretStore.getDiagnostics();
+  }
+
   async updateSettings(partial: Partial<PluginSettings>): Promise<void> {
     this.settings = {
       ...this.settings,
@@ -139,7 +144,25 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
         type: currentProvider.type,
         ...(currentProvider.model ? { model: currentProvider.model } : {}),
         ...(currentProvider.secretRef ? { secretRef: currentProvider.secretRef } : {}),
+        ...(currentProvider.baseUrl ? { baseUrl: currentProvider.baseUrl } : {}),
         ...partial,
+      },
+    };
+
+    await this.settingsStore.save(this.settings);
+  }
+
+  async switchProviderType(type: ProviderType): Promise<void> {
+    const currentProvider = this.settings.provider ?? DEFAULT_PLUGIN_SETTINGS.provider!;
+    const nextProvider = getDefaultProviderSettings(type);
+
+    this.settings = {
+      ...this.settings,
+      provider: {
+        ...nextProvider,
+        ...(type === currentProvider.type && currentProvider.model ? { model: currentProvider.model } : {}),
+        ...(type === currentProvider.type && currentProvider.secretRef ? { secretRef: currentProvider.secretRef } : {}),
+        ...(type === currentProvider.type && currentProvider.baseUrl ? { baseUrl: currentProvider.baseUrl } : {}),
       },
     };
 
@@ -264,15 +287,16 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     | { kind: "provider"; provider: LlmProvider; warning?: string }
     | { kind: "error"; message: string } {
     const providerConfig = this.settings.provider ?? DEFAULT_PLUGIN_SETTINGS.provider!;
+    const providerPreset = getProviderPreset(providerConfig.type);
 
-    if (providerConfig.type !== "openai-compatible") {
+    if (providerConfig.type === "mock") {
       return {
         kind: "provider",
         provider: new MockLlmProvider(),
       };
     }
 
-    if (!this.secretStore.isAvailable()) {
+    if (providerPreset.requiresSecret && !this.secretStore.isAvailable()) {
       return {
         kind: "provider",
         provider: new MockLlmProvider(),
@@ -283,38 +307,58 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     if (!providerConfig.model?.trim()) {
       return {
         kind: "error",
-        message: t(this.settings.language, "notice.provider.missingModel"),
+        message: t(this.settings.language, "notice.provider.missingModel", {
+          provider: providerConfig.type,
+        }),
       };
     }
 
-    if (!providerConfig.secretRef?.trim()) {
+    if (providerPreset.allowsBaseUrlEdit && !providerConfig.baseUrl?.trim()) {
       return {
         kind: "error",
-        message: t(this.settings.language, "notice.provider.missingSecretRef"),
+        message: t(this.settings.language, "notice.provider.missingBaseUrl", {
+          provider: providerConfig.type,
+        }),
       };
     }
 
-    try {
-      const apiKey = this.secretStore.getSecret(providerConfig.secretRef.trim());
-      if (!apiKey) {
+    if (providerPreset.requiresSecret && !providerConfig.secretRef?.trim()) {
+      return {
+        kind: "error",
+        message: t(this.settings.language, "notice.provider.missingSecretRef", {
+          provider: providerConfig.type,
+        }),
+      };
+    }
+
+    if (providerPreset.requiresSecret) {
+      try {
+        const apiKey = this.secretStore.getSecret(providerConfig.secretRef!.trim());
+        if (!apiKey) {
+          return {
+            kind: "error",
+            message: t(this.settings.language, "notice.provider.missingApiKey", {
+              provider: providerConfig.type,
+            }),
+          };
+        }
+      } catch {
         return {
           kind: "error",
-          message: t(this.settings.language, "notice.provider.missingApiKey"),
+          message: t(this.settings.language, "notice.provider.secretInvalidRef"),
         };
       }
-    } catch {
-      return {
-        kind: "error",
-        message: t(this.settings.language, "notice.provider.secretInvalidRef"),
-      };
     }
 
     return {
       kind: "provider",
       provider: new OpenAICompatibleProvider({
+        providerId: providerConfig.type,
         secretStore: this.secretStore,
-        secretRef: providerConfig.secretRef.trim(),
+        ...(providerConfig.secretRef?.trim() ? { secretRef: providerConfig.secretRef.trim() } : {}),
         model: providerConfig.model.trim(),
+        ...(providerConfig.baseUrl?.trim() ? { baseUrl: providerConfig.baseUrl.trim() } : {}),
+        requiresApiKey: providerPreset.requiresSecret,
       }),
     };
   }

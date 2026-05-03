@@ -1,6 +1,7 @@
 import type { Plugin } from "obsidian";
 
 import { DEFAULT_PLUGIN_SETTINGS, type PluginSettings } from "../../settings/PluginSettings";
+import type { ProviderSettings } from "../../settings/ProviderConfig";
 
 export class ObsidianSettingsStore {
   constructor(private readonly plugin: Plugin) {}
@@ -32,12 +33,17 @@ function sanitizeSettings(settings: PluginSettings): PluginSettings {
     historyLimit: settings.historyLimit,
     draftFolder: settings.draftFolder,
     provider: settings.provider
-      ? {
-          type: settings.provider.type,
-          ...(settings.provider.model ? { model: settings.provider.model } : {}),
-          ...(settings.provider.secretRef ? { secretRef: settings.provider.secretRef } : {}),
-        }
+      ? sanitizeProvider(settings.provider)
       : undefined,
     promptOverrides: settings.promptOverrides ?? {},
+  };
+}
+
+function sanitizeProvider(provider: ProviderSettings): ProviderSettings {
+  return {
+    type: provider.type,
+    ...(provider.model ? { model: provider.model } : {}),
+    ...(provider.secretRef ? { secretRef: provider.secretRef } : {}),
+    ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
   };
 }

@@ -5,24 +5,32 @@ import { toSafeErrorMessage } from "../../runtime/redaction";
 
 interface OpenAICompatibleProviderOptions {
   secretStore: SecretStore;
-  secretRef: string;
+  providerId?: string;
   model: string;
-  endpoint?: string;
+  secretRef?: string;
+  baseUrl?: string;
+  requiresApiKey?: boolean;
 }
 
 export class OpenAICompatibleProvider implements LlmProvider {
-  readonly providerId = "openai-compatible";
+  readonly providerId: string;
   readonly model: string;
   private readonly endpoint: string;
+  private readonly requiresApiKey: boolean;
 
   constructor(private readonly options: OpenAICompatibleProviderOptions) {
+    this.providerId = options.providerId ?? "openai-compatible";
     this.model = options.model;
-    this.endpoint = options.endpoint ?? "https://api.openai.com/v1/chat/completions";
+    this.endpoint = resolveChatCompletionsEndpoint(options.baseUrl ?? "https://api.openai.com/v1");
+    this.requiresApiKey = options.requiresApiKey ?? true;
   }
 
   async generateProposal(request: LlmRequest): Promise<LlmResponse> {
-    const apiKey = this.options.secretStore.getSecret(this.options.secretRef);
-    if (!apiKey) {
+    const apiKey = this.options.secretRef
+      ? this.options.secretStore.getSecret(this.options.secretRef)
+      : null;
+
+    if (this.requiresApiKey && !apiKey) {
       throw new Error("API key is missing for the configured secret reference.");
     }
 
@@ -30,7 +38,7 @@ export class OpenAICompatibleProvider implements LlmProvider {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       },
       body: JSON.stringify({
         model: this.model,
@@ -62,18 +70,18 @@ export class OpenAICompatibleProvider implements LlmProvider {
     return {
       rawText,
       parsedJson: tryParseJson(rawText),
-      usage: normalizeUsage(payload?.usage, this.model),
+      usage: normalizeUsage(payload?.usage, this.providerId, this.model),
     };
   }
 }
 
-function normalizeUsage(usage: any, model: string): TokenUsageReport | undefined {
+function normalizeUsage(usage: any, providerId: string, model: string): TokenUsageReport | undefined {
   if (!usage) {
     return undefined;
   }
 
   return {
-    provider: "openai-compatible",
+    provider: providerId,
     model,
     inputTokens: typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : undefined,
     outputTokens: typeof usage.completion_tokens === "number" ? usage.completion_tokens : undefined,
@@ -89,4 +97,14 @@ function tryParseJson(rawText: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+function resolveChatCompletionsEndpoint(baseUrl: string): string {
+  const normalized = baseUrl.trim().replace(/\/+$/, "");
+
+  if (normalized.endsWith("/chat/completions")) {
+    return normalized;
+  }
+
+  return `${normalized}/chat/completions`;
 }

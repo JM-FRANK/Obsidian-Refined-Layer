@@ -333,3 +333,31 @@ Phase 6 的代码实现和自动测试已完成。当前仓库已经支持：安
 - Change: 补充 provider 失败、secret 不落盘、token usage fallback 和 editable-body 回填的自动测试；保留真实 API key happy path 的手动验证缺口说明
 - Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功，共 44 个测试通过
 - Next: 代码层面已可进入 Phase 7；若要完成 Phase 6 的人工验收，还需在真实 vault 中配置 API key 后手动跑一次真实 provider happy path
+
+## D23.1 开发日志
+
+### Current status
+
+已补充 SecretStorage 可见诊断设置页，用于定位真实运行时为何被判定为 `secret unavailable`。SettingsTab 现在始终显示 `API key` 行：若运行时支持 `SecretStorage`，会继续渲染 `SecretComponent`；若不支持，则显示禁用输入框和占位说明，不再把该设置项整块隐藏。同时新增 `SecretStorage diagnostics` 面板，直接输出 `app.secretStorage` 是否存在、`getSecret/setSecret` 的运行时类型、构造器名和可枚举键，便于在真实 Obsidian 环境中快速判断到底是 API 不存在、方法未暴露，还是其他运行时差异。最新构建产物也已同步到测试 vault 插件目录。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D23.1 / `src/adapters/obsidian/ObsidianSecretStore.ts`、`src/main.ts`、`src/ui/settings/SettingsTab.ts`、`src/ui/i18n/*.ts`、`styles.css`
+- Reason: 用户在 Obsidian 1.12.7 中看不到 API key 设置项，需要把 SecretStorage 检测结果可视化，先钉死真实原因
+- Change: 增加 SecretStorage 运行时诊断对象和设置页诊断面板；保留 API key 设置项的可见性，并在不可用时展示禁用态与明确原因
+- Verification: 运行 `npm run typecheck`、`npm run build` 成功；并将 `main.js`/`styles.css`/`manifest.json` 同步到 `Obsidian-Refined-Layer-TestVault/.obsidian/plugins/obsidian-refined-layer/`
+- Next: 在真实 Obsidian 中重载插件并查看诊断面板输出，确认是 `app.secretStorage` 缺失还是方法未暴露，再决定是否需要兼容性修复
+
+## D24.1 开发日志
+
+### Current status
+
+已完成设置页精简和 provider 扩展的最小实现。SettingsTab 现在按 provider 类型条件显示字段，不再把所有配置项同时堆给用户；中英文说明文案也改成更短、更直接的版本。provider 侧在保留现有 `OpenAICompatibleProvider` 传输层的前提下，新增了 `DeepSeek`、`自定义 OpenAI-compatible 服务`、`本地 OpenAI-compatible 服务` 三类预设；对应配置仅扩展到 `model / secretRef / baseUrl`，没有侵入 proposal validator、review、apply 或 secret redaction 流程。`local-openai-compatible` 支持无 API key 直连本地兼容服务；`custom-openai-compatible` 和 `deepseek` 仍通过 SecretStorage 保存 key。该变更属于对原 v0.1.0 provider 边界的定向扩展。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D24.1 / `src/settings/ProviderConfig.ts`、`src/main.ts`、`src/ui/settings/SettingsTab.ts`、`src/adapters/llm/OpenAICompatibleProvider.ts`、`src/ui/i18n/*.ts`、`tests/adapters/*`
+- Reason: 用户认为设置项过多且说明不足，并要求新增 DeepSeek、自定义提供商和本地模型接入方式
+- Change: 增加 provider 预设层、按类型条件渲染设置项、补充简洁中英文说明，并接入 `deepseek` / `custom-openai-compatible` / `local-openai-compatible`
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功，共 46 个测试通过；并同步构建产物到测试 vault 插件目录
+- Next: 在真实 Obsidian 中分别手测 OpenAI、DeepSeek 和本地兼容服务配置流；若继续收尾，则进入 Phase 7 的手动测试矩阵与交付整理

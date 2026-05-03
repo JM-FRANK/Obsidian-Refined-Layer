@@ -98,4 +98,57 @@ describe("OpenAICompatibleProvider", () => {
       },
     })).rejects.toThrow("[REDACTED]");
   });
+
+  it("supports local openai-compatible endpoints without an api key header", async () => {
+    const fetchSpy = vi.fn(async () => ({
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: "{\"workflowProfileId\":\"raw-refined\",\"refinedSections\":{\"summary\":\"a\",\"coreQuestion\":\"b\",\"currentConclusion\":\"c\",\"reasoning\":\"d\"}}",
+              },
+            },
+          ],
+        };
+      },
+    }));
+    globalThis.fetch = fetchSpy as any;
+
+    const provider = new OpenAICompatibleProvider({
+      providerId: "local-openai-compatible",
+      secretStore: {
+        isAvailable: () => true,
+        getSecret: () => null,
+        setSecret: () => undefined,
+      },
+      model: "qwen2.5:7b",
+      baseUrl: "http://127.0.0.1:11434/v1",
+      requiresApiKey: false,
+    });
+
+    await provider.generateProposal({
+      workflowProfileId: "raw-refined",
+      notePath: "note.md",
+      noteTitle: "note",
+      noteContent: "content",
+      systemPrompt: "system",
+      userPrompt: "user",
+      promptVariables: {
+        notePath: "note.md",
+        noteTitle: "note",
+        noteContent: "content",
+      },
+    });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://127.0.0.1:11434/v1/chat/completions",
+      expect.objectContaining({
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }),
+    );
+  });
 });

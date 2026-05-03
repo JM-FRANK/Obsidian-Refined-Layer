@@ -1,6 +1,7 @@
 import { PluginSettingTab, SecretComponent, Setting, TextAreaComponent, type App } from "obsidian";
 
 import type ObsidianRefinedLayerPlugin from "../../main";
+import { getProviderPreset, type ProviderType } from "../../settings/ProviderConfig";
 import type { PluginSettings } from "../../settings/PluginSettings";
 import { t } from "../i18n";
 
@@ -15,7 +16,11 @@ export class SettingsTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     const settings = this.plugin.getSettings();
+    const provider = settings.provider;
+    const providerType = provider?.type ?? "mock";
+    const providerPreset = getProviderPreset(providerType);
     const secretAvailable = this.plugin.hasSecureSecretStorage();
+    const secretDiagnostics = this.plugin.getSecretStorageDiagnostics();
     containerEl.empty();
 
     new Setting(containerEl)
@@ -69,57 +74,111 @@ export class SettingsTab extends PluginSettingTab {
         dropdown
           .addOption("mock", t(settings.language, "settings.option.provider.mock"))
           .addOption("openai-compatible", t(settings.language, "settings.option.provider.openai"))
-          .setValue(settings.provider?.type ?? "mock")
-          .setDisabled(!secretAvailable)
+          .addOption("deepseek", t(settings.language, "settings.option.provider.deepseek"))
+          .addOption("custom-openai-compatible", t(settings.language, "settings.option.provider.custom"))
+          .addOption("local-openai-compatible", t(settings.language, "settings.option.provider.local"))
+          .setValue(providerType)
           .onChange(async (value) => {
-            await this.plugin.updateProviderSettings({
-              type: value as "mock" | "openai-compatible",
-            });
+            await this.plugin.switchProviderType(value as ProviderType);
             this.display();
           });
       });
 
-    const modelSetting = new Setting(containerEl)
-      .setName(t(settings.language, "settings.title.providerModel"))
-      .setDesc(t(settings.language, "settings.desc.providerModel"))
-      .setDisabled(!secretAvailable);
-
-    modelSetting.addText((text) => {
-      text
-        .setValue(settings.provider?.model ?? "")
-        .setDisabled(!secretAvailable)
-        .onChange(async (value) => {
-          await this.plugin.updateProviderSettings({ model: value.trim() });
-        });
+    containerEl.createEl("p", {
+      cls: "obsidian-refined-layer-settings-note",
+      text: t(settings.language, `settings.help.provider.${providerType}` as never),
     });
 
-    const secretRefSetting = new Setting(containerEl)
-      .setName(t(settings.language, "settings.title.secretRef"))
-      .setDesc(t(settings.language, "settings.desc.secretRef"))
-      .setDisabled(!secretAvailable);
+    if (providerType !== "mock") {
+      const modelSetting = new Setting(containerEl)
+        .setName(t(settings.language, "settings.title.providerModel"))
+        .setDesc(t(settings.language, "settings.desc.providerModel"));
 
-    secretRefSetting.addText((text) => {
-      text
-        .setValue(settings.provider?.secretRef ?? "")
-        .setDisabled(!secretAvailable)
-        .onChange(async (value) => {
-          await this.plugin.updateProviderSettings({ secretRef: value.trim() });
-        });
-    });
-
-    const apiKeySetting = new Setting(containerEl)
-      .setName(t(settings.language, "settings.title.apiKey"))
-      .setDesc(t(settings.language, "settings.desc.apiKey"))
-      .setDisabled(!secretAvailable);
-
-    if (secretAvailable) {
-      const secretComponent = new SecretComponent(this.app, apiKeySetting.controlEl);
-      secretComponent.setValue("");
-      secretComponent.onChange(async (value) => {
-        const secretRef = this.plugin.getSettings().provider?.secretRef ?? "";
-        await this.plugin.saveProviderApiKey(secretRef, value);
+      modelSetting.addText((text) => {
+        text
+          .setValue(provider?.model ?? "")
+          .setPlaceholder(t(settings.language, `settings.placeholder.model.${providerType}` as never))
+          .onChange(async (value) => {
+            await this.plugin.updateProviderSettings({ model: value.trim() });
+          });
       });
     }
+
+    if (providerPreset.allowsBaseUrlEdit) {
+      const baseUrlSetting = new Setting(containerEl)
+        .setName(t(settings.language, "settings.title.baseUrl"))
+        .setDesc(t(settings.language, "settings.desc.baseUrl"));
+
+      baseUrlSetting.addText((text) => {
+        text
+          .setValue(provider?.baseUrl ?? "")
+          .setPlaceholder(t(settings.language, `settings.placeholder.baseUrl.${providerType}` as never))
+          .onChange(async (value) => {
+            await this.plugin.updateProviderSettings({ baseUrl: value.trim() });
+          });
+      });
+    }
+
+    if (providerPreset.requiresSecret) {
+      const secretRefSetting = new Setting(containerEl)
+        .setName(t(settings.language, "settings.title.secretRef"))
+        .setDesc(t(settings.language, "settings.desc.secretRef"))
+        .setDisabled(!secretAvailable);
+
+      secretRefSetting.addText((text) => {
+        text
+          .setValue(provider?.secretRef ?? "")
+          .setPlaceholder(t(settings.language, `settings.placeholder.secretRef.${providerType}` as never))
+          .setDisabled(!secretAvailable)
+          .onChange(async (value) => {
+            await this.plugin.updateProviderSettings({ secretRef: value.trim() });
+          });
+      });
+
+      const apiKeySetting = new Setting(containerEl)
+        .setName(t(settings.language, "settings.title.apiKey"))
+        .setDesc(t(settings.language, "settings.desc.apiKey"))
+        .setDisabled(!secretAvailable);
+
+      if (secretAvailable) {
+        const secretComponent = new SecretComponent(this.app, apiKeySetting.controlEl);
+        secretComponent.setValue("");
+        secretComponent.onChange(async (value) => {
+          const secretRef = this.plugin.getSettings().provider?.secretRef ?? "";
+          await this.plugin.saveProviderApiKey(secretRef, value);
+        });
+      } else {
+        apiKeySetting.addText((text) => {
+          text
+            .setPlaceholder(t(settings.language, "settings.placeholder.apiKeyUnavailable"))
+            .setDisabled(true);
+        });
+      }
+    }
+
+    const diagnosticsContainer = containerEl.createEl("details", {
+      cls: "obsidian-refined-layer-settings-details",
+    });
+    diagnosticsContainer.createEl("summary", {
+      text: t(settings.language, "settings.title.secretDiagnostics"),
+    });
+    diagnosticsContainer.createEl("p", {
+      cls: "obsidian-refined-layer-settings-note",
+      text: t(settings.language, "settings.desc.secretDiagnostics"),
+    });
+    diagnosticsContainer.createEl("pre", {
+      cls: "obsidian-refined-layer-settings-diagnostics",
+      text: [
+        `available: ${String(secretDiagnostics.available)}`,
+        `hasSecretStorage: ${String(secretDiagnostics.hasSecretStorage)}`,
+        `secretStorageType: ${secretDiagnostics.secretStorageType}`,
+        `secretStorageConstructorName: ${secretDiagnostics.secretStorageConstructorName}`,
+        `getSecretType: ${secretDiagnostics.getSecretType}`,
+        `setSecretType: ${secretDiagnostics.setSecretType}`,
+        `ownKeys: ${secretDiagnostics.ownKeys.length > 0 ? secretDiagnostics.ownKeys.join(", ") : "(none)"}`,
+        `reason: ${secretDiagnostics.reason}`,
+      ].join("\n"),
+    });
 
     new Setting(containerEl)
       .setName(t(settings.language, "settings.title.promptProfile"))
