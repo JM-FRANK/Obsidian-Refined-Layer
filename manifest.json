@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-refined-layer",
+  "name": "Obsidian Refined Layer",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Review-first Obsidian plugin for turning the active raw Markdown note into a refined proposal.",
+  "author": "OpenAI Codex",
+  "authorUrl": "https://openai.com",
+  "isDesktopOnly": false
+}
