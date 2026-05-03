@@ -39,3 +39,59 @@ Phase 1 已完成。插件命令现在会通过 `ObsidianNoteRepository -> Check
 - Change: 实现 active file 读取、Markdown 文件判定、内容长度返回，以及命令侧明确提示无活动文件/非 Markdown 文件/有效 Markdown 笔记
 - Verification: 运行 `npm run typecheck`、`npm run build`、`npm test` 成功
 - Next: Phase 1 验收已满足；下一步如继续则进入 D4，实现 `raw-refined` profile 与初版 eligibility 规则
+
+## D4 开发日志
+
+### Current status
+
+仓库已实现 `raw-refined` profile，并将 eligibility 判定切换为 profile 驱动。`CheckEligibilityUseCase` 现在会检查 frontmatter 是否存在、`status` 是否为 `raw`、是否存在精确标题行 `## 原始内容`，并返回结构化失败原因 `missingFrontmatter`、`invalidStatus`、`missingOriginalContentHeading`。命令仍只读当前 note 并展示结果，不写文件。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D4 / `src/core/profile/WorkflowProfile.ts`、`src/core/profile/rawRefinedProfile.ts`、`src/core/profile/FrontmatterParser.ts`、`src/application/CheckEligibilityUseCase.ts`、`src/main.ts`
+- Reason: 将 Phase 1 的 active note 读取升级为真实的 `raw-refined` eligibility 判定
+- Change: 扩展 `WorkflowProfile` 结构，新增 `rawRefinedProfile` 与最小 frontmatter parser，并让 `CheckEligibilityUseCase` 输出 profile 驱动的 eligibility 结果
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
+- Next: 进入 D5，实现 protected region 提取与 hash 工具
+
+## D5 开发日志
+
+### Current status
+
+已实现 `ProtectedRegionExtractor`、`ProtectedRegion` 类型和文本 hash 工具。当前仅支持 `from-heading-to-end` 模式；`between-headings` 仍只保留在类型层，不进入实现。提取逻辑会对 `missing heading`、`multiple heading`、`empty protected region`、`unsupported mode` 返回明确错误，并在成功时逐字保留原文换行，包括 `CRLF`。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D5 / `src/core/protected-region/ProtectedRegion.ts`、`src/core/protected-region/ProtectedRegionExtractor.ts`、`src/core/protected-region/hash.ts`
+- Reason: 为后续 apply freshness/protected region 保护与内容校验建立基础能力
+- Change: 新增 protected region 提取器与 `sha256` 文本 hash 工具，明确了 heading 缺失、多次出现、空保护区和未实现 mode 的行为
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
+- Next: 进入 D6，实现 ProposalValidator 的 JSON 与 schema 校验
+
+## D6 开发日志
+
+### Current status
+
+已实现 `ProposalValidator` 的前两层：JSON 解析和 schema 校验。validator 现在会先尝试纯 JSON 解析，失败后再尝试提取 fenced JSON block；仍失败则返回 `invalid-json`。schema 层会校验 `workflowProfileId`、`refinedSections` 必填字段和基础字段类型；失败时只返回结构化错误，不生成 session。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D6 / `src/core/proposal/Proposal.ts`、`src/core/proposal/ProposalValidator.ts`
+- Reason: 为 proposal 接入建立第一版分层校验，阻止无效输出进入后续流程
+- Change: 将 `RawRefinedProposal` 调整为 `refinedSections/frontmatterSuggestion/tagSuggestion/warnings` 结构，并实现 JSON 提取与 schema 校验错误模型
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
+- Next: 进入 D7，补齐 policy 和 content 校验
+
+## D7 开发日志
+
+### Current status
+
+Phase 2 已完成。`ProposalValidator` 现已具备 JSON / schema / policy / content 四层校验：会拒绝只读或未知 YAML 字段、拒绝未在 allow-list 内的标签、拒绝 `#rel/*`、拒绝 `link/moc/rename/move/archive/delete` 相关字段，并在给定 protected region 上下文时拒绝 proposal 泄漏 `## 原始内容` 受保护文本。当前仓库仍未实现 session 创建，因此校验失败天然不会进入 `ProposalSession`；这与 Phase 2 的边界一致。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D7 / `src/core/proposal/ProposalValidator.ts`、`tests/core/proposal/ProposalValidator.test.ts`
+- Reason: 完成 profile policy 与内容边界的第二阶段防线，确保 LLM 输出不能越权或污染受保护区域
+- Change: 增加 frontmatter/tag/capability/content 校验，明确 `PolicyGuard` 负责请求入口，`ProposalValidator` 负责 proposal 载荷本身的层叠校验
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
+- Next: Phase 2 验收已满足；下一步如继续则进入 D8，实现 `MockLlmProvider` 与 `CreateProposalUseCase`
