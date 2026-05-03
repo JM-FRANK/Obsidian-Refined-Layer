@@ -2,6 +2,9 @@ import { ApplyPlanner } from "../core/apply/ApplyPlanner";
 import type { ApplyPlan } from "../core/apply/ApplyPlan";
 import { BodyAssembler } from "../core/apply/BodyAssembler";
 import { PolicyGuard } from "../core/policy/PolicyGuard";
+import { ProposalValidator } from "../core/proposal/ProposalValidator";
+import { ProtectedRegionExtractor } from "../core/protected-region/ProtectedRegionExtractor";
+import { rawRefinedProfile } from "../core/profile/rawRefinedProfile";
 import type { WorkflowProfile } from "../core/profile/WorkflowProfile";
 import type { UserDecision } from "../core/review/UserDecision";
 import type { ProposalSessionStore } from "../runtime/ProposalSessionStore";
@@ -22,6 +25,8 @@ export class BuildApplyPlanUseCase {
   private readonly planner = new ApplyPlanner();
   private readonly bodyAssembler = new BodyAssembler();
   private readonly policyGuard: PolicyGuard;
+  private readonly proposalValidator: ProposalValidator;
+  private readonly protectedRegionExtractor = new ProtectedRegionExtractor();
 
   constructor(
     profile: WorkflowProfile,
@@ -29,6 +34,7 @@ export class BuildApplyPlanUseCase {
     private readonly noteFilePort: NoteFilePort,
   ) {
     this.policyGuard = new PolicyGuard(profile);
+    this.proposalValidator = new ProposalValidator(profile);
   }
 
   async execute(sessionId: string, decision: UserDecision): Promise<BuildApplyPlanResult> {
@@ -53,7 +59,30 @@ export class BuildApplyPlanUseCase {
 
     let body: string | undefined;
     if (guardedDecision.acceptBody) {
-      const assembled = this.bodyAssembler.assemble(session, note.content);
+      const editedSections = guardedDecision.editedRefinedSections ?? session.proposal.refinedSections;
+      const protectedRegion = this.protectedRegionExtractor.extract(
+        note.content,
+        rawRefinedProfile.protectedRegions.definitions[0],
+      );
+      if (!protectedRegion.ok) {
+        return {
+          ok: false,
+          code: protectedRegion.error.code,
+          message: protectedRegion.error.message,
+        };
+      }
+      const validation = this.proposalValidator.validateEditedRefinedSections(editedSections, {
+        protectedRegionText: protectedRegion.region.text,
+      });
+      if (!validation.ok) {
+        return {
+          ok: false,
+          code: validation.errors[0].code,
+          message: validation.errors[0].message,
+        };
+      }
+
+      const assembled = this.bodyAssembler.assemble(session, note.content, validation.refinedSections);
       if (!assembled.ok) {
         return {
           ok: false,

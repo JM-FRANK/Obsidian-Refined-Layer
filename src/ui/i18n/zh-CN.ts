@@ -1,7 +1,7 @@
 export const zhCNStrings = {
   "review.title": "Refined Proposal 审核",
   "review.noteMeta": "{title} · {path}",
-  "review.section.body": "Refined 正文预览",
+  "review.section.body": "Refined 正文编辑",
   "review.section.frontmatter": "YAML 修改建议",
   "review.section.tags": "标签修改建议",
   "review.section.tokenUsage": "Token Usage",

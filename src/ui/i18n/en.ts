@@ -1,7 +1,7 @@
 export const enStrings = {
   "review.title": "Refined Proposal Review",
   "review.noteMeta": "{title} · {path}",
-  "review.section.body": "Refined body preview",
+  "review.section.body": "Editable refined body",
   "review.section.frontmatter": "YAML suggestions",
   "review.section.tags": "Tag suggestions",
   "review.section.tokenUsage": "Token Usage",

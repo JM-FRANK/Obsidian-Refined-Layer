@@ -1,5 +1,8 @@
+import type { RefinedSections } from "../proposal/Proposal";
+
 export interface UserDecision {
   acceptBody: boolean;
+  editedRefinedSections?: RefinedSections;
   acceptFrontmatter: {
     status?: boolean;
     source?: boolean;

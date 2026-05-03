@@ -30,6 +30,27 @@
   white-space: pre-wrap;
 }
 
+.obsidian-refined-layer-editable-section {
+  margin-bottom: 0.9rem;
+}
+
+.obsidian-refined-layer-editable-label {
+  color: var(--text-muted);
+  display: block;
+  font-size: var(--font-ui-small);
+  margin-bottom: 0.35rem;
+}
+
+.obsidian-refined-layer-editable-textarea {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  color: var(--text-normal);
+  min-height: 5.5rem;
+  resize: vertical;
+  width: 100%;
+}
+
 .obsidian-refined-layer-checkbox-row {
   align-items: center;
   color: var(--text-normal);

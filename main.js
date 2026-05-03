@@ -449,7 +449,7 @@ var ApplyPlanner = class {
   }
 };
 
-// src/core/apply/BodyAssembler.ts
+// src/core/apply/RefinedBodyFormatter.ts
 var SECTION_HEADINGS = {
   summary: "## \u6458\u8981",
   coreQuestion: "## \u6838\u5FC3\u95EE\u9898",
@@ -459,11 +459,26 @@ var SECTION_HEADINGS = {
   nextSteps: "## \u540E\u7EED\u5904\u7406",
   refineNote: "## \u6574\u7406\u8BF4\u660E"
 };
+function buildRefinedBodyPreview(refinedSections) {
+  const lines = [];
+  for (const key of Object.keys(refinedSections)) {
+    const content = refinedSections[key];
+    if (!content) {
+      continue;
+    }
+    lines.push(SECTION_HEADINGS[key]);
+    lines.push(content);
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd();
+}
+
+// src/core/apply/BodyAssembler.ts
 var BodyAssembler = class {
   constructor() {
     this.extractor = new ProtectedRegionExtractor();
   }
-  assemble(session, currentContent) {
+  assemble(session, currentContent, refinedSections) {
     const protectedRegion = this.extractor.extract(
       currentContent,
       rawRefinedProfile.protectedRegions.definitions[0]
@@ -471,7 +486,7 @@ var BodyAssembler = class {
     if (!protectedRegion.ok) {
       return protectedRegion;
     }
-    const refinedBody = this.buildRefinedBody(session);
+    const refinedBody = buildRefinedBodyPreview(refinedSections != null ? refinedSections : session.proposal.refinedSections);
     const body = `${refinedBody}
 
 ${protectedRegion.region.text}`;
@@ -490,19 +505,6 @@ ${protectedRegion.region.text}`;
       protectedRegionText: protectedRegion.region.text
     };
   }
-  buildRefinedBody(session) {
-    const lines = [];
-    for (const key of Object.keys(session.proposal.refinedSections)) {
-      const content = session.proposal.refinedSections[key];
-      if (!content) {
-        continue;
-      }
-      lines.push(SECTION_HEADINGS[key]);
-      lines.push(content);
-      lines.push("");
-    }
-    return lines.join("\n").trimEnd();
-  }
 };
 
 // src/core/policy/PolicyGuard.ts
@@ -515,102 +517,6 @@ var PolicyGuard = class {
     return request;
   }
 };
-
-// src/application/BuildApplyPlanUseCase.ts
-var BuildApplyPlanUseCase = class {
-  constructor(profile, sessionStore, noteFilePort) {
-    this.sessionStore = sessionStore;
-    this.noteFilePort = noteFilePort;
-    this.planner = new ApplyPlanner();
-    this.bodyAssembler = new BodyAssembler();
-    this.policyGuard = new PolicyGuard(profile);
-  }
-  async execute(sessionId, decision) {
-    const session = await this.sessionStore.get(sessionId);
-    if (!session) {
-      return {
-        ok: false,
-        code: "missing-session",
-        message: `Proposal session ${sessionId} was not found.`
-      };
-    }
-    const guardedDecision = this.policyGuard.guardRequest(decision);
-    const note = await this.noteFilePort.readNoteByPath(session.notePath);
-    if (!note) {
-      return {
-        ok: false,
-        code: "missing-note",
-        message: `Target note ${session.notePath} was not found.`
-      };
-    }
-    let body;
-    if (guardedDecision.acceptBody) {
-      const assembled = this.bodyAssembler.assemble(session, note.content);
-      if (!assembled.ok) {
-        return {
-          ok: false,
-          code: assembled.error.code,
-          message: assembled.error.message
-        };
-      }
-      body = assembled.body;
-    }
-    return {
-      ok: true,
-      plan: this.planner.buildPlan(session, guardedDecision, body)
-    };
-  }
-};
-
-// src/application/CheckEligibilityUseCase.ts
-var CheckEligibilityUseCase = class {
-  constructor(noteRepository, profile) {
-    this.noteRepository = noteRepository;
-    this.profile = profile;
-  }
-  async execute() {
-    const activeNote = await this.noteRepository.getActiveNote();
-    if (activeNote.kind === "no-active-file") {
-      return {
-        hasActiveMarkdownNote: false,
-        reason: "no-active-file"
-      };
-    }
-    if (activeNote.kind === "non-markdown-file") {
-      return {
-        hasActiveMarkdownNote: false,
-        reason: "non-markdown-file",
-        notePath: activeNote.path,
-        extension: activeNote.extension
-      };
-    }
-    const parsed = parseFrontmatter(activeNote.note.content);
-    const failureReasons = [];
-    const statusValue = typeof parsed.frontmatter.status === "string" ? parsed.frontmatter.status : void 0;
-    if (this.profile.eligibility.requireFrontmatter && !parsed.hasFrontmatter) {
-      failureReasons.push("missingFrontmatter");
-    }
-    if (statusValue !== this.profile.eligibility.requiredStatus) {
-      failureReasons.push("invalidStatus");
-    }
-    const headingPattern = new RegExp(`^${escapeRegExp2(this.profile.eligibility.requiredHeading)}\\s*$`, "m");
-    if (!headingPattern.test(activeNote.note.content)) {
-      failureReasons.push("missingOriginalContentHeading");
-    }
-    return {
-      hasActiveMarkdownNote: true,
-      eligible: failureReasons.length === 0,
-      ...failureReasons.length > 0 ? { failureReasons } : {},
-      notePath: activeNote.note.path,
-      noteTitle: activeNote.note.title,
-      rawContentLength: activeNote.note.content.length,
-      ...statusValue ? { status: statusValue } : {}
-    };
-  }
-};
-function escapeRegExp2(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 // src/core/proposal/ProposalValidator.ts
 var ProposalValidator = class {
@@ -637,6 +543,30 @@ var ProposalValidator = class {
     return {
       ok: true,
       proposal: schema.proposal
+    };
+  }
+  validateEditedRefinedSections(refinedSections, context = {}) {
+    const schemaErrors = this.validateRefinedSectionsSchema(refinedSections);
+    if (schemaErrors.length > 0) {
+      return {
+        ok: false,
+        errors: schemaErrors
+      };
+    }
+    const proposal = {
+      workflowProfileId: "raw-refined",
+      refinedSections
+    };
+    const contentErrors = this.validateContent(proposal, { refinedSections }, context);
+    if (contentErrors.length > 0) {
+      return {
+        ok: false,
+        errors: contentErrors
+      };
+    }
+    return {
+      ok: true,
+      refinedSections
     };
   }
   parseJsonLikeOutput(output) {
@@ -675,16 +605,12 @@ var ProposalValidator = class {
     if (!isRecord(value.refinedSections)) {
       return schemaError("missing-refined-sections", "refinedSections is required.");
     }
-    for (const key of this.profile.outputSections.required) {
-      if (typeof value.refinedSections[key] !== "string" || value.refinedSections[key].trim() === "") {
-        return schemaError(`missing-required-section-${key}`, `refinedSections.${key} must be a non-empty string.`);
-      }
-    }
-    for (const key of this.profile.outputSections.optional) {
-      const sectionValue = value.refinedSections[key];
-      if (sectionValue !== void 0 && typeof sectionValue !== "string") {
-        return schemaError(`invalid-section-type-${key}`, `refinedSections.${key} must be a string when present.`);
-      }
+    const refinedSectionErrors = this.validateRefinedSectionsSchema(value.refinedSections);
+    if (refinedSectionErrors.length > 0) {
+      return {
+        ok: false,
+        errors: [refinedSectionErrors[0]]
+      };
     }
     if (value.frontmatterSuggestion !== void 0 && !isRecord(value.frontmatterSuggestion)) {
       return schemaError("invalid-frontmatter-suggestion", "frontmatterSuggestion must be an object.");
@@ -719,6 +645,35 @@ var ProposalValidator = class {
         ...Array.isArray(value.warnings) ? { warnings: value.warnings } : {}
       }
     };
+  }
+  validateRefinedSectionsSchema(value) {
+    if (!isRecord(value)) {
+      return [{
+        layer: "schema",
+        code: "missing-refined-sections",
+        message: "refinedSections is required."
+      }];
+    }
+    for (const key of this.profile.outputSections.required) {
+      if (typeof value[key] !== "string" || value[key].trim() === "") {
+        return [{
+          layer: "schema",
+          code: `missing-required-section-${key}`,
+          message: `refinedSections.${key} must be a non-empty string.`
+        }];
+      }
+    }
+    for (const key of this.profile.outputSections.optional) {
+      const sectionValue = value[key];
+      if (sectionValue !== void 0 && typeof sectionValue !== "string") {
+        return [{
+          layer: "schema",
+          code: `invalid-section-type-${key}`,
+          message: `refinedSections.${key} must be a string when present.`
+        }];
+      }
+    }
+    return [];
   }
   validatePolicy(proposal, rawValue) {
     var _a, _b, _c, _d;
@@ -841,6 +796,127 @@ function collectStringValues(value) {
   return [];
 }
 
+// src/application/BuildApplyPlanUseCase.ts
+var BuildApplyPlanUseCase = class {
+  constructor(profile, sessionStore, noteFilePort) {
+    this.sessionStore = sessionStore;
+    this.noteFilePort = noteFilePort;
+    this.planner = new ApplyPlanner();
+    this.bodyAssembler = new BodyAssembler();
+    this.protectedRegionExtractor = new ProtectedRegionExtractor();
+    this.policyGuard = new PolicyGuard(profile);
+    this.proposalValidator = new ProposalValidator(profile);
+  }
+  async execute(sessionId, decision) {
+    var _a;
+    const session = await this.sessionStore.get(sessionId);
+    if (!session) {
+      return {
+        ok: false,
+        code: "missing-session",
+        message: `Proposal session ${sessionId} was not found.`
+      };
+    }
+    const guardedDecision = this.policyGuard.guardRequest(decision);
+    const note = await this.noteFilePort.readNoteByPath(session.notePath);
+    if (!note) {
+      return {
+        ok: false,
+        code: "missing-note",
+        message: `Target note ${session.notePath} was not found.`
+      };
+    }
+    let body;
+    if (guardedDecision.acceptBody) {
+      const editedSections = (_a = guardedDecision.editedRefinedSections) != null ? _a : session.proposal.refinedSections;
+      const protectedRegion = this.protectedRegionExtractor.extract(
+        note.content,
+        rawRefinedProfile.protectedRegions.definitions[0]
+      );
+      if (!protectedRegion.ok) {
+        return {
+          ok: false,
+          code: protectedRegion.error.code,
+          message: protectedRegion.error.message
+        };
+      }
+      const validation = this.proposalValidator.validateEditedRefinedSections(editedSections, {
+        protectedRegionText: protectedRegion.region.text
+      });
+      if (!validation.ok) {
+        return {
+          ok: false,
+          code: validation.errors[0].code,
+          message: validation.errors[0].message
+        };
+      }
+      const assembled = this.bodyAssembler.assemble(session, note.content, validation.refinedSections);
+      if (!assembled.ok) {
+        return {
+          ok: false,
+          code: assembled.error.code,
+          message: assembled.error.message
+        };
+      }
+      body = assembled.body;
+    }
+    return {
+      ok: true,
+      plan: this.planner.buildPlan(session, guardedDecision, body)
+    };
+  }
+};
+
+// src/application/CheckEligibilityUseCase.ts
+var CheckEligibilityUseCase = class {
+  constructor(noteRepository, profile) {
+    this.noteRepository = noteRepository;
+    this.profile = profile;
+  }
+  async execute() {
+    const activeNote = await this.noteRepository.getActiveNote();
+    if (activeNote.kind === "no-active-file") {
+      return {
+        hasActiveMarkdownNote: false,
+        reason: "no-active-file"
+      };
+    }
+    if (activeNote.kind === "non-markdown-file") {
+      return {
+        hasActiveMarkdownNote: false,
+        reason: "non-markdown-file",
+        notePath: activeNote.path,
+        extension: activeNote.extension
+      };
+    }
+    const parsed = parseFrontmatter(activeNote.note.content);
+    const failureReasons = [];
+    const statusValue = typeof parsed.frontmatter.status === "string" ? parsed.frontmatter.status : void 0;
+    if (this.profile.eligibility.requireFrontmatter && !parsed.hasFrontmatter) {
+      failureReasons.push("missingFrontmatter");
+    }
+    if (statusValue !== this.profile.eligibility.requiredStatus) {
+      failureReasons.push("invalidStatus");
+    }
+    const headingPattern = new RegExp(`^${escapeRegExp2(this.profile.eligibility.requiredHeading)}\\s*$`, "m");
+    if (!headingPattern.test(activeNote.note.content)) {
+      failureReasons.push("missingOriginalContentHeading");
+    }
+    return {
+      hasActiveMarkdownNote: true,
+      eligible: failureReasons.length === 0,
+      ...failureReasons.length > 0 ? { failureReasons } : {},
+      notePath: activeNote.note.path,
+      noteTitle: activeNote.note.title,
+      rawContentLength: activeNote.note.content.length,
+      ...statusValue ? { status: statusValue } : {}
+    };
+  }
+};
+function escapeRegExp2(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // src/application/CreateProposalUseCase.ts
 var CreateProposalUseCase = class {
   constructor(noteRepository, profile, llmProvider, sessionStore) {
@@ -948,7 +1024,7 @@ var SaveDraftUseCase = class {
     this.noteFilePort = noteFilePort;
     this.settings = settings;
   }
-  async execute(sessionId, conflictReason) {
+  async execute(sessionId, conflictReason, editedRefinedSections) {
     var _a, _b, _c;
     const session = await this.sessionStore.get(sessionId);
     if (!session) {
@@ -959,6 +1035,7 @@ var SaveDraftUseCase = class {
     }
     const fileName = `${sanitizeFileName(session.noteTitle)}-${session.id}.md`;
     const draftPath = `${this.settings.draftFolder}/${fileName}`;
+    const refinedSections = editedRefinedSections != null ? editedRefinedSections : session.proposal.refinedSections;
     const content = [
       `# Refined Layer Draft`,
       ``,
@@ -970,7 +1047,7 @@ var SaveDraftUseCase = class {
       ``,
       `## Proposed Sections`,
       ``,
-      ...Object.entries(session.proposal.refinedSections).flatMap(([key, value]) => value ? [`### ${key}`, String(value), ``] : []),
+      ...Object.entries(refinedSections).flatMap(([key, value]) => value ? [`### ${key}`, String(value), ``] : []),
       `## Warnings`,
       ``,
       ...((_c = session.proposal.warnings) == null ? void 0 : _c.length) ? session.proposal.warnings : ["none"],
@@ -1332,9 +1409,23 @@ var ReviewModal = class extends import_obsidian2.Modal {
       this.decision.acceptBody = checked;
     });
     toggle.addClass("obsidian-refined-layer-toggle");
-    section.createEl("pre", {
-      cls: "obsidian-refined-layer-preview",
-      text: this.viewModel.bodyPreview
+    for (const editableSection of this.viewModel.editableRefinedSections) {
+      this.renderEditableSection(section, editableSection);
+    }
+  }
+  renderEditableSection(container, editableSection) {
+    const field = container.createDiv("obsidian-refined-layer-editable-section");
+    field.createEl("label", {
+      cls: "obsidian-refined-layer-editable-label",
+      text: `${editableSection.heading}${editableSection.required ? " *" : ""}`
+    });
+    const textArea = new import_obsidian2.TextAreaComponent(field);
+    textArea.inputEl.rows = editableSection.required ? 4 : 3;
+    textArea.inputEl.addClass("obsidian-refined-layer-editable-textarea");
+    textArea.setValue(editableSection.content);
+    this.setEditedSection(editableSection.key, editableSection.content);
+    textArea.onChange((value) => {
+      this.setEditedSection(editableSection.key, value);
     });
   }
   renderFrontmatterSection(container) {
@@ -1434,18 +1525,16 @@ var ReviewModal = class extends import_obsidian2.Modal {
     row.createSpan({ text: labelText });
     return row;
   }
+  setEditedSection(key, value) {
+    var _a;
+    this.decision.editedRefinedSections = {
+      ...(_a = this.decision.editedRefinedSections) != null ? _a : {},
+      [key]: value
+    };
+  }
 };
 
 // src/ui/review/ReviewViewModel.ts
-var SECTION_HEADINGS2 = {
-  summary: "## \u6458\u8981",
-  coreQuestion: "## \u6838\u5FC3\u95EE\u9898",
-  currentConclusion: "## \u5F53\u524D\u7ED3\u8BBA",
-  reasoning: "## \u4F9D\u636E\u4E0E\u63A8\u7406",
-  scope: "## \u9002\u7528\u8FB9\u754C",
-  nextSteps: "## \u540E\u7EED\u5904\u7406",
-  refineNote: "## \u6574\u7406\u8BF4\u660E"
-};
 function createReviewViewModel(session) {
   var _a, _b, _c, _d, _e, _f, _g;
   const frontmatterSuggestions = [];
@@ -1459,12 +1548,14 @@ function createReviewViewModel(session) {
   if (suggestion == null ? void 0 : suggestion.context) {
     frontmatterSuggestions.push({ field: "context", value: suggestion.context.join(", ") });
   }
+  const editableRefinedSections = buildEditableSections(session.proposal.refinedSections);
   return {
     sessionId: session.id,
     workflowProfileId: session.workflowProfileId,
     notePath: session.notePath,
     noteTitle: session.noteTitle,
-    bodyPreview: buildBodyPreview(session),
+    bodyPreview: buildRefinedBodyPreview(session.proposal.refinedSections),
+    editableRefinedSections,
     frontmatterSuggestions,
     tagSuggestions: {
       add: (_b = (_a = session.proposal.tagSuggestion) == null ? void 0 : _a.add) != null ? _b : [],
@@ -1482,6 +1573,9 @@ function createReviewViewModel(session) {
     } : null,
     initialDecision: {
       acceptBody: false,
+      editedRefinedSections: {
+        ...session.proposal.refinedSections
+      },
       acceptFrontmatter: {
         ...(suggestion == null ? void 0 : suggestion.status) ? { status: false } : {},
         ...(suggestion == null ? void 0 : suggestion.source) ? { source: false } : {},
@@ -1494,19 +1588,25 @@ function createReviewViewModel(session) {
     }
   };
 }
-function buildBodyPreview(session) {
-  const lines = [];
-  const sections = session.proposal.refinedSections;
-  for (const key of Object.keys(sections)) {
-    const content = sections[key];
-    if (!content) {
-      continue;
-    }
-    lines.push(SECTION_HEADINGS2[key]);
-    lines.push(content);
-    lines.push("");
-  }
-  return lines.join("\n").trimEnd();
+function buildEditableSections(refinedSections) {
+  const keys = [
+    "summary",
+    "coreQuestion",
+    "currentConclusion",
+    "reasoning",
+    "scope",
+    "nextSteps",
+    "refineNote"
+  ];
+  return keys.filter((key) => refinedSections[key] !== void 0).map((key) => {
+    var _a;
+    return {
+      key,
+      heading: SECTION_HEADINGS[key],
+      content: (_a = refinedSections[key]) != null ? _a : "",
+      required: key === "summary" || key === "coreQuestion" || key === "currentConclusion" || key === "reasoning"
+    };
+  });
 }
 
 // src/ui/review/ObsidianReviewGate.ts
@@ -1714,8 +1814,8 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
       onApplyNotice: async (decision) => {
         await this.applySelectedChanges(sessionId, decision);
       },
-      onSaveDraftNotice: async () => {
-        await this.saveDraft(sessionId);
+      onSaveDraftNotice: async (decision) => {
+        await this.saveDraft(sessionId, void 0, decision);
       },
       onCancelNotice: () => {
         new import_obsidian4.Notice(t(this.settings.language, "review.placeholder.cancel"), 4e3);
@@ -1756,10 +1856,10 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
     }
     new import_obsidian4.Notice(`Refined Layer: apply failed (${applyResult.code}) - ${applyResult.message}`, 8e3);
   }
-  async saveDraft(sessionId, conflictReason) {
+  async saveDraft(sessionId, conflictReason, decision) {
     const noteRepository = new ObsidianNoteRepository(this.app);
     const saveDraftUseCase = new SaveDraftUseCase(this.sessionStore, noteRepository, this.settings);
-    const result = await saveDraftUseCase.execute(sessionId, conflictReason);
+    const result = await saveDraftUseCase.execute(sessionId, conflictReason, decision == null ? void 0 : decision.editedRefinedSections);
     if (result.saved) {
       new import_obsidian4.Notice(`Refined Layer: draft saved to ${result.draftPath}.`, 6e3);
       return;

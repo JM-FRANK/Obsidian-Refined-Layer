@@ -141,8 +141,8 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
       onApplyNotice: async (decision) => {
         await this.applySelectedChanges(sessionId, decision);
       },
-      onSaveDraftNotice: async () => {
-        await this.saveDraft(sessionId);
+      onSaveDraftNotice: async (decision) => {
+        await this.saveDraft(sessionId, undefined, decision);
       },
       onCancelNotice: () => {
         new Notice(t(this.settings.language, "review.placeholder.cancel"), 4000);
@@ -191,10 +191,10 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     new Notice(`Refined Layer: apply failed (${applyResult.code}) - ${applyResult.message}`, 8000);
   }
 
-  private async saveDraft(sessionId: string, conflictReason?: string): Promise<void> {
+  private async saveDraft(sessionId: string, conflictReason?: string, decision?: UserDecision): Promise<void> {
     const noteRepository = new ObsidianNoteRepository(this.app);
     const saveDraftUseCase = new SaveDraftUseCase(this.sessionStore, noteRepository, this.settings);
-    const result = await saveDraftUseCase.execute(sessionId, conflictReason);
+    const result = await saveDraftUseCase.execute(sessionId, conflictReason, decision?.editedRefinedSections);
 
     if (result.saved) {
       new Notice(`Refined Layer: draft saved to ${result.draftPath}.`, 6000);

@@ -1,9 +1,11 @@
-import { Modal } from "obsidian";
+import { Modal, TextAreaComponent } from "obsidian";
 
+import type { RefinedSectionKey } from "../../core/apply/RefinedBodyFormatter";
 import type { UserDecision } from "../../core/review/UserDecision";
+import type { RefinedSections } from "../../core/proposal/Proposal";
 import type { UiLanguage } from "../i18n";
 import { t } from "../i18n";
-import type { ReviewViewModel } from "./ReviewViewModel";
+import type { EditableRefinedSection, ReviewViewModel } from "./ReviewViewModel";
 
 export interface ReviewModalCallbacks {
   onApply(decision: UserDecision): void;
@@ -61,9 +63,26 @@ export class ReviewModal extends Modal {
       this.decision.acceptBody = checked;
     });
     toggle.addClass("obsidian-refined-layer-toggle");
-    section.createEl("pre", {
-      cls: "obsidian-refined-layer-preview",
-      text: this.viewModel.bodyPreview,
+
+    for (const editableSection of this.viewModel.editableRefinedSections) {
+      this.renderEditableSection(section, editableSection);
+    }
+  }
+
+  private renderEditableSection(container: HTMLElement, editableSection: EditableRefinedSection): void {
+    const field = container.createDiv("obsidian-refined-layer-editable-section");
+    field.createEl("label", {
+      cls: "obsidian-refined-layer-editable-label",
+      text: `${editableSection.heading}${editableSection.required ? " *" : ""}`,
+    });
+
+    const textArea = new TextAreaComponent(field);
+    textArea.inputEl.rows = editableSection.required ? 4 : 3;
+    textArea.inputEl.addClass("obsidian-refined-layer-editable-textarea");
+    textArea.setValue(editableSection.content);
+    this.setEditedSection(editableSection.key, editableSection.content);
+    textArea.onChange((value) => {
+      this.setEditedSection(editableSection.key, value);
     });
   }
 
@@ -184,5 +203,12 @@ export class ReviewModal extends Modal {
     checkbox.addEventListener("change", () => onChange(checkbox.checked));
     row.createSpan({ text: labelText });
     return row;
+  }
+
+  private setEditedSection(key: RefinedSectionKey, value: string): void {
+    this.decision.editedRefinedSections = {
+      ...(this.decision.editedRefinedSections ?? {}),
+      [key]: value,
+    } as RefinedSections;
   }
 }

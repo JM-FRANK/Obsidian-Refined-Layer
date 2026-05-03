@@ -1,3 +1,4 @@
+import type { RefinedSections } from "../core/proposal/Proposal";
 import type { ProposalSessionStore } from "../runtime/ProposalSessionStore";
 import type { PluginSettings } from "../settings/PluginSettings";
 import type { NoteFilePort } from "./ports/NoteFilePort";
@@ -15,7 +16,11 @@ export class SaveDraftUseCase {
     private readonly settings: Pick<PluginSettings, "draftFolder">,
   ) {}
 
-  async execute(sessionId: string, conflictReason?: string): Promise<SaveDraftResult> {
+  async execute(
+    sessionId: string,
+    conflictReason?: string,
+    editedRefinedSections?: RefinedSections,
+  ): Promise<SaveDraftResult> {
     const session = await this.sessionStore.get(sessionId);
     if (!session) {
       return {
@@ -26,6 +31,7 @@ export class SaveDraftUseCase {
 
     const fileName = `${sanitizeFileName(session.noteTitle)}-${session.id}.md`;
     const draftPath = `${this.settings.draftFolder}/${fileName}`;
+    const refinedSections = editedRefinedSections ?? session.proposal.refinedSections;
     const content = [
       `# Refined Layer Draft`,
       ``,
@@ -37,7 +43,7 @@ export class SaveDraftUseCase {
       ``,
       `## Proposed Sections`,
       ``,
-      ...Object.entries(session.proposal.refinedSections).flatMap(([key, value]) => value ? [`### ${key}`, String(value), ``] : []),
+      ...Object.entries(refinedSections).flatMap(([key, value]) => value ? [`### ${key}`, String(value), ``] : []),
       `## Warnings`,
       ``,
       ...(session.proposal.warnings?.length ? session.proposal.warnings : ["none"]),

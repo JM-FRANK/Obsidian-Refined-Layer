@@ -1,5 +1,5 @@
 import type { WorkflowProfile } from "../profile/WorkflowProfile";
-import type { RawRefinedProposal } from "./Proposal";
+import type { RawRefinedProposal, RefinedSections } from "./Proposal";
 
 export type ProposalValidationLayer = "json" | "schema" | "policy" | "content";
 
@@ -53,6 +53,36 @@ export class ProposalValidator {
     };
   }
 
+  validateEditedRefinedSections(
+    refinedSections: RefinedSections,
+    context: ProposalValidationContext = {},
+  ): { ok: true; refinedSections: RefinedSections } | { ok: false; errors: ProposalValidationError[] } {
+    const schemaErrors = this.validateRefinedSectionsSchema(refinedSections);
+    if (schemaErrors.length > 0) {
+      return {
+        ok: false,
+        errors: schemaErrors,
+      };
+    }
+
+    const proposal: RawRefinedProposal = {
+      workflowProfileId: "raw-refined",
+      refinedSections,
+    };
+    const contentErrors = this.validateContent(proposal, { refinedSections }, context);
+    if (contentErrors.length > 0) {
+      return {
+        ok: false,
+        errors: contentErrors,
+      };
+    }
+
+    return {
+      ok: true,
+      refinedSections,
+    };
+  }
+
   private parseJsonLikeOutput(output: string): { ok: true; value: unknown } | { ok: false; errors: ProposalValidationError[] } {
     const candidates = [output.trim(), extractJsonBlock(output)];
 
@@ -96,17 +126,12 @@ export class ProposalValidator {
       return schemaError("missing-refined-sections", "refinedSections is required.");
     }
 
-    for (const key of this.profile.outputSections.required) {
-      if (typeof value.refinedSections[key] !== "string" || value.refinedSections[key].trim() === "") {
-        return schemaError(`missing-required-section-${key}`, `refinedSections.${key} must be a non-empty string.`);
-      }
-    }
-
-    for (const key of this.profile.outputSections.optional) {
-      const sectionValue = value.refinedSections[key];
-      if (sectionValue !== undefined && typeof sectionValue !== "string") {
-        return schemaError(`invalid-section-type-${key}`, `refinedSections.${key} must be a string when present.`);
-      }
+    const refinedSectionErrors = this.validateRefinedSectionsSchema(value.refinedSections);
+    if (refinedSectionErrors.length > 0) {
+      return {
+        ok: false,
+        errors: [refinedSectionErrors[0]],
+      };
     }
 
     if (value.frontmatterSuggestion !== undefined && !isRecord(value.frontmatterSuggestion)) {
@@ -151,6 +176,39 @@ export class ProposalValidator {
         ...(Array.isArray(value.warnings) ? { warnings: value.warnings as string[] } : {}),
       },
     };
+  }
+
+  private validateRefinedSectionsSchema(value: unknown): ProposalValidationError[] {
+    if (!isRecord(value)) {
+      return [{
+        layer: "schema",
+        code: "missing-refined-sections",
+        message: "refinedSections is required.",
+      }];
+    }
+
+    for (const key of this.profile.outputSections.required) {
+      if (typeof value[key] !== "string" || value[key].trim() === "") {
+        return [{
+          layer: "schema",
+          code: `missing-required-section-${key}`,
+          message: `refinedSections.${key} must be a non-empty string.`,
+        }];
+      }
+    }
+
+    for (const key of this.profile.outputSections.optional) {
+      const sectionValue = value[key];
+      if (sectionValue !== undefined && typeof sectionValue !== "string") {
+        return [{
+          layer: "schema",
+          code: `invalid-section-type-${key}`,
+          message: `refinedSections.${key} must be a string when present.`,
+        }];
+      }
+    }
+
+    return [];
   }
 
   private validatePolicy(proposal: RawRefinedProposal, rawValue: unknown): ProposalValidationError[] {

@@ -263,3 +263,17 @@ Phase 5 已完成。已实现 `SaveDraftUseCase`、Obsidian note/draft 写入 ad
 - Change: 实现草稿写入、Obsidian Markdown 读写适配器，并把 Review UI 的 Apply / Save as Draft 从占位回调切换到真实 application use case
 - Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
 - Next: Phase 5 验收已满足；下一步如继续则进入 D20，实现 `ObsidianSecretStore` 与安全设置 UI
+
+## D19.5 开发日志
+
+### Current status
+
+已完成 `Phase 5.5 Editable Review Body` 回填。ReviewModal 中的 refined 正文已从只读预览改为 section-level 可编辑输入，默认值来自 `session.proposal.refinedSections`。`UserDecision` 现在可携带 `editedRefinedSections`，`BuildApplyPlanUseCase` 会在 `acceptBody=true` 时优先使用用户编辑内容，并在进入 `ApplyPlan` 前重新执行 refined section schema / content policy 校验；若编辑内容包含 `## 原始内容` 或缺少必填 section，会在 build plan 阶段被拒绝。`SaveDraftUseCase` 也已改为优先保存用户编辑后的 sections。该任务未补自动测试，按要求延后到 Phase 6 统一处理。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D19.5 / `src/core/proposal/Proposal.ts`、`src/core/review/UserDecision.ts`、`src/ui/review/ReviewViewModel.ts`、`src/ui/review/ReviewModal.ts`、`src/core/proposal/ProposalValidator.ts`、`src/application/BuildApplyPlanUseCase.ts`、`src/application/SaveDraftUseCase.ts`
+- Reason: 支持用户在 ReviewModal 中直接修改 refined 正文，并将编辑结果安全回填到 apply / draft 流程
+- Change: 新增 `editedRefinedSections` 数据流，改造 ReviewModal 为 section-level textarea，增加编辑正文的二次 schema/content 校验，并让 Save as Draft 保存编辑后的 sections
+- Verification: 运行 `npm run typecheck`、`npm run build` 成功；按要求未补自动测试
+- Next: 测试延后到 Phase 6；如继续开发则进入 D20

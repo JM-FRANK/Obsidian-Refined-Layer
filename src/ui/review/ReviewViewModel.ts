@@ -1,5 +1,18 @@
-import type { ProposalSession } from "../../runtime/ProposalSession";
 import type { UserDecision } from "../../core/review/UserDecision";
+import type { RefinedSections } from "../../core/proposal/Proposal";
+import type { ProposalSession } from "../../runtime/ProposalSession";
+import {
+  buildRefinedBodyPreview,
+  SECTION_HEADINGS,
+  type RefinedSectionKey,
+} from "../../core/apply/RefinedBodyFormatter";
+
+export interface EditableRefinedSection {
+  key: RefinedSectionKey;
+  heading: string;
+  content: string;
+  required: boolean;
+}
 
 export interface ReviewViewModel {
   sessionId: string;
@@ -7,6 +20,7 @@ export interface ReviewViewModel {
   notePath: string;
   noteTitle: string;
   bodyPreview: string;
+  editableRefinedSections: EditableRefinedSection[];
   frontmatterSuggestions: Array<{
     field: "status" | "source" | "context";
     value: string;
@@ -28,16 +42,6 @@ export interface ReviewViewModel {
   initialDecision: UserDecision;
 }
 
-const SECTION_HEADINGS: Record<keyof ProposalSession["proposal"]["refinedSections"], string> = {
-  summary: "## 摘要",
-  coreQuestion: "## 核心问题",
-  currentConclusion: "## 当前结论",
-  reasoning: "## 依据与推理",
-  scope: "## 适用边界",
-  nextSteps: "## 后续处理",
-  refineNote: "## 整理说明",
-};
-
 export function createReviewViewModel(session: ProposalSession): ReviewViewModel {
   const frontmatterSuggestions: ReviewViewModel["frontmatterSuggestions"] = [];
   const suggestion = session.proposal.frontmatterSuggestion;
@@ -52,12 +56,15 @@ export function createReviewViewModel(session: ProposalSession): ReviewViewModel
     frontmatterSuggestions.push({ field: "context", value: suggestion.context.join(", ") });
   }
 
+  const editableRefinedSections = buildEditableSections(session.proposal.refinedSections);
+
   return {
     sessionId: session.id,
     workflowProfileId: session.workflowProfileId,
     notePath: session.notePath,
     noteTitle: session.noteTitle,
-    bodyPreview: buildBodyPreview(session),
+    bodyPreview: buildRefinedBodyPreview(session.proposal.refinedSections),
+    editableRefinedSections,
     frontmatterSuggestions,
     tagSuggestions: {
       add: session.proposal.tagSuggestion?.add ?? [],
@@ -77,6 +84,9 @@ export function createReviewViewModel(session: ProposalSession): ReviewViewModel
       : null,
     initialDecision: {
       acceptBody: false,
+      editedRefinedSections: {
+        ...session.proposal.refinedSections,
+      },
       acceptFrontmatter: {
         ...(suggestion?.status ? { status: false } : {}),
         ...(suggestion?.source ? { source: false } : {}),
@@ -90,20 +100,23 @@ export function createReviewViewModel(session: ProposalSession): ReviewViewModel
   };
 }
 
-function buildBodyPreview(session: ProposalSession): string {
-  const lines: string[] = [];
-  const sections = session.proposal.refinedSections;
+function buildEditableSections(refinedSections: RefinedSections): EditableRefinedSection[] {
+  const keys: RefinedSectionKey[] = [
+    "summary",
+    "coreQuestion",
+    "currentConclusion",
+    "reasoning",
+    "scope",
+    "nextSteps",
+    "refineNote",
+  ];
 
-  for (const key of Object.keys(sections) as Array<keyof typeof sections>) {
-    const content = sections[key];
-    if (!content) {
-      continue;
-    }
-
-    lines.push(SECTION_HEADINGS[key]);
-    lines.push(content);
-    lines.push("");
-  }
-
-  return lines.join("\n").trimEnd();
+  return keys
+    .filter((key) => refinedSections[key] !== undefined)
+    .map((key) => ({
+      key,
+      heading: SECTION_HEADINGS[key],
+      content: refinedSections[key] ?? "",
+      required: key === "summary" || key === "coreQuestion" || key === "currentConclusion" || key === "reasoning",
+    }));
 }

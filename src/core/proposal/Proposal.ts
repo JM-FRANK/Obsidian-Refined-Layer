@@ -1,14 +1,16 @@
+export interface RefinedSections {
+  summary: string;
+  coreQuestion: string;
+  currentConclusion: string;
+  reasoning: string;
+  scope?: string;
+  nextSteps?: string;
+  refineNote?: string;
+}
+
 export interface RawRefinedProposal {
   workflowProfileId: "raw-refined";
-  refinedSections: {
-    summary: string;
-    coreQuestion: string;
-    currentConclusion: string;
-    reasoning: string;
-    scope?: string;
-    nextSteps?: string;
-    refineNote?: string;
-  };
+  refinedSections: RefinedSections;
   frontmatterSuggestion?: {
     status?: "refined";
     source?: Array<"self" | "external" | "practice">;
