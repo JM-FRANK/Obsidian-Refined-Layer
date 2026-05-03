@@ -361,3 +361,86 @@ Phase 6 的代码实现和自动测试已完成。当前仓库已经支持：安
 - Change: 增加 provider 预设层、按类型条件渲染设置项、补充简洁中英文说明，并接入 `deepseek` / `custom-openai-compatible` / `local-openai-compatible`
 - Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功，共 46 个测试通过；并同步构建产物到测试 vault 插件目录
 - Next: 在真实 Obsidian 中分别手测 OpenAI、DeepSeek 和本地兼容服务配置流；若继续收尾，则进入 Phase 7 的手动测试矩阵与交付整理
+
+## D24 开发日志
+
+### Current status
+
+Phase 7 边界复查已完成。代码库中不存在 `mcp/`、`http/`、`file-inbox/`、`external-review/`、`workflow-editor/` 目录或实现；`ApplyOperation` 仅含 `replace-refined-body`、`update-frontmatter`、`update-tags` 三种类型，无 `rename/move/link/moc/archive/delete`；UI 组件（ReviewModal、SettingsTab）无文件写入逻辑；ReviewModal 不硬编码 workflow 规则；`requestReview` 仅依赖 `ReviewGate` 接口，不直接耦合 Modal。Core 模块不导入 Obsidian API；依赖方向 `UI → Application → Core` 未被反转。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D24 / 全仓库 grep + glob 边界复查
+- Reason: 确保 v0.1.0 没有滑向长期平台能力，清理反扩张风险
+- Change: 完成 5 项边界检查，全部通过；新增 `TEST-MATRIX.md`、补充 3 个测试笔记，交付清单文档
+- Verification: 自动化 grep/glob 扫描无越界匹配；`npm run typecheck`、`npm test`、`npm run build` 成功
+- Next: 进入 D25，执行手动测试矩阵
+
+## D25 开发日志
+
+### Current status
+
+手动测试矩阵已创建（`TEST-MATRIX.md`，50 个用例覆盖 9 个类别），测试 vault 中补充了 `invalid-illegal-tags.md`、`invalid-illegal-yaml.md`、`valid-editable-body.md` 三个测试笔记。自动测试持续通过（14 文件 46 用例）。手动执行部分需在真实 Obsidian 中完成。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D25 / `TEST-MATRIX.md`、`Obsidian-Refined-Layer-TestVault/10_Raw/*.md`
+- Reason: 建立结构化的手动测试覆盖，为交付前质量保证提供可复现矩阵
+- Change: 新增 50 项手动测试矩阵、3 个测试笔记；自动测试 46 例全通过
+- Verification: `npm run typecheck`、`npm test`、`npm run build` 成功；矩阵文档就绪
+- Next: 用户在真实 Obsidian 中按矩阵逐项测试；开发侧进入 D26 编写使用说明
+
+## D26 开发日志
+
+### Current status
+
+已创建 `README.md`，包含安装说明、使用指南、provider 配置说明、隐私声明和开发指引。文档覆盖了 D26 要求的全部内容：安装/本地加载步骤、Refine/Reopen 命令说明、Review UI 交互描述、部分 apply 说明、Save as Draft 流程、冲突处理选项、API key 隐私保护策略、v0.1.0 范围边界。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D26 / `README.md`
+- Reason: 提供用户可操作的最小安装与使用文档，并明确隐私边界
+- Change: 新增完整 README，含中英双语命令说明、5 种 provider 配置指南、隐私保护说明
+- Verification: 文档结构完整，覆盖 D26 全部验收项
+- Next: 进入 D27，执行 v0.1.0 交付检查
+
+## D27 开发日志
+
+### Current status
+
+v0.1.0 交付检查已完成。按架构书逐项核对了 MVP 流程 10 个步骤、9 条不可配置规则、raw-refined profile 全部约束、40 个架构模块的实现状态和 18 项明确不应存在的内容。自动测试 46 例全通过，typecheck/build 无错误。已知缺口仅 4 项（PolicyGuard 空壳、真实 LLM 未手动验证、between-headings 未实现、draft 写入未独立 adapter），均属于边界预留或需真实环境验证项，不影响当前交付。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D27 / `v0.1.0-delivery-checklist.md`、全仓库交付审查
+- Reason: 完成 v0.1.0 最终交付检查，生成交付清单与下一版本候选
+- Change: 新增交付检查清单文档（8 节），覆盖流程/规则/profile/模块/禁止项/测试/缺口/候选
+- Verification: 架构书逐项对照通过；`npm run typecheck`、`npm test` (46/46)、`npm run build` 成功；data.json 无敏感字段；禁止项全零匹配
+- Next: Phase 7 验收完成；插件已可交付测试
+
+## Phase 7 验收状态
+
+```text
+[x] 没有长期 adapter 实现（mcp/http/file-inbox/external-review/workflow-editor）
+[x] 没有外部审核通道实现
+[x] 没有 move/rename/link/MOC apply
+[x] 手动测试矩阵完成（TEST-MATRIX.md，50 用例）
+[x] README / 使用说明完成
+[x] v0.1.0 happy path 可运行（mock-llm 全流程）
+[x] 完成 D24-D27 开发日志
+[x] delivery-checklist.md 已生成
+```
+
+## Dx 文档整理与修复任务规划
+
+### Current status
+
+已完成全仓文档整理：将 6 个散落在根目录的文档 (`AGENTS.md`、`dev-log.md`、架构书、日计划、Phase 5.5 回填任务、`TEST-MATRIX.md`) 统一移动到 `docs/` 目录，使根目录保持四类核心文件（README + 构建配置 + 源码 + 测试 vault）。同时检查并修正了所有 .md 文件之间的交叉路径引用，确保 `docs/` 内部文档使用相对路径、README 使用 `docs/` 前缀路径。此外新增 `fix-feature-tasks.md` 记录了 D9 日计划分解遗漏导致的 session 持久化缺失问题及其修复方案。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: 文档整理 / `docs/` 全量 .md、`README.md` 路径引用
+- Reason: 根目录文档散落不便管理，agreed 统一到 docs/
+- Change: 移动 6 个文档到 `docs/`；修正 `dev-log.md`、`日计划`、`README.md`、`fix-feature-tasks.md` 中 5 处路径引用；新增 `fix-feature-tasks.md`
+- Verification: `npm run typecheck`、`npm test` (46/46)、`npm run build` 成功；grep 验证全量 .md 无残留错误引用
+- Next: 按 `fix-feature-tasks.md` 实现 ProposalSessionStore 磁盘持久化
