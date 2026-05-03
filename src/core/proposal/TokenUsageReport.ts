@@ -1,8 +1,9 @@
 export interface TokenUsageReport {
   provider: string;
-  model?: string;
-  promptTokens?: number;
-  completionTokens?: number;
+  model: string;
+  inputTokens?: number;
+  outputTokens?: number;
   totalTokens?: number;
-  countingMode: "actual" | "estimated" | "unavailable";
+  countingMode: "actual" | "estimated" | "mixed" | "unavailable";
+  generatedAt: string;
 }

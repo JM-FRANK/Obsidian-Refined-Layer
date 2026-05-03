@@ -1,0 +1,116 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { CreateProposalUseCase } from "../../src/application/CreateProposalUseCase";
+import type { ActiveNoteRepository } from "../../src/application/CheckEligibilityUseCase";
+import type { LlmProvider } from "../../src/adapters/llm/LlmProvider";
+import { rawRefinedProfile } from "../../src/core/profile/rawRefinedProfile";
+import { ProposalSessionStore } from "../../src/runtime/ProposalSessionStore";
+
+function createMarkdownRepository(content: string, path = "10_Raw/example.md"): ActiveNoteRepository {
+  return {
+    async getActiveNote() {
+      return {
+        kind: "markdown" as const,
+        note: {
+          path,
+          title: "example",
+          content,
+        },
+      };
+    },
+  };
+}
+
+describe("CreateProposalUseCase", () => {
+  it("creates a mock proposal session for a valid raw note", async () => {
+    const repository = createMarkdownRepository("---\nstatus: raw\n---\n# Title\n\n## 原始内容\nhello");
+    const provider: LlmProvider = {
+      generateProposal: vi.fn(async () => ({
+        rawText: JSON.stringify({
+          workflowProfileId: "raw-refined",
+          refinedSections: {
+            summary: "summary",
+            coreQuestion: "question",
+            currentConclusion: "conclusion",
+            reasoning: "reasoning",
+          },
+        }),
+        usage: {
+          provider: "mock-llm",
+          model: "mock-gpt",
+          totalTokens: 200,
+          countingMode: "actual" as const,
+          generatedAt: "2026-05-04T00:00:00.000Z",
+        },
+      })),
+    };
+    const store = new ProposalSessionStore(5);
+    const useCase = new CreateProposalUseCase(repository, rawRefinedProfile, provider, store);
+
+    const result = await useCase.execute();
+
+    expect(result.kind).toBe("created");
+    if (result.kind !== "created") {
+      throw new Error("expected created result");
+    }
+
+    expect(result.session.notePath).toBe("10_Raw/example.md");
+    expect(result.session.baseFileHash).toBeTruthy();
+    expect(result.session.baseProtectedRegionHash).toBeTruthy();
+    expect(result.session.tokenUsage?.countingMode).toBe("actual");
+    await expect(store.getLatestSessionForNote("10_Raw/example.md")).resolves.toMatchObject({
+      id: result.session.id,
+    });
+    expect(provider.generateProposal).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call the provider for an ineligible note", async () => {
+    const repository = createMarkdownRepository("# Title\n\n## 原始内容\nhello");
+    const provider: LlmProvider = {
+      generateProposal: vi.fn(),
+    };
+    const useCase = new CreateProposalUseCase(
+      repository,
+      rawRefinedProfile,
+      provider,
+      new ProposalSessionStore(5),
+    );
+
+    const result = await useCase.execute();
+
+    expect(result).toMatchObject({
+      kind: "eligibility-failed",
+    });
+    expect(provider.generateProposal).not.toHaveBeenCalled();
+  });
+
+  it("stops when the provider output fails validation", async () => {
+    const repository = createMarkdownRepository("---\nstatus: raw\n---\n# Title\n\n## 原始内容\nhello");
+    const provider: LlmProvider = {
+      generateProposal: vi.fn(async () => ({
+        rawText: JSON.stringify({
+          workflowProfileId: "raw-refined",
+          refinedSections: {
+            summary: "summary",
+          },
+        }),
+      })),
+    };
+    const store = new ProposalSessionStore(5);
+    const useCase = new CreateProposalUseCase(repository, rawRefinedProfile, provider, store);
+
+    const result = await useCase.execute();
+
+    expect(result).toEqual({
+      kind: "validation-failed",
+      errors: [
+        {
+          layer: "schema",
+          code: "missing-required-section-coreQuestion",
+          message: "refinedSections.coreQuestion must be a non-empty string.",
+        },
+      ],
+    });
+    await expect(store.getLatestSessionForNote("10_Raw/example.md")).resolves.toBeNull();
+  });
+});

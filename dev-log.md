@@ -95,3 +95,45 @@ Phase 2 已完成。`ProposalValidator` 现已具备 JSON / schema / policy / co
 - Change: 增加 frontmatter/tag/capability/content 校验，明确 `PolicyGuard` 负责请求入口，`ProposalValidator` 负责 proposal 载荷本身的层叠校验
 - Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
 - Next: Phase 2 验收已满足；下一步如继续则进入 D8，实现 `MockLlmProvider` 与 `CreateProposalUseCase`
+
+## D8 开发日志
+
+### Current status
+
+已实现 `LlmProvider` 接口、`MockLlmProvider` 和 `CreateProposalUseCase`。当前 `Refine current note` 命令会读取 active note、先走 eligibility、再调用 mock provider 生成 JSON proposal，并且 proposal 必须经过 `ProposalValidator` 才会继续。非法 note 不会调用 provider，validator 失败也不会继续创建 session、不会打开 Review UI、不会写文件。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D8 / `src/adapters/llm/LlmProvider.ts`、`src/adapters/llm/MockLlmProvider.ts`、`src/application/CreateProposalUseCase.ts`、`src/main.ts`
+- Reason: 建立 Phase 3 的 mock proposal 生成链路，验证 profile/validator 之后的最小闭环
+- Change: 新增 mock provider、prompt variable 输入结构，并实现 `CreateProposalUseCase: note -> eligibility -> protected region -> mock proposal -> validator`
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
+- Next: 进入 D9，实现 `ProposalSessionStore` 与 history limit
+
+## D9 开发日志
+
+### Current status
+
+已实现 `ProposalSessionStore`，当前采用运行时内存存储，不写入 vault 或插件配置文件。每次合法 proposal 创建后都会生成 `ProposalSession`，包含 `notePath`、`noteTitle`、`baseFileHash`、`baseFrontmatterHash`、`baseProtectedRegionHash`、`workflowProfileId`、`policySnapshotId`、`proposal`、`tokenUsage`。store 支持按 `notePath` 查询最近 session 和列出同一 note 的 session history，并在超出 `historyLimit` 时清理旧 session；默认限制为 `5`。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D9 / `src/runtime/ProposalSessionStore.ts`、`src/runtime/ProposalSession.ts`、`src/application/CreateProposalUseCase.ts`
+- Reason: 为 proposal 恢复、连续生成和后续 review 状态恢复建立最小运行态缓存
+- Change: 新增按 `notePath` 分组的 session store、默认 `historyLimit=5`、旧 session 淘汰逻辑，并在创建 proposal 时自动保存 session
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
+- Next: 进入 D10，补 token usage mock 与 session 恢复命令
+
+## D10 开发日志
+
+### Current status
+
+Phase 3 已完成。`MockLlmProvider` 现在返回 mock `TokenUsageReport`，`ProposalSession` 会保存 `tokenUsage`；同时新增 `Reopen last proposal for current note` 命令，当前只读取 session 并弹出 notice，不打开 Review UI。`TokenUsageReport` 类型已经能够承载 `actual / estimated / mixed / unavailable`，因此后续真实 provider 和估算流程可以复用当前 session 数据模型。当前 session 恢复仍是运行时内存级别，适用于本阶段的最小闭环验证。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D10 / `src/core/proposal/TokenUsageReport.ts`、`src/adapters/llm/MockLlmProvider.ts`、`src/main.ts`、`tests/runtime/ProposalSessionStore.test.ts`、`tests/application/CreateProposalUseCase.test.ts`
+- Reason: 完成 token usage mock 落库和当前 note 的最近 session 恢复入口
+- Change: 扩展 token usage 字段结构、在 session 中保存 usage，并新增“恢复当前笔记最近 proposal”命令与对应测试
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
+- Next: Phase 3 验收已满足；下一步如继续则进入 D11，实现 i18n 字符串表与 `ReviewViewModel`
