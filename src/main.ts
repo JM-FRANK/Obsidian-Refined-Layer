@@ -1,16 +1,19 @@
 import { Notice, Plugin } from "obsidian";
 
+import { MockLlmProvider } from "./adapters/llm/MockLlmProvider";
+import { OpenAICompatibleProvider } from "./adapters/llm/OpenAICompatibleProvider";
+import type { LlmProvider } from "./adapters/llm/LlmProvider";
+import { ObsidianNoteRepository } from "./adapters/obsidian/ObsidianNoteRepository";
+import { ObsidianSecretStore } from "./adapters/obsidian/ObsidianSecretStore";
+import { ObsidianSettingsStore } from "./adapters/obsidian/ObsidianSettingsStore";
 import { ApplyDecisionUseCase } from "./application/ApplyDecisionUseCase";
 import { BuildApplyPlanUseCase } from "./application/BuildApplyPlanUseCase";
+import type { CheckEligibilityResult } from "./application/CheckEligibilityUseCase";
 import { CreateProposalUseCase } from "./application/CreateProposalUseCase";
 import { RequestReviewUseCase } from "./application/RequestReviewUseCase";
 import { SaveDraftUseCase } from "./application/SaveDraftUseCase";
-import type { CheckEligibilityResult } from "./application/CheckEligibilityUseCase";
-import type { UserDecision } from "./core/review/UserDecision";
-import { MockLlmProvider } from "./adapters/llm/MockLlmProvider";
-import { ObsidianNoteRepository } from "./adapters/obsidian/ObsidianNoteRepository";
-import { ObsidianSettingsStore } from "./adapters/obsidian/ObsidianSettingsStore";
 import { rawRefinedProfile } from "./core/profile/rawRefinedProfile";
+import type { UserDecision } from "./core/review/UserDecision";
 import { ProposalSessionStore } from "./runtime/ProposalSessionStore";
 import type { PluginSettings } from "./settings/PluginSettings";
 import { DEFAULT_PLUGIN_SETTINGS } from "./settings/PluginSettings";
@@ -25,10 +28,12 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
   private settings: PluginSettings = DEFAULT_PLUGIN_SETTINGS;
   private settingsStore = new ObsidianSettingsStore(this);
   private sessionStore = new ProposalSessionStore(DEFAULT_PLUGIN_SETTINGS.historyLimit);
+  private secretStore = new ObsidianSecretStore(this.app);
 
   async onload(): Promise<void> {
     this.settings = await this.settingsStore.load();
     this.sessionStore = new ProposalSessionStore(this.settings.historyLimit);
+    this.secretStore = new ObsidianSecretStore(this.app);
 
     this.addSettingTab(new SettingsTab(this.app, this));
 
@@ -36,12 +41,23 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
       id: REFINE_COMMAND_ID,
       name: "Refine current note",
       callback: async () => {
+        const providerSelection = this.selectLlmProvider();
+        if (providerSelection.kind === "error") {
+          new Notice(providerSelection.message, 8000);
+          return;
+        }
+
+        if (providerSelection.warning) {
+          new Notice(providerSelection.warning, 6000);
+        }
+
         const noteRepository = new ObsidianNoteRepository(this.app);
         const createProposalUseCase = new CreateProposalUseCase(
           noteRepository,
           rawRefinedProfile,
-          new MockLlmProvider(),
+          providerSelection.provider,
           this.sessionStore,
+          this.settings.promptOverrides?.["raw-refined"],
         );
         const result = await createProposalUseCase.execute();
 
@@ -98,6 +114,10 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     return this.settings;
   }
 
+  hasSecureSecretStorage(): boolean {
+    return this.secretStore.isAvailable();
+  }
+
   async updateSettings(partial: Partial<PluginSettings>): Promise<void> {
     this.settings = {
       ...this.settings,
@@ -109,6 +129,45 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     }
 
     await this.settingsStore.save(this.settings);
+  }
+
+  async updateProviderSettings(partial: Partial<NonNullable<PluginSettings["provider"]>>): Promise<void> {
+    const currentProvider = this.settings.provider ?? DEFAULT_PLUGIN_SETTINGS.provider!;
+    this.settings = {
+      ...this.settings,
+      provider: {
+        type: currentProvider.type,
+        ...(currentProvider.model ? { model: currentProvider.model } : {}),
+        ...(currentProvider.secretRef ? { secretRef: currentProvider.secretRef } : {}),
+        ...partial,
+      },
+    };
+
+    await this.settingsStore.save(this.settings);
+  }
+
+  async saveProviderApiKey(secretRef: string, value: string): Promise<void> {
+    if (!this.secretStore.isAvailable()) {
+      new Notice(t(this.settings.language, "notice.provider.secretBlocked"), 8000);
+      return;
+    }
+
+    if (!secretRef.trim()) {
+      new Notice(t(this.settings.language, "notice.provider.missingSecretRef"), 8000);
+      return;
+    }
+
+    try {
+      this.secretStore.setSecret(secretRef.trim(), value);
+      new Notice(t(this.settings.language, "notice.provider.secretSaved"), 4000);
+    } catch (error) {
+      new Notice(
+        error instanceof Error && error.message.includes("Secret reference")
+          ? t(this.settings.language, "notice.provider.secretInvalidRef")
+          : t(this.settings.language, "notice.provider.secretBlocked"),
+        8000,
+      );
+    }
   }
 
   async updatePromptOverride(field: "systemPrompt" | "userPrompt", value: string): Promise<void> {
@@ -136,7 +195,6 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
       return;
     }
 
-    const noteRepository = new ObsidianNoteRepository(this.app);
     const gate = new ObsidianReviewGate(this.app, this.settings.language, {
       onApplyNotice: async (decision) => {
         await this.applySelectedChanges(sessionId, decision);
@@ -150,8 +208,6 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     });
     const requestReviewUseCase = new RequestReviewUseCase(gate);
     await requestReviewUseCase.execute(session);
-
-    void noteRepository;
   }
 
   private async applySelectedChanges(sessionId: string, decision: UserDecision): Promise<void> {
@@ -203,6 +259,65 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
 
     new Notice(`Refined Layer: save draft failed - ${result.message}`, 8000);
   }
+
+  private selectLlmProvider():
+    | { kind: "provider"; provider: LlmProvider; warning?: string }
+    | { kind: "error"; message: string } {
+    const providerConfig = this.settings.provider ?? DEFAULT_PLUGIN_SETTINGS.provider!;
+
+    if (providerConfig.type !== "openai-compatible") {
+      return {
+        kind: "provider",
+        provider: new MockLlmProvider(),
+      };
+    }
+
+    if (!this.secretStore.isAvailable()) {
+      return {
+        kind: "provider",
+        provider: new MockLlmProvider(),
+        warning: t(this.settings.language, "notice.provider.downgradedMock"),
+      };
+    }
+
+    if (!providerConfig.model?.trim()) {
+      return {
+        kind: "error",
+        message: t(this.settings.language, "notice.provider.missingModel"),
+      };
+    }
+
+    if (!providerConfig.secretRef?.trim()) {
+      return {
+        kind: "error",
+        message: t(this.settings.language, "notice.provider.missingSecretRef"),
+      };
+    }
+
+    try {
+      const apiKey = this.secretStore.getSecret(providerConfig.secretRef.trim());
+      if (!apiKey) {
+        return {
+          kind: "error",
+          message: t(this.settings.language, "notice.provider.missingApiKey"),
+        };
+      }
+    } catch {
+      return {
+        kind: "error",
+        message: t(this.settings.language, "notice.provider.secretInvalidRef"),
+      };
+    }
+
+    return {
+      kind: "provider",
+      provider: new OpenAICompatibleProvider({
+        secretStore: this.secretStore,
+        secretRef: providerConfig.secretRef.trim(),
+        model: providerConfig.model.trim(),
+      }),
+    };
+  }
 }
 
 function activeNoteToEligibility(
@@ -253,11 +368,17 @@ function formatCreateProposalMessage(
     return formatEligibilityMessage(result.eligibility);
   }
 
+  if (result.kind === "provider-failed") {
+    return t(language, "notice.provider.error", {
+      message: result.message,
+    });
+  }
+
   if (result.kind === "validation-failed") {
     const detail = result.errors.map((error) => `${error.layer}:${error.code}`).join(", ");
     return `Refined Layer: proposal validation failed (${detail}).`;
   }
 
   const tokenUsage = result.session.tokenUsage?.totalTokens ?? t(language, "review.token.unavailable");
-  return `Refined Layer: mock proposal created for ${result.session.noteTitle}, session ${result.session.id}, tokens ${tokenUsage}.`;
+  return `Refined Layer: proposal created for ${result.session.noteTitle}, session ${result.session.id}, tokens ${tokenUsage}.`;
 }

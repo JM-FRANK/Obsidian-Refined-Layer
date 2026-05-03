@@ -25,6 +25,8 @@ describe("CreateProposalUseCase", () => {
   it("creates a mock proposal session for a valid raw note", async () => {
     const repository = createMarkdownRepository("---\nstatus: raw\n---\n# Title\n\n## 原始内容\nhello");
     const provider: LlmProvider = {
+      providerId: "mock-llm",
+      model: "mock-gpt",
       generateProposal: vi.fn(async () => ({
         rawText: JSON.stringify({
           workflowProfileId: "raw-refined",
@@ -67,6 +69,8 @@ describe("CreateProposalUseCase", () => {
   it("does not call the provider for an ineligible note", async () => {
     const repository = createMarkdownRepository("# Title\n\n## 原始内容\nhello");
     const provider: LlmProvider = {
+      providerId: "mock-llm",
+      model: "mock-gpt",
       generateProposal: vi.fn(),
     };
     const useCase = new CreateProposalUseCase(
@@ -87,6 +91,8 @@ describe("CreateProposalUseCase", () => {
   it("stops when the provider output fails validation", async () => {
     const repository = createMarkdownRepository("---\nstatus: raw\n---\n# Title\n\n## 原始内容\nhello");
     const provider: LlmProvider = {
+      providerId: "mock-llm",
+      model: "mock-gpt",
       generateProposal: vi.fn(async () => ({
         rawText: JSON.stringify({
           workflowProfileId: "raw-refined",
@@ -112,5 +118,55 @@ describe("CreateProposalUseCase", () => {
       ],
     });
     await expect(store.getLatestSessionForNote("10_Raw/example.md")).resolves.toBeNull();
+  });
+
+  it("returns a provider failure without creating a session", async () => {
+    const repository = createMarkdownRepository("---\nstatus: raw\n---\n# Title\n\n## 原始内容\nhello");
+    const provider: LlmProvider = {
+      providerId: "openai-compatible",
+      model: "gpt-test",
+      generateProposal: vi.fn(async () => {
+        throw new Error("Authorization: Bearer sk-secret");
+      }),
+    };
+    const store = new ProposalSessionStore(5);
+    const useCase = new CreateProposalUseCase(repository, rawRefinedProfile, provider, store);
+
+    const result = await useCase.execute();
+
+    expect(result).toEqual({
+      kind: "provider-failed",
+      message: "[REDACTED]",
+    });
+    await expect(store.getLatestSessionForNote("10_Raw/example.md")).resolves.toBeNull();
+  });
+
+  it("stores estimated token usage when provider usage is unavailable", async () => {
+    const repository = createMarkdownRepository("---\nstatus: raw\n---\n# Title\n\n## 原始内容\nhello");
+    const provider: LlmProvider = {
+      providerId: "openai-compatible",
+      model: "gpt-test",
+      generateProposal: vi.fn(async () => ({
+        rawText: JSON.stringify({
+          workflowProfileId: "raw-refined",
+          refinedSections: {
+            summary: "summary",
+            coreQuestion: "question",
+            currentConclusion: "conclusion",
+            reasoning: "reasoning",
+          },
+        }),
+      })),
+    };
+    const store = new ProposalSessionStore(5);
+    const useCase = new CreateProposalUseCase(repository, rawRefinedProfile, provider, store);
+
+    const result = await useCase.execute();
+
+    expect(result.kind).toBe("created");
+    if (result.kind !== "created") {
+      throw new Error("expected created result");
+    }
+    expect(result.session.tokenUsage?.countingMode).toBe("estimated");
   });
 });

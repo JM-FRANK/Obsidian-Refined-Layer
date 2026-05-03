@@ -1,4 +1,4 @@
-import { PluginSettingTab, Setting, TextAreaComponent, type App } from "obsidian";
+import { PluginSettingTab, SecretComponent, Setting, TextAreaComponent, type App } from "obsidian";
 
 import type ObsidianRefinedLayerPlugin from "../../main";
 import type { PluginSettings } from "../../settings/PluginSettings";
@@ -15,6 +15,7 @@ export class SettingsTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     const settings = this.plugin.getSettings();
+    const secretAvailable = this.plugin.hasSecureSecretStorage();
     containerEl.empty();
 
     new Setting(containerEl)
@@ -56,6 +57,69 @@ export class SettingsTab extends PluginSettingTab {
             await this.plugin.updateSettings({ draftFolder: value.trim() || settings.draftFolder });
           });
       });
+
+    const providerSetting = new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.providerType"))
+      .setDesc(secretAvailable
+        ? t(settings.language, "settings.desc.providerType")
+        : t(settings.language, "settings.warning.secretUnavailable"));
+
+    providerSetting
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("mock", t(settings.language, "settings.option.provider.mock"))
+          .addOption("openai-compatible", t(settings.language, "settings.option.provider.openai"))
+          .setValue(settings.provider?.type ?? "mock")
+          .setDisabled(!secretAvailable)
+          .onChange(async (value) => {
+            await this.plugin.updateProviderSettings({
+              type: value as "mock" | "openai-compatible",
+            });
+            this.display();
+          });
+      });
+
+    const modelSetting = new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.providerModel"))
+      .setDesc(t(settings.language, "settings.desc.providerModel"))
+      .setDisabled(!secretAvailable);
+
+    modelSetting.addText((text) => {
+      text
+        .setValue(settings.provider?.model ?? "")
+        .setDisabled(!secretAvailable)
+        .onChange(async (value) => {
+          await this.plugin.updateProviderSettings({ model: value.trim() });
+        });
+    });
+
+    const secretRefSetting = new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.secretRef"))
+      .setDesc(t(settings.language, "settings.desc.secretRef"))
+      .setDisabled(!secretAvailable);
+
+    secretRefSetting.addText((text) => {
+      text
+        .setValue(settings.provider?.secretRef ?? "")
+        .setDisabled(!secretAvailable)
+        .onChange(async (value) => {
+          await this.plugin.updateProviderSettings({ secretRef: value.trim() });
+        });
+    });
+
+    const apiKeySetting = new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.apiKey"))
+      .setDesc(t(settings.language, "settings.desc.apiKey"))
+      .setDisabled(!secretAvailable);
+
+    if (secretAvailable) {
+      const secretComponent = new SecretComponent(this.app, apiKeySetting.controlEl);
+      secretComponent.setValue("");
+      secretComponent.onChange(async (value) => {
+        const secretRef = this.plugin.getSettings().provider?.secretRef ?? "";
+        await this.plugin.saveProviderApiKey(secretRef, value);
+      });
+    }
 
     new Setting(containerEl)
       .setName(t(settings.language, "settings.title.promptProfile"))

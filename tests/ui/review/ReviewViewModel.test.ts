@@ -60,6 +60,13 @@ describe("createReviewViewModel", () => {
     });
     expect(viewModel.initialDecision).toEqual({
       acceptBody: false,
+      editedRefinedSections: {
+        summary: "summary",
+        coreQuestion: "question",
+        currentConclusion: "conclusion",
+        reasoning: "reasoning",
+        refineNote: "refine note",
+      },
       acceptFrontmatter: {
         status: false,
         source: false,

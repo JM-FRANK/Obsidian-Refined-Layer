@@ -277,3 +277,59 @@ Phase 5 已完成。已实现 `SaveDraftUseCase`、Obsidian note/draft 写入 ad
 - Change: 新增 `editedRefinedSections` 数据流，改造 ReviewModal 为 section-level textarea，增加编辑正文的二次 schema/content 校验，并让 Save as Draft 保存编辑后的 sections
 - Verification: 运行 `npm run typecheck`、`npm run build` 成功；按要求未补自动测试
 - Next: 测试延后到 Phase 6；如继续开发则进入 D20
+
+## D20 开发日志
+
+### Current status
+
+已实现 `ObsidianSecretStore`、安全设置存储清洗和 SettingsTab 的 provider 配置 UI。当前 settings 只会把 `provider.type/model/secretRef` 写入 `data.json`，不会保存 API key 或其他敏感值；API key 输入走 `SecretComponent + SecretStorage`，并且会校验 secret reference 只能使用小写字母、数字和连字符。若当前 Obsidian 环境不支持 SecretStorage，provider 配置区会被禁用并显示明确警告，插件命令仍可继续使用 `mock-llm`。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D20 / `src/adapters/obsidian/ObsidianSecretStore.ts`、`src/adapters/obsidian/ObsidianSettingsStore.ts`、`src/ui/settings/SettingsTab.ts`、`src/ui/i18n/*.ts`
+- Reason: 为真实 provider 接入补齐安全 secret 存储前提，并阻断任何把 API key 写进 `data.json` 的绕过路径
+- Change: 新增 SecretStore adapter、settings sanitize 流程、provider type/model/secretRef/API key 设置项，以及 SecretStorage 不可用时的 UI 降级
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功；新增 settings/secret 相关单元测试
+- Next: 进入 D21，实现 `OpenAICompatibleProvider` 基础调用
+
+## D21 开发日志
+
+### Current status
+
+已实现 `OpenAICompatibleProvider`，支持从 `SecretStore` 获取 API key、按 `systemPrompt + userPrompt` 发送 OpenAI-compatible chat completion 请求，并将响应继续送回现有 `ProposalValidator` 流程。`CreateProposalUseCase` 现在会区分 `provider-failed`、`validation-failed` 和 `created` 三类结果；provider 错误消息会统一经过 redaction，避免泄露 API key、Bearer token 或 Authorization header。当前 `main.ts` 支持在 `mock-llm` 与 `openai-compatible` 之间切换，并在配置不完整或 secret 缺失时给出清晰提示。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D21 / `src/adapters/llm/LlmProvider.ts`、`src/adapters/llm/MockLlmProvider.ts`、`src/adapters/llm/OpenAICompatibleProvider.ts`、`src/application/CreateProposalUseCase.ts`、`src/runtime/redaction.ts`、`src/main.ts`
+- Reason: 将当前 mock-only proposal 生成链路扩展为可接真实 OpenAI-compatible provider 的双 provider 结构
+- Change: 扩展 LlmProvider 请求结构、实现真实 provider 调用与错误脱敏，并让 CreateProposalUseCase 支持 provider 失败分支
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功；新增 provider redaction/usage 单元测试
+- Next: 进入 D22，实现 token usage actual / estimated / unavailable fallback
+
+## D22 开发日志
+
+### Current status
+
+已实现 `TokenUsageReporter`。当 provider 返回 usage 时，会写入 `TokenUsageReport` 且 `countingMode=actual`；当 provider 未返回 usage 时，会按输入输出文本长度做最小 token 估算并写入 `countingMode=estimated`；若估算过程失败，则回退到 `countingMode=unavailable`。Review UI 已沿用既有 token usage 展示模型，因此无需新增价格估算或 tokenizer 选择 UI。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D22 / `src/runtime/TokenUsageReporter.ts`、`src/application/CreateProposalUseCase.ts`
+- Reason: 让真实 provider 和 mock provider 都能稳定落 token usage，而不会因为 usage 缺失阻断 review
+- Change: 增加 actual/estimated/unavailable 三态 token usage 解析和 fallback 逻辑，并将其统一写入 ProposalSession
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功；新增 token usage fallback 单元测试
+- Next: 进入 D23，收敛真实 provider 错误路径并补齐本阶段测试
+
+## D23 开发日志
+
+### Current status
+
+Phase 6 的代码实现和自动测试已完成。当前仓库已经支持：安全 secret 存储、OpenAI-compatible provider 接线、provider 错误脱敏、token usage actual/estimated/unavailable、以及 `Phase 5.5` 延后的 editable-body 自动测试。`CreateProposalUseCase` 对 API key 缺失、provider 抛错、非 JSON / schema / policy / content 校验失败都能返回明确结果，并确保失败响应不会进入 `ProposalSession`。但在当前环境中，没有配置可用的真实 API key，因此“真实 LLM happy path 从 raw note → proposal → review → apply”的人工端到端验证尚未实跑；这一点仍需你在真实 Obsidian vault 中补做。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D23 / `tests/application/CreateProposalUseCase.test.ts`、`tests/adapters/llm/OpenAICompatibleProvider.test.ts`、`tests/adapters/obsidian/ObsidianSettingsStore.test.ts`、`tests/runtime/TokenUsageReporter.test.ts`、`tests/application/Phase55EditableReviewBody.test.ts`
+- Reason: 收敛真实 provider 的错误路径，并把 Phase 5.5 延后的测试合并到 Phase 6
+- Change: 补充 provider 失败、secret 不落盘、token usage fallback 和 editable-body 回填的自动测试；保留真实 API key happy path 的手动验证缺口说明
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功，共 44 个测试通过
+- Next: 代码层面已可进入 Phase 7；若要完成 Phase 6 的人工验收，还需在真实 vault 中配置 API key 后手动跑一次真实 provider happy path

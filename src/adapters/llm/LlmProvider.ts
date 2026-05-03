@@ -5,6 +5,8 @@ export interface LlmRequest {
   notePath: string;
   noteTitle: string;
   noteContent: string;
+  systemPrompt: string;
+  userPrompt: string;
   promptVariables: {
     notePath: string;
     noteTitle: string;
@@ -19,5 +21,7 @@ export interface LlmResponse {
 }
 
 export interface LlmProvider {
+  readonly providerId: string;
+  readonly model: string;
   generateProposal(request: LlmRequest): Promise<LlmResponse>;
 }

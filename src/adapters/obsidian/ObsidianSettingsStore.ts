@@ -11,7 +11,7 @@ export class ObsidianSettingsStore {
   }
 
   async save(settings: PluginSettings): Promise<void> {
-    await this.plugin.saveData(settings);
+    await this.plugin.saveData(sanitizeSettings(settings));
   }
 }
 
@@ -23,5 +23,21 @@ function mergeSettings(value: unknown): PluginSettings {
     ...loaded,
     provider: loaded.provider ?? DEFAULT_PLUGIN_SETTINGS.provider,
     promptOverrides: loaded.promptOverrides ?? DEFAULT_PLUGIN_SETTINGS.promptOverrides,
+  };
+}
+
+function sanitizeSettings(settings: PluginSettings): PluginSettings {
+  return {
+    language: settings.language,
+    historyLimit: settings.historyLimit,
+    draftFolder: settings.draftFolder,
+    provider: settings.provider
+      ? {
+          type: settings.provider.type,
+          ...(settings.provider.model ? { model: settings.provider.model } : {}),
+          ...(settings.provider.secretRef ? { secretRef: settings.provider.secretRef } : {}),
+        }
+      : undefined,
+    promptOverrides: settings.promptOverrides ?? {},
   };
 }

@@ -2,6 +2,9 @@ import type { RawRefinedProposal } from "../../core/proposal/Proposal";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./LlmProvider";
 
 export class MockLlmProvider implements LlmProvider {
+  readonly providerId = "mock-llm";
+  readonly model = "mock-gpt";
+
   async generateProposal(request: LlmRequest): Promise<LlmResponse> {
     const proposal: RawRefinedProposal = {
       workflowProfileId: "raw-refined",
@@ -26,8 +29,8 @@ export class MockLlmProvider implements LlmProvider {
       rawText: JSON.stringify(proposal, null, 2),
       parsedJson: proposal,
       usage: {
-        provider: "mock-llm",
-        model: "mock-gpt",
+        provider: this.providerId,
+        model: this.model,
         inputTokens: 120,
         outputTokens: 80,
         totalTokens: 200,

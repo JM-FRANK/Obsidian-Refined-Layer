@@ -25,6 +25,295 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian4 = require("obsidian");
 
+// src/adapters/llm/MockLlmProvider.ts
+var MockLlmProvider = class {
+  constructor() {
+    this.providerId = "mock-llm";
+    this.model = "mock-gpt";
+  }
+  async generateProposal(request) {
+    const proposal = {
+      workflowProfileId: "raw-refined",
+      refinedSections: {
+        summary: `\u8FD9\u662F\u5BF9 ${request.noteTitle} \u7684 mock \u6458\u8981\u3002`,
+        coreQuestion: "\u5F53\u524D\u7B14\u8BB0\u9700\u8981\u6F84\u6E05\u54EA\u4E9B\u5173\u952E\u95EE\u9898\uFF1F",
+        currentConclusion: "\u5F53\u524D\u5185\u5BB9\u53EF\u6574\u7406\u4E3A\u66F4\u6E05\u6670\u7684\u63D0\u6848\u7ED3\u6784\u3002",
+        reasoning: "mock-llm \u8FD4\u56DE\u56FA\u5B9A\u7ED3\u6784\u5316\u63D0\u6848\uFF0C\u540E\u7EED\u9636\u6BB5\u518D\u63A5\u5165\u771F\u5B9E provider\u3002",
+        refineNote: "\u672C\u63D0\u6848\u4EC5\u7528\u4E8E\u9A8C\u8BC1 review-first \u6D41\u7A0B\u7684\u7ED3\u6784\u6B63\u786E\u6027\u3002"
+      },
+      frontmatterSuggestion: {
+        status: "refined",
+        context: ["mock/refined-layer"]
+      },
+      tagSuggestion: {
+        add: ["#ai/generated"]
+      },
+      warnings: ["mock proposal"]
+    };
+    return {
+      rawText: JSON.stringify(proposal, null, 2),
+      parsedJson: proposal,
+      usage: {
+        provider: this.providerId,
+        model: this.model,
+        inputTokens: 120,
+        outputTokens: 80,
+        totalTokens: 200,
+        countingMode: "actual",
+        generatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      }
+    };
+  }
+};
+
+// src/runtime/redaction.ts
+var SECRET_PATTERNS = [
+  /Bearer\s+[A-Za-z0-9._\-]+/gi,
+  /Authorization:\s*[^\s,;]+/gi,
+  /api[_-]?key["']?\s*[:=]\s*["'][^"']+["']/gi,
+  /token["']?\s*[:=]\s*["'][^"']+["']/gi
+];
+function redactSensitiveText(text) {
+  return SECRET_PATTERNS.reduce(
+    (result, pattern) => result.replace(pattern, "[REDACTED]"),
+    text
+  );
+}
+function toSafeErrorMessage(error) {
+  if (error instanceof Error) {
+    return redactSensitiveText(error.message);
+  }
+  return redactSensitiveText(String(error));
+}
+
+// src/adapters/llm/OpenAICompatibleProvider.ts
+var OpenAICompatibleProvider = class {
+  constructor(options) {
+    this.options = options;
+    this.providerId = "openai-compatible";
+    var _a;
+    this.model = options.model;
+    this.endpoint = (_a = options.endpoint) != null ? _a : "https://api.openai.com/v1/chat/completions";
+  }
+  async generateProposal(request) {
+    var _a, _b, _c, _d, _e, _f;
+    const apiKey = this.options.secretStore.getSecret(this.options.secretRef);
+    if (!apiKey) {
+      throw new Error("API key is missing for the configured secret reference.");
+    }
+    const response = await fetch(this.endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: this.model,
+        temperature: 0.2,
+        messages: [
+          {
+            role: "system",
+            content: request.systemPrompt
+          },
+          {
+            role: "user",
+            content: request.userPrompt
+          }
+        ]
+      })
+    }).catch((error) => {
+      throw new Error(toSafeErrorMessage(error));
+    });
+    const payload = await response.json().catch(() => {
+      throw new Error("Provider returned a non-JSON response.");
+    });
+    if (!response.ok) {
+      throw new Error(toSafeErrorMessage((_b = (_a = payload == null ? void 0 : payload.error) == null ? void 0 : _a.message) != null ? _b : response.statusText));
+    }
+    const rawText = String((_f = (_e = (_d = (_c = payload == null ? void 0 : payload.choices) == null ? void 0 : _c[0]) == null ? void 0 : _d.message) == null ? void 0 : _e.content) != null ? _f : "");
+    return {
+      rawText,
+      parsedJson: tryParseJson(rawText),
+      usage: normalizeUsage(payload == null ? void 0 : payload.usage, this.model)
+    };
+  }
+};
+function normalizeUsage(usage, model) {
+  if (!usage) {
+    return void 0;
+  }
+  return {
+    provider: "openai-compatible",
+    model,
+    inputTokens: typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : void 0,
+    outputTokens: typeof usage.completion_tokens === "number" ? usage.completion_tokens : void 0,
+    totalTokens: typeof usage.total_tokens === "number" ? usage.total_tokens : void 0,
+    countingMode: "actual",
+    generatedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+function tryParseJson(rawText) {
+  try {
+    return JSON.parse(rawText);
+  } catch (e) {
+    return void 0;
+  }
+}
+
+// src/adapters/obsidian/ObsidianNoteRepository.ts
+var import_obsidian = require("obsidian");
+var ObsidianNoteRepository = class {
+  constructor(app) {
+    this.app = app;
+  }
+  async getActiveNote() {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile) {
+      return {
+        kind: "no-active-file"
+      };
+    }
+    if (!(activeFile instanceof import_obsidian.TFile) || activeFile.extension !== "md") {
+      return {
+        kind: "non-markdown-file",
+        path: activeFile.path,
+        extension: activeFile.extension
+      };
+    }
+    const content = await this.app.vault.cachedRead(activeFile);
+    return {
+      kind: "markdown",
+      note: {
+        path: activeFile.path,
+        title: activeFile.basename,
+        content
+      }
+    };
+  }
+  async readNoteByPath(path) {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof import_obsidian.TFile) || file.extension !== "md") {
+      return null;
+    }
+    const content = await this.app.vault.cachedRead(file);
+    return {
+      path: file.path,
+      title: file.basename,
+      content
+    };
+  }
+  async writeNote(path, content) {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof import_obsidian.TFile) || file.extension !== "md") {
+      throw new Error(`Markdown note not found: ${path}`);
+    }
+    await this.app.vault.modify(file, content);
+  }
+  async writeDraft(path, content) {
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (existing instanceof import_obsidian.TFile) {
+      await this.app.vault.modify(existing, content);
+      return;
+    }
+    await ensureFolders(this.app, path);
+    await this.app.vault.create(path, content);
+  }
+};
+async function ensureFolders(app, filePath) {
+  const parts = filePath.split("/").slice(0, -1);
+  let current = "";
+  for (const part of parts) {
+    current = current ? `${current}/${part}` : part;
+    if (!app.vault.getAbstractFileByPath(current)) {
+      await app.vault.createFolder(current);
+    }
+  }
+}
+
+// src/adapters/obsidian/ObsidianSecretStore.ts
+var SECRET_ID_PATTERN = /^[a-z0-9-]+$/;
+var ObsidianSecretStore = class {
+  constructor(app) {
+    this.app = app;
+  }
+  isAvailable() {
+    const maybeSecretStorage = this.app.secretStorage;
+    return typeof (maybeSecretStorage == null ? void 0 : maybeSecretStorage.getSecret) === "function" && typeof (maybeSecretStorage == null ? void 0 : maybeSecretStorage.setSecret) === "function";
+  }
+  setSecret(secretRef, value) {
+    this.ensureAvailable();
+    this.ensureValidSecretRef(secretRef);
+    if (!value.trim()) {
+      throw new Error("API key value cannot be empty.");
+    }
+    this.app.secretStorage.setSecret(secretRef, value);
+  }
+  getSecret(secretRef) {
+    this.ensureAvailable();
+    this.ensureValidSecretRef(secretRef);
+    return this.app.secretStorage.getSecret(secretRef);
+  }
+  ensureAvailable() {
+    if (!this.isAvailable()) {
+      throw new Error("Secure secret storage is unavailable in this Obsidian environment.");
+    }
+  }
+  ensureValidSecretRef(secretRef) {
+    if (!SECRET_ID_PATTERN.test(secretRef)) {
+      throw new Error("Secret reference must use lowercase letters, numbers, and dashes only.");
+    }
+  }
+};
+
+// src/settings/PluginSettings.ts
+var DEFAULT_PLUGIN_SETTINGS = {
+  language: "zh-CN",
+  historyLimit: 5,
+  draftFolder: "80_Runtime/refine-drafts",
+  provider: {
+    type: "mock"
+  },
+  promptOverrides: {}
+};
+
+// src/adapters/obsidian/ObsidianSettingsStore.ts
+var ObsidianSettingsStore = class {
+  constructor(plugin) {
+    this.plugin = plugin;
+  }
+  async load() {
+    const loaded = await this.plugin.loadData();
+    return mergeSettings(loaded);
+  }
+  async save(settings) {
+    await this.plugin.saveData(sanitizeSettings(settings));
+  }
+};
+function mergeSettings(value) {
+  var _a, _b;
+  const loaded = typeof value === "object" && value !== null ? value : {};
+  return {
+    ...DEFAULT_PLUGIN_SETTINGS,
+    ...loaded,
+    provider: (_a = loaded.provider) != null ? _a : DEFAULT_PLUGIN_SETTINGS.provider,
+    promptOverrides: (_b = loaded.promptOverrides) != null ? _b : DEFAULT_PLUGIN_SETTINGS.promptOverrides
+  };
+}
+function sanitizeSettings(settings) {
+  var _a;
+  return {
+    language: settings.language,
+    historyLimit: settings.historyLimit,
+    draftFolder: settings.draftFolder,
+    provider: settings.provider ? {
+      type: settings.provider.type,
+      ...settings.provider.model ? { model: settings.provider.model } : {},
+      ...settings.provider.secretRef ? { secretRef: settings.provider.secretRef } : {}
+    } : void 0,
+    promptOverrides: (_a = settings.promptOverrides) != null ? _a : {}
+  };
+}
+
 // src/core/profile/FrontmatterParser.ts
 function parseFrontmatter(markdown) {
   if (!markdown.startsWith("---\n") && !markdown.startsWith("---\r\n")) {
@@ -276,8 +565,21 @@ var rawRefinedProfile = {
     blockedTags: ["#raw", "#refined", "#self", "#external", "#practice", "#rel/*"]
   },
   prompt: {
-    systemPrompt: "",
-    userPrompt: ""
+    systemPrompt: [
+      "You are generating a raw-refined proposal for an Obsidian note.",
+      "Return JSON only.",
+      "Do not include any text outside JSON.",
+      "Never include or rewrite the protected heading ## \u539F\u59CB\u5185\u5BB9 or any protected-region content.",
+      "Use this schema:",
+      '{"workflowProfileId":"raw-refined","refinedSections":{"summary":"string","coreQuestion":"string","currentConclusion":"string","reasoning":"string","scope":"string?","nextSteps":"string?","refineNote":"string?"},"frontmatterSuggestion":{"status":"refined","source":["self|external|practice"],"context":["string"]},"tagSuggestion":{"add":["string"],"remove":["string"]},"warnings":["string"]}'
+    ].join("\n"),
+    userPrompt: [
+      "Refine the current note into the approved raw-refined structure.",
+      "notePath: {{notePath}}",
+      "noteTitle: {{noteTitle}}",
+      "noteContent:",
+      "{{noteContent}}"
+    ].join("\n")
   },
   proposalSchema: {
     workflowProfileId: "raw-refined"
@@ -867,6 +1169,45 @@ var BuildApplyPlanUseCase = class {
   }
 };
 
+// src/runtime/TokenUsageReporter.ts
+var TokenUsageReporter = class {
+  resolveUsage(options) {
+    const { provider, model, inputText, outputText, providerUsage } = options;
+    if (providerUsage) {
+      return {
+        ...providerUsage,
+        provider: providerUsage.provider || provider,
+        model: providerUsage.model || model,
+        countingMode: "actual",
+        generatedAt: providerUsage.generatedAt || (/* @__PURE__ */ new Date()).toISOString()
+      };
+    }
+    try {
+      const inputTokens = estimateTokenCount(inputText);
+      const outputTokens = estimateTokenCount(outputText);
+      return {
+        provider,
+        model,
+        inputTokens,
+        outputTokens,
+        totalTokens: inputTokens + outputTokens,
+        countingMode: "estimated",
+        generatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+    } catch (e) {
+      return {
+        provider,
+        model,
+        countingMode: "unavailable",
+        generatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+    }
+  }
+};
+function estimateTokenCount(text) {
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
 // src/application/CheckEligibilityUseCase.ts
 var CheckEligibilityUseCase = class {
   constructor(noteRepository, profile) {
@@ -919,16 +1260,19 @@ function escapeRegExp2(value) {
 
 // src/application/CreateProposalUseCase.ts
 var CreateProposalUseCase = class {
-  constructor(noteRepository, profile, llmProvider, sessionStore) {
+  constructor(noteRepository, profile, llmProvider, sessionStore, promptOverride) {
     this.noteRepository = noteRepository;
     this.profile = profile;
     this.llmProvider = llmProvider;
     this.sessionStore = sessionStore;
+    this.promptOverride = promptOverride;
+    this.tokenUsageReporter = new TokenUsageReporter();
     this.eligibilityUseCase = new CheckEligibilityUseCase(noteRepository, profile);
     this.proposalValidator = new ProposalValidator(profile);
     this.protectedRegionExtractor = new ProtectedRegionExtractor();
   }
   async execute() {
+    var _a, _b;
     const activeNote = await this.eligibilityUseCase.execute();
     if (!activeNote.hasActiveMarkdownNote || !activeNote.eligible) {
       return {
@@ -959,17 +1303,35 @@ var CreateProposalUseCase = class {
         ]
       };
     }
-    const llmResponse = await this.llmProvider.generateProposal({
-      workflowProfileId: "raw-refined",
-      notePath: lookup.note.path,
-      noteTitle: lookup.note.title,
-      noteContent: lookup.note.content,
-      promptVariables: {
+    const systemPrompt = renderPromptTemplate(
+      ((_a = this.promptOverride) == null ? void 0 : _a.enabled) && this.promptOverride.systemPrompt ? this.promptOverride.systemPrompt : this.profile.prompt.systemPrompt,
+      lookup.note
+    );
+    const userPrompt = renderPromptTemplate(
+      ((_b = this.promptOverride) == null ? void 0 : _b.enabled) && this.promptOverride.userPrompt ? this.promptOverride.userPrompt : this.profile.prompt.userPrompt,
+      lookup.note
+    );
+    let llmResponse;
+    try {
+      llmResponse = await this.llmProvider.generateProposal({
+        workflowProfileId: "raw-refined",
         notePath: lookup.note.path,
         noteTitle: lookup.note.title,
-        noteContent: lookup.note.content
-      }
-    });
+        noteContent: lookup.note.content,
+        systemPrompt,
+        userPrompt,
+        promptVariables: {
+          notePath: lookup.note.path,
+          noteTitle: lookup.note.title,
+          noteContent: lookup.note.content
+        }
+      });
+    } catch (error) {
+      return {
+        kind: "provider-failed",
+        message: toSafeErrorMessage(error)
+      };
+    }
     const validation = this.proposalValidator.validateModelOutput(llmResponse.rawText, {
       protectedRegionText: protectedRegionResult.region.text
     });
@@ -993,7 +1355,14 @@ var CreateProposalUseCase = class {
       ...parsedFrontmatter.hasFrontmatter ? { baseFrontmatterHash: hashText(JSON.stringify(parsedFrontmatter.frontmatter)) } : {},
       baseProtectedRegionHash: hashText(protectedRegionResult.region.text),
       proposal: validation.proposal,
-      ...llmResponse.usage ? { tokenUsage: llmResponse.usage } : {},
+      tokenUsage: this.tokenUsageReporter.resolveUsage({
+        provider: this.llmProvider.providerId,
+        model: this.llmProvider.model,
+        inputText: `${systemPrompt}
+${userPrompt}`,
+        outputText: llmResponse.rawText,
+        providerUsage: llmResponse.usage
+      }),
       status: "generated"
     };
     await this.sessionStore.save(session);
@@ -1005,6 +1374,9 @@ var CreateProposalUseCase = class {
 };
 function createSessionId() {
   return `proposal-session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+function renderPromptTemplate(template, note) {
+  return template.split("{{notePath}}").join(note.path).split("{{noteTitle}}").join(note.title).split("{{noteContent}}").join(note.content);
 }
 
 // src/application/RequestReviewUseCase.ts
@@ -1065,148 +1437,6 @@ var SaveDraftUseCase = class {
 };
 function sanitizeFileName(value) {
   return value.replace(/[<>:"/\\|?*]/g, "-");
-}
-
-// src/adapters/llm/MockLlmProvider.ts
-var MockLlmProvider = class {
-  async generateProposal(request) {
-    const proposal = {
-      workflowProfileId: "raw-refined",
-      refinedSections: {
-        summary: `\u8FD9\u662F\u5BF9 ${request.noteTitle} \u7684 mock \u6458\u8981\u3002`,
-        coreQuestion: "\u5F53\u524D\u7B14\u8BB0\u9700\u8981\u6F84\u6E05\u54EA\u4E9B\u5173\u952E\u95EE\u9898\uFF1F",
-        currentConclusion: "\u5F53\u524D\u5185\u5BB9\u53EF\u6574\u7406\u4E3A\u66F4\u6E05\u6670\u7684\u63D0\u6848\u7ED3\u6784\u3002",
-        reasoning: "mock-llm \u8FD4\u56DE\u56FA\u5B9A\u7ED3\u6784\u5316\u63D0\u6848\uFF0C\u540E\u7EED\u9636\u6BB5\u518D\u63A5\u5165\u771F\u5B9E provider\u3002",
-        refineNote: "\u672C\u63D0\u6848\u4EC5\u7528\u4E8E\u9A8C\u8BC1 review-first \u6D41\u7A0B\u7684\u7ED3\u6784\u6B63\u786E\u6027\u3002"
-      },
-      frontmatterSuggestion: {
-        status: "refined",
-        context: ["mock/refined-layer"]
-      },
-      tagSuggestion: {
-        add: ["#ai/generated"]
-      },
-      warnings: ["mock proposal"]
-    };
-    return {
-      rawText: JSON.stringify(proposal, null, 2),
-      parsedJson: proposal,
-      usage: {
-        provider: "mock-llm",
-        model: "mock-gpt",
-        inputTokens: 120,
-        outputTokens: 80,
-        totalTokens: 200,
-        countingMode: "actual",
-        generatedAt: (/* @__PURE__ */ new Date()).toISOString()
-      }
-    };
-  }
-};
-
-// src/adapters/obsidian/ObsidianNoteRepository.ts
-var import_obsidian = require("obsidian");
-var ObsidianNoteRepository = class {
-  constructor(app) {
-    this.app = app;
-  }
-  async getActiveNote() {
-    const activeFile = this.app.workspace.getActiveFile();
-    if (!activeFile) {
-      return {
-        kind: "no-active-file"
-      };
-    }
-    if (!(activeFile instanceof import_obsidian.TFile) || activeFile.extension !== "md") {
-      return {
-        kind: "non-markdown-file",
-        path: activeFile.path,
-        extension: activeFile.extension
-      };
-    }
-    const content = await this.app.vault.cachedRead(activeFile);
-    return {
-      kind: "markdown",
-      note: {
-        path: activeFile.path,
-        title: activeFile.basename,
-        content
-      }
-    };
-  }
-  async readNoteByPath(path) {
-    const file = this.app.vault.getAbstractFileByPath(path);
-    if (!(file instanceof import_obsidian.TFile) || file.extension !== "md") {
-      return null;
-    }
-    const content = await this.app.vault.cachedRead(file);
-    return {
-      path: file.path,
-      title: file.basename,
-      content
-    };
-  }
-  async writeNote(path, content) {
-    const file = this.app.vault.getAbstractFileByPath(path);
-    if (!(file instanceof import_obsidian.TFile) || file.extension !== "md") {
-      throw new Error(`Markdown note not found: ${path}`);
-    }
-    await this.app.vault.modify(file, content);
-  }
-  async writeDraft(path, content) {
-    const existing = this.app.vault.getAbstractFileByPath(path);
-    if (existing instanceof import_obsidian.TFile) {
-      await this.app.vault.modify(existing, content);
-      return;
-    }
-    await ensureFolders(this.app, path);
-    await this.app.vault.create(path, content);
-  }
-};
-async function ensureFolders(app, filePath) {
-  const parts = filePath.split("/").slice(0, -1);
-  let current = "";
-  for (const part of parts) {
-    current = current ? `${current}/${part}` : part;
-    if (!app.vault.getAbstractFileByPath(current)) {
-      await app.vault.createFolder(current);
-    }
-  }
-}
-
-// src/settings/PluginSettings.ts
-var DEFAULT_PLUGIN_SETTINGS = {
-  language: "zh-CN",
-  historyLimit: 5,
-  draftFolder: "80_Runtime/refine-drafts",
-  provider: {
-    type: "mock"
-  },
-  promptOverrides: {}
-};
-
-// src/adapters/obsidian/ObsidianSettingsStore.ts
-var ObsidianSettingsStore = class {
-  constructor(plugin) {
-    this.plugin = plugin;
-  }
-  async load() {
-    const loaded = await this.plugin.loadData();
-    return mergeSettings(loaded);
-  }
-  async save(settings) {
-    await this.plugin.saveData(settings);
-  }
-};
-function mergeSettings(value) {
-  var _a, _b;
-  const loaded = typeof value === "object" && value !== null ? value : {};
-  return {
-    ...DEFAULT_PLUGIN_SETTINGS,
-    ...loaded,
-    provider: (_a = loaded.provider) != null ? _a : DEFAULT_PLUGIN_SETTINGS.provider,
-    promptOverrides: (_b = loaded.promptOverrides) != null ? _b : DEFAULT_PLUGIN_SETTINGS.promptOverrides
-  };
 }
 
 // src/runtime/ProposalSessionStore.ts
@@ -1270,7 +1500,7 @@ var ProposalSessionStore = class {
 var enStrings = {
   "review.title": "Refined Proposal Review",
   "review.noteMeta": "{title} \xB7 {path}",
-  "review.section.body": "Refined body preview",
+  "review.section.body": "Editable refined body",
   "review.section.frontmatter": "YAML suggestions",
   "review.section.tags": "Tag suggestions",
   "review.section.tokenUsage": "Token Usage",
@@ -1290,6 +1520,10 @@ var enStrings = {
   "review.placeholder.saveDraft": "Save as Draft is still a placeholder callback and will not write any files.",
   "review.placeholder.apply": "Only generated UserDecision, no files were written: {decision}",
   "review.placeholder.cancel": "Review modal closed.",
+  "settings.title.providerType": "Provider type",
+  "settings.title.providerModel": "Provider model",
+  "settings.title.secretRef": "Secret reference",
+  "settings.title.apiKey": "API key",
   "settings.title.language": "Language",
   "settings.title.historyLimit": "History limit",
   "settings.title.draftFolder": "Draft folder",
@@ -1303,17 +1537,32 @@ var enStrings = {
   "settings.desc.promptVariables": "Available variables: {{notePath}} {{noteTitle}} {{noteContent}}",
   "settings.desc.systemPrompt": "Low-level override only. No highlighting, autocomplete, or advanced validation.",
   "settings.desc.userPrompt": "Low-level override only. No highlighting, autocomplete, or advanced validation.",
+  "settings.desc.providerType": "Choose mock-llm or openai-compatible provider.",
+  "settings.desc.providerModel": "Required only for openai-compatible provider.",
+  "settings.desc.secretRef": "Lowercase letters, numbers, and dashes only. data.json stores only this reference.",
+  "settings.desc.apiKey": "Stored only in Obsidian SecretStorage when available.",
+  "settings.warning.secretUnavailable": "This environment does not support secure secret storage. Direct LLM calls are disabled and the plugin will fall back to mock-llm.",
   "settings.option.language.zh-CN": "Simplified Chinese",
   "settings.option.language.en": "English",
+  "settings.option.provider.mock": "mock-llm",
+  "settings.option.provider.openai": "openai-compatible",
   "notice.review.reopened": "Reopened last proposal: {sessionId} \xB7 {title} \xB7 token usage {mode}",
-  "notice.review.noSession": "No saved proposal session for the current note: {path}"
+  "notice.review.noSession": "No saved proposal session for the current note: {path}",
+  "notice.provider.downgradedMock": "Secure secret storage is unavailable. Falling back to mock-llm.",
+  "notice.provider.missingModel": "OpenAI-compatible provider requires a model name.",
+  "notice.provider.missingSecretRef": "OpenAI-compatible provider requires a secret reference.",
+  "notice.provider.missingApiKey": "No API key is stored for the configured secret reference.",
+  "notice.provider.secretSaved": "API key saved to secure secret storage.",
+  "notice.provider.secretBlocked": "Cannot save API key because secure secret storage is unavailable.",
+  "notice.provider.secretInvalidRef": "Secret reference must use lowercase letters, numbers, and dashes only.",
+  "notice.provider.error": "Provider error: {message}"
 };
 
 // src/ui/i18n/zh-CN.ts
 var zhCNStrings = {
   "review.title": "Refined Proposal \u5BA1\u6838",
   "review.noteMeta": "{title} \xB7 {path}",
-  "review.section.body": "Refined \u6B63\u6587\u9884\u89C8",
+  "review.section.body": "Refined \u6B63\u6587\u7F16\u8F91",
   "review.section.frontmatter": "YAML \u4FEE\u6539\u5EFA\u8BAE",
   "review.section.tags": "\u6807\u7B7E\u4FEE\u6539\u5EFA\u8BAE",
   "review.section.tokenUsage": "Token Usage",
@@ -1333,6 +1582,10 @@ var zhCNStrings = {
   "review.placeholder.saveDraft": "Save as Draft \u4ECD\u4E3A\u5360\u4F4D\u56DE\u8C03\uFF0C\u5F53\u524D\u4E0D\u4F1A\u5199\u5165\u6587\u4EF6\u3002",
   "review.placeholder.apply": "\u5F53\u524D\u53EA\u751F\u6210 UserDecision\uFF0C\u4E0D\u5199\u5165\u6587\u4EF6\uFF1A{decision}",
   "review.placeholder.cancel": "\u5DF2\u5173\u95ED\u5BA1\u6838\u7A97\u53E3\u3002",
+  "settings.title.providerType": "Provider \u7C7B\u578B",
+  "settings.title.providerModel": "Provider \u6A21\u578B",
+  "settings.title.secretRef": "Secret Reference",
+  "settings.title.apiKey": "API Key",
   "settings.title.language": "\u754C\u9762\u8BED\u8A00",
   "settings.title.historyLimit": "\u5386\u53F2\u8BB0\u5F55\u4E0A\u9650",
   "settings.title.draftFolder": "\u8349\u7A3F\u76EE\u5F55",
@@ -1346,10 +1599,25 @@ var zhCNStrings = {
   "settings.desc.promptVariables": "\u53EF\u7528\u53D8\u91CF\uFF1A{{notePath}} {{noteTitle}} {{noteContent}}",
   "settings.desc.systemPrompt": "\u4F4E\u7EA7\u8986\u76D6\u9879\uFF0C\u4E0D\u63D0\u4F9B\u9AD8\u4EAE\u3001\u8865\u5168\u6216\u590D\u6742\u6821\u9A8C\u3002",
   "settings.desc.userPrompt": "\u4F4E\u7EA7\u8986\u76D6\u9879\uFF0C\u4E0D\u63D0\u4F9B\u9AD8\u4EAE\u3001\u8865\u5168\u6216\u590D\u6742\u6821\u9A8C\u3002",
+  "settings.desc.providerType": "\u9009\u62E9 mock-llm \u6216 openai-compatible provider\u3002",
+  "settings.desc.providerModel": "\u4EC5\u5728 openai-compatible provider \u4E0B\u5FC5\u586B\u3002",
+  "settings.desc.secretRef": "\u4EC5\u5141\u8BB8\u5C0F\u5199\u5B57\u6BCD\u3001\u6570\u5B57\u548C\u8FDE\u5B57\u7B26\uFF1Bdata.json \u53EA\u4FDD\u5B58\u8FD9\u4E2A\u5F15\u7528\u3002",
+  "settings.desc.apiKey": "\u53EF\u7528\u65F6\u4EC5\u4FDD\u5B58\u5230 Obsidian SecretStorage\u3002",
+  "settings.warning.secretUnavailable": "\u5F53\u524D\u73AF\u5883\u4E0D\u652F\u6301\u5B89\u5168\u5B58\u50A8 API key\uFF0C\u771F\u5B9E LLM \u76F4\u8FDE\u80FD\u529B\u5DF2\u7981\u7528\uFF0C\u63D2\u4EF6\u5C06\u964D\u7EA7\u4E3A mock-llm\u3002",
   "settings.option.language.zh-CN": "\u7B80\u4F53\u4E2D\u6587",
   "settings.option.language.en": "English",
+  "settings.option.provider.mock": "mock-llm",
+  "settings.option.provider.openai": "openai-compatible",
   "notice.review.reopened": "\u5DF2\u6062\u590D\u6700\u8FD1 proposal\uFF1A{sessionId} \xB7 {title} \xB7 token usage {mode}",
-  "notice.review.noSession": "\u5F53\u524D\u7B14\u8BB0\u6CA1\u6709\u53EF\u6062\u590D\u7684 proposal session\uFF1A{path}"
+  "notice.review.noSession": "\u5F53\u524D\u7B14\u8BB0\u6CA1\u6709\u53EF\u6062\u590D\u7684 proposal session\uFF1A{path}",
+  "notice.provider.downgradedMock": "\u5F53\u524D\u73AF\u5883\u4E0D\u652F\u6301\u5B89\u5168 secret \u5B58\u50A8\uFF0C\u5DF2\u964D\u7EA7\u4E3A mock-llm\u3002",
+  "notice.provider.missingModel": "openai-compatible provider \u9700\u8981\u914D\u7F6E\u6A21\u578B\u540D\u3002",
+  "notice.provider.missingSecretRef": "openai-compatible provider \u9700\u8981\u914D\u7F6E secret reference\u3002",
+  "notice.provider.missingApiKey": "\u5F53\u524D secret reference \u4E0B\u6CA1\u6709\u4FDD\u5B58 API key\u3002",
+  "notice.provider.secretSaved": "API key \u5DF2\u4FDD\u5B58\u5230\u5B89\u5168 SecretStorage\u3002",
+  "notice.provider.secretBlocked": "\u5F53\u524D\u73AF\u5883\u4E0D\u652F\u6301\u5B89\u5168 secret \u5B58\u50A8\uFF0C\u65E0\u6CD5\u4FDD\u5B58 API key\u3002",
+  "notice.provider.secretInvalidRef": "Secret reference \u53EA\u80FD\u5305\u542B\u5C0F\u5199\u5B57\u6BCD\u3001\u6570\u5B57\u548C\u8FDE\u5B57\u7B26\u3002",
+  "notice.provider.error": "Provider \u9519\u8BEF\uFF1A{message}"
 };
 
 // src/ui/i18n/index.ts
@@ -1651,6 +1919,7 @@ var SettingsTab = class extends import_obsidian3.PluginSettingTab {
   display() {
     const { containerEl } = this;
     const settings = this.plugin.getSettings();
+    const secretAvailable = this.plugin.hasSecureSecretStorage();
     containerEl.empty();
     new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.language")).setDesc(t(settings.language, "settings.desc.language")).addDropdown((dropdown) => {
       dropdown.addOption("zh-CN", t(settings.language, "settings.option.language.zh-CN")).addOption("en", t(settings.language, "settings.option.language.en")).setValue(settings.language).onChange(async (value) => {
@@ -1671,6 +1940,40 @@ var SettingsTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.updateSettings({ draftFolder: value.trim() || settings.draftFolder });
       });
     });
+    const providerSetting = new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.providerType")).setDesc(secretAvailable ? t(settings.language, "settings.desc.providerType") : t(settings.language, "settings.warning.secretUnavailable"));
+    providerSetting.addDropdown((dropdown) => {
+      var _a, _b;
+      dropdown.addOption("mock", t(settings.language, "settings.option.provider.mock")).addOption("openai-compatible", t(settings.language, "settings.option.provider.openai")).setValue((_b = (_a = settings.provider) == null ? void 0 : _a.type) != null ? _b : "mock").setDisabled(!secretAvailable).onChange(async (value) => {
+        await this.plugin.updateProviderSettings({
+          type: value
+        });
+        this.display();
+      });
+    });
+    const modelSetting = new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.providerModel")).setDesc(t(settings.language, "settings.desc.providerModel")).setDisabled(!secretAvailable);
+    modelSetting.addText((text) => {
+      var _a, _b;
+      text.setValue((_b = (_a = settings.provider) == null ? void 0 : _a.model) != null ? _b : "").setDisabled(!secretAvailable).onChange(async (value) => {
+        await this.plugin.updateProviderSettings({ model: value.trim() });
+      });
+    });
+    const secretRefSetting = new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.secretRef")).setDesc(t(settings.language, "settings.desc.secretRef")).setDisabled(!secretAvailable);
+    secretRefSetting.addText((text) => {
+      var _a, _b;
+      text.setValue((_b = (_a = settings.provider) == null ? void 0 : _a.secretRef) != null ? _b : "").setDisabled(!secretAvailable).onChange(async (value) => {
+        await this.plugin.updateProviderSettings({ secretRef: value.trim() });
+      });
+    });
+    const apiKeySetting = new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.apiKey")).setDesc(t(settings.language, "settings.desc.apiKey")).setDisabled(!secretAvailable);
+    if (secretAvailable) {
+      const secretComponent = new import_obsidian3.SecretComponent(this.app, apiKeySetting.controlEl);
+      secretComponent.setValue("");
+      secretComponent.onChange(async (value) => {
+        var _a, _b;
+        const secretRef = (_b = (_a = this.plugin.getSettings().provider) == null ? void 0 : _a.secretRef) != null ? _b : "";
+        await this.plugin.saveProviderApiKey(secretRef, value);
+      });
+    }
     new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.promptProfile")).setDesc(t(settings.language, "settings.desc.promptProfile"));
     this.addPromptOverrideField(
       containerEl,
@@ -1714,21 +2017,33 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
     this.settings = DEFAULT_PLUGIN_SETTINGS;
     this.settingsStore = new ObsidianSettingsStore(this);
     this.sessionStore = new ProposalSessionStore(DEFAULT_PLUGIN_SETTINGS.historyLimit);
+    this.secretStore = new ObsidianSecretStore(this.app);
   }
   async onload() {
     this.settings = await this.settingsStore.load();
     this.sessionStore = new ProposalSessionStore(this.settings.historyLimit);
+    this.secretStore = new ObsidianSecretStore(this.app);
     this.addSettingTab(new SettingsTab(this.app, this));
     this.addCommand({
       id: REFINE_COMMAND_ID,
       name: "Refine current note",
       callback: async () => {
+        var _a;
+        const providerSelection = this.selectLlmProvider();
+        if (providerSelection.kind === "error") {
+          new import_obsidian4.Notice(providerSelection.message, 8e3);
+          return;
+        }
+        if (providerSelection.warning) {
+          new import_obsidian4.Notice(providerSelection.warning, 6e3);
+        }
         const noteRepository = new ObsidianNoteRepository(this.app);
         const createProposalUseCase = new CreateProposalUseCase(
           noteRepository,
           rawRefinedProfile,
-          new MockLlmProvider(),
-          this.sessionStore
+          providerSelection.provider,
+          this.sessionStore,
+          (_a = this.settings.promptOverrides) == null ? void 0 : _a["raw-refined"]
         );
         const result = await createProposalUseCase.execute();
         if (result.kind === "created") {
@@ -1777,6 +2092,9 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
   getSettings() {
     return this.settings;
   }
+  hasSecureSecretStorage() {
+    return this.secretStore.isAvailable();
+  }
   async updateSettings(partial) {
     this.settings = {
       ...this.settings,
@@ -1786,6 +2104,39 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
       this.sessionStore.setHistoryLimit(this.settings.historyLimit);
     }
     await this.settingsStore.save(this.settings);
+  }
+  async updateProviderSettings(partial) {
+    var _a;
+    const currentProvider = (_a = this.settings.provider) != null ? _a : DEFAULT_PLUGIN_SETTINGS.provider;
+    this.settings = {
+      ...this.settings,
+      provider: {
+        type: currentProvider.type,
+        ...currentProvider.model ? { model: currentProvider.model } : {},
+        ...currentProvider.secretRef ? { secretRef: currentProvider.secretRef } : {},
+        ...partial
+      }
+    };
+    await this.settingsStore.save(this.settings);
+  }
+  async saveProviderApiKey(secretRef, value) {
+    if (!this.secretStore.isAvailable()) {
+      new import_obsidian4.Notice(t(this.settings.language, "notice.provider.secretBlocked"), 8e3);
+      return;
+    }
+    if (!secretRef.trim()) {
+      new import_obsidian4.Notice(t(this.settings.language, "notice.provider.missingSecretRef"), 8e3);
+      return;
+    }
+    try {
+      this.secretStore.setSecret(secretRef.trim(), value);
+      new import_obsidian4.Notice(t(this.settings.language, "notice.provider.secretSaved"), 4e3);
+    } catch (error) {
+      new import_obsidian4.Notice(
+        error instanceof Error && error.message.includes("Secret reference") ? t(this.settings.language, "notice.provider.secretInvalidRef") : t(this.settings.language, "notice.provider.secretBlocked"),
+        8e3
+      );
+    }
   }
   async updatePromptOverride(field, value) {
     var _a, _b, _c, _d, _e;
@@ -1809,7 +2160,6 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
     if (!session) {
       return;
     }
-    const noteRepository = new ObsidianNoteRepository(this.app);
     const gate = new ObsidianReviewGate(this.app, this.settings.language, {
       onApplyNotice: async (decision) => {
         await this.applySelectedChanges(sessionId, decision);
@@ -1823,7 +2173,6 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
     });
     const requestReviewUseCase = new RequestReviewUseCase(gate);
     await requestReviewUseCase.execute(session);
-    void noteRepository;
   }
   async applySelectedChanges(sessionId, decision) {
     const noteRepository = new ObsidianNoteRepository(this.app);
@@ -1866,6 +2215,57 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
     }
     new import_obsidian4.Notice(`Refined Layer: save draft failed - ${result.message}`, 8e3);
   }
+  selectLlmProvider() {
+    var _a, _b, _c;
+    const providerConfig = (_a = this.settings.provider) != null ? _a : DEFAULT_PLUGIN_SETTINGS.provider;
+    if (providerConfig.type !== "openai-compatible") {
+      return {
+        kind: "provider",
+        provider: new MockLlmProvider()
+      };
+    }
+    if (!this.secretStore.isAvailable()) {
+      return {
+        kind: "provider",
+        provider: new MockLlmProvider(),
+        warning: t(this.settings.language, "notice.provider.downgradedMock")
+      };
+    }
+    if (!((_b = providerConfig.model) == null ? void 0 : _b.trim())) {
+      return {
+        kind: "error",
+        message: t(this.settings.language, "notice.provider.missingModel")
+      };
+    }
+    if (!((_c = providerConfig.secretRef) == null ? void 0 : _c.trim())) {
+      return {
+        kind: "error",
+        message: t(this.settings.language, "notice.provider.missingSecretRef")
+      };
+    }
+    try {
+      const apiKey = this.secretStore.getSecret(providerConfig.secretRef.trim());
+      if (!apiKey) {
+        return {
+          kind: "error",
+          message: t(this.settings.language, "notice.provider.missingApiKey")
+        };
+      }
+    } catch (e) {
+      return {
+        kind: "error",
+        message: t(this.settings.language, "notice.provider.secretInvalidRef")
+      };
+    }
+    return {
+      kind: "provider",
+      provider: new OpenAICompatibleProvider({
+        secretStore: this.secretStore,
+        secretRef: providerConfig.secretRef.trim(),
+        model: providerConfig.model.trim()
+      })
+    };
+  }
 };
 function activeNoteToEligibility(activeNote) {
   if (activeNote.kind === "no-active-file") {
@@ -1902,10 +2302,15 @@ function formatCreateProposalMessage(language, result) {
   if (result.kind === "eligibility-failed") {
     return formatEligibilityMessage(result.eligibility);
   }
+  if (result.kind === "provider-failed") {
+    return t(language, "notice.provider.error", {
+      message: result.message
+    });
+  }
   if (result.kind === "validation-failed") {
     const detail = result.errors.map((error) => `${error.layer}:${error.code}`).join(", ");
     return `Refined Layer: proposal validation failed (${detail}).`;
   }
   const tokenUsage = (_b = (_a = result.session.tokenUsage) == null ? void 0 : _a.totalTokens) != null ? _b : t(language, "review.token.unavailable");
-  return `Refined Layer: mock proposal created for ${result.session.noteTitle}, session ${result.session.id}, tokens ${tokenUsage}.`;
+  return `Refined Layer: proposal created for ${result.session.noteTitle}, session ${result.session.id}, tokens ${tokenUsage}.`;
 }

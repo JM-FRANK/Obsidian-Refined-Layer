@@ -47,8 +47,21 @@ export const rawRefinedProfile: WorkflowProfile = {
     blockedTags: ["#raw", "#refined", "#self", "#external", "#practice", "#rel/*"],
   },
   prompt: {
-    systemPrompt: "",
-    userPrompt: "",
+    systemPrompt: [
+      "You are generating a raw-refined proposal for an Obsidian note.",
+      "Return JSON only.",
+      "Do not include any text outside JSON.",
+      "Never include or rewrite the protected heading ## 原始内容 or any protected-region content.",
+      "Use this schema:",
+      "{\"workflowProfileId\":\"raw-refined\",\"refinedSections\":{\"summary\":\"string\",\"coreQuestion\":\"string\",\"currentConclusion\":\"string\",\"reasoning\":\"string\",\"scope\":\"string?\",\"nextSteps\":\"string?\",\"refineNote\":\"string?\"},\"frontmatterSuggestion\":{\"status\":\"refined\",\"source\":[\"self|external|practice\"],\"context\":[\"string\"]},\"tagSuggestion\":{\"add\":[\"string\"],\"remove\":[\"string\"]},\"warnings\":[\"string\"]}",
+    ].join("\n"),
+    userPrompt: [
+      "Refine the current note into the approved raw-refined structure.",
+      "notePath: {{notePath}}",
+      "noteTitle: {{noteTitle}}",
+      "noteContent:",
+      "{{noteContent}}",
+    ].join("\n"),
   },
   proposalSchema: {
     workflowProfileId: "raw-refined",

@@ -1,18 +1,24 @@
-import type { ActiveNoteRepository } from "./CheckEligibilityUseCase";
-import { CheckEligibilityUseCase, type CheckEligibilityResult } from "./CheckEligibilityUseCase";
+import type { LlmProvider } from "../adapters/llm/LlmProvider";
+import { parseFrontmatter } from "../core/profile/FrontmatterParser";
 import type { WorkflowProfile } from "../core/profile/WorkflowProfile";
 import { ProposalValidator } from "../core/proposal/ProposalValidator";
-import { ProtectedRegionExtractor } from "../core/protected-region/ProtectedRegionExtractor";
 import { hashText } from "../core/protected-region/hash";
-import { parseFrontmatter } from "../core/profile/FrontmatterParser";
-import type { LlmProvider } from "../adapters/llm/LlmProvider";
+import { ProtectedRegionExtractor } from "../core/protected-region/ProtectedRegionExtractor";
 import type { ProposalSession } from "../runtime/ProposalSession";
 import { ProposalSessionStore } from "../runtime/ProposalSessionStore";
+import { toSafeErrorMessage } from "../runtime/redaction";
+import { TokenUsageReporter } from "../runtime/TokenUsageReporter";
+import type { ActiveNoteRepository } from "./CheckEligibilityUseCase";
+import { CheckEligibilityUseCase, type CheckEligibilityResult } from "./CheckEligibilityUseCase";
 
 export type CreateProposalResult =
   | {
       kind: "eligibility-failed";
       eligibility: CheckEligibilityResult;
+    }
+  | {
+      kind: "provider-failed";
+      message: string;
     }
   | {
       kind: "validation-failed";
@@ -27,16 +33,24 @@ export type CreateProposalResult =
       session: ProposalSession;
     };
 
+interface PromptOverride {
+  enabled: boolean;
+  systemPrompt?: string;
+  userPrompt?: string;
+}
+
 export class CreateProposalUseCase {
   private readonly eligibilityUseCase: CheckEligibilityUseCase;
   private readonly proposalValidator: ProposalValidator;
   private readonly protectedRegionExtractor: ProtectedRegionExtractor;
+  private readonly tokenUsageReporter = new TokenUsageReporter();
 
   constructor(
     private readonly noteRepository: ActiveNoteRepository,
     private readonly profile: WorkflowProfile,
     private readonly llmProvider: LlmProvider,
     private readonly sessionStore: ProposalSessionStore,
+    private readonly promptOverride?: PromptOverride,
   ) {
     this.eligibilityUseCase = new CheckEligibilityUseCase(noteRepository, profile);
     this.proposalValidator = new ProposalValidator(profile);
@@ -79,17 +93,40 @@ export class CreateProposalUseCase {
       };
     }
 
-    const llmResponse = await this.llmProvider.generateProposal({
-      workflowProfileId: "raw-refined",
-      notePath: lookup.note.path,
-      noteTitle: lookup.note.title,
-      noteContent: lookup.note.content,
-      promptVariables: {
+    const systemPrompt = renderPromptTemplate(
+      this.promptOverride?.enabled && this.promptOverride.systemPrompt
+        ? this.promptOverride.systemPrompt
+        : this.profile.prompt.systemPrompt,
+      lookup.note,
+    );
+    const userPrompt = renderPromptTemplate(
+      this.promptOverride?.enabled && this.promptOverride.userPrompt
+        ? this.promptOverride.userPrompt
+        : this.profile.prompt.userPrompt,
+      lookup.note,
+    );
+
+    let llmResponse;
+    try {
+      llmResponse = await this.llmProvider.generateProposal({
+        workflowProfileId: "raw-refined",
         notePath: lookup.note.path,
         noteTitle: lookup.note.title,
         noteContent: lookup.note.content,
-      },
-    });
+        systemPrompt,
+        userPrompt,
+        promptVariables: {
+          notePath: lookup.note.path,
+          noteTitle: lookup.note.title,
+          noteContent: lookup.note.content,
+        },
+      });
+    } catch (error) {
+      return {
+        kind: "provider-failed",
+        message: toSafeErrorMessage(error),
+      };
+    }
 
     const validation = this.proposalValidator.validateModelOutput(llmResponse.rawText, {
       protectedRegionText: protectedRegionResult.region.text,
@@ -118,7 +155,13 @@ export class CreateProposalUseCase {
         : {}),
       baseProtectedRegionHash: hashText(protectedRegionResult.region.text),
       proposal: validation.proposal,
-      ...(llmResponse.usage ? { tokenUsage: llmResponse.usage } : {}),
+      tokenUsage: this.tokenUsageReporter.resolveUsage({
+        provider: this.llmProvider.providerId,
+        model: this.llmProvider.model,
+        inputText: `${systemPrompt}\n${userPrompt}`,
+        outputText: llmResponse.rawText,
+        providerUsage: llmResponse.usage,
+      }),
       status: "generated",
     };
 
@@ -133,4 +176,18 @@ export class CreateProposalUseCase {
 
 function createSessionId(): string {
   return `proposal-session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function renderPromptTemplate(
+  template: string,
+  note: {
+    path: string;
+    title: string;
+    content: string;
+  },
+): string {
+  return template
+    .split("{{notePath}}").join(note.path)
+    .split("{{noteTitle}}").join(note.title)
+    .split("{{noteContent}}").join(note.content);
 }
