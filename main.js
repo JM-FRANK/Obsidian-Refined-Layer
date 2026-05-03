@@ -23,7 +23,7 @@ __export(main_exports, {
   default: () => ObsidianRefinedLayerPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian2 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 
 // src/core/profile/FrontmatterParser.ts
 function parseFrontmatter(markdown) {
@@ -531,35 +531,13 @@ function createSessionId() {
   return `proposal-session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-// src/adapters/obsidian/ObsidianNoteRepository.ts
-var import_obsidian = require("obsidian");
-var ObsidianNoteRepository = class {
-  constructor(app) {
-    this.app = app;
+// src/application/RequestReviewUseCase.ts
+var RequestReviewUseCase = class {
+  constructor(reviewGate) {
+    this.reviewGate = reviewGate;
   }
-  async getActiveNote() {
-    const activeFile = this.app.workspace.getActiveFile();
-    if (!activeFile) {
-      return {
-        kind: "no-active-file"
-      };
-    }
-    if (!(activeFile instanceof import_obsidian.TFile) || activeFile.extension !== "md") {
-      return {
-        kind: "non-markdown-file",
-        path: activeFile.path,
-        extension: activeFile.extension
-      };
-    }
-    const content = await this.app.vault.cachedRead(activeFile);
-    return {
-      kind: "markdown",
-      note: {
-        path: activeFile.path,
-        title: activeFile.basename,
-        content
-      }
-    };
+  async execute(session) {
+    return this.reviewGate.requestReview(session);
   }
 };
 
@@ -599,6 +577,73 @@ var MockLlmProvider = class {
     };
   }
 };
+
+// src/adapters/obsidian/ObsidianNoteRepository.ts
+var import_obsidian = require("obsidian");
+var ObsidianNoteRepository = class {
+  constructor(app) {
+    this.app = app;
+  }
+  async getActiveNote() {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile) {
+      return {
+        kind: "no-active-file"
+      };
+    }
+    if (!(activeFile instanceof import_obsidian.TFile) || activeFile.extension !== "md") {
+      return {
+        kind: "non-markdown-file",
+        path: activeFile.path,
+        extension: activeFile.extension
+      };
+    }
+    const content = await this.app.vault.cachedRead(activeFile);
+    return {
+      kind: "markdown",
+      note: {
+        path: activeFile.path,
+        title: activeFile.basename,
+        content
+      }
+    };
+  }
+};
+
+// src/settings/PluginSettings.ts
+var DEFAULT_PLUGIN_SETTINGS = {
+  language: "zh-CN",
+  historyLimit: 5,
+  draftFolder: "Drafts/Refined Layer",
+  provider: {
+    type: "mock"
+  },
+  promptOverrides: {}
+};
+
+// src/adapters/obsidian/ObsidianSettingsStore.ts
+var ObsidianSettingsStore = class {
+  constructor(plugin) {
+    this.plugin = plugin;
+  }
+  async load() {
+    const loaded = await this.plugin.loadData();
+    return mergeSettings(loaded);
+  }
+  async save(settings) {
+    await this.plugin.saveData(settings);
+  }
+};
+function mergeSettings(value) {
+  var _a, _b;
+  const loaded = typeof value === "object" && value !== null ? value : {};
+  return {
+    ...DEFAULT_PLUGIN_SETTINGS,
+    ...loaded,
+    provider: (_a = loaded.provider) != null ? _a : DEFAULT_PLUGIN_SETTINGS.provider,
+    promptOverrides: (_b = loaded.promptOverrides) != null ? _b : DEFAULT_PLUGIN_SETTINGS.promptOverrides
+  };
+}
 
 // src/core/profile/rawRefinedProfile.ts
 var rawRefinedProfile = {
@@ -723,16 +768,440 @@ var ProposalSessionStore = class {
   }
 };
 
+// src/ui/i18n/en.ts
+var enStrings = {
+  "review.title": "Refined Proposal Review",
+  "review.noteMeta": "{title} \xB7 {path}",
+  "review.section.body": "Refined body preview",
+  "review.section.frontmatter": "YAML suggestions",
+  "review.section.tags": "Tag suggestions",
+  "review.section.tokenUsage": "Token Usage",
+  "review.section.warnings": "Warnings",
+  "review.empty.none": "None",
+  "review.toggle.body": "Accept body changes",
+  "review.toggle.frontmatter.status": "Accept status change",
+  "review.toggle.frontmatter.source": "Accept source change",
+  "review.toggle.frontmatter.context": "Accept context change",
+  "review.toggle.tag.add": "Accept added tag: {tag}",
+  "review.toggle.tag.remove": "Accept removed tag: {tag}",
+  "review.button.apply": "Apply selected changes",
+  "review.button.saveDraft": "Save as Draft",
+  "review.button.close": "Close",
+  "review.token.unavailable": "unavailable",
+  "review.token.summary": "{provider} / {model} / {mode} / total: {total}",
+  "review.placeholder.saveDraft": "Save as Draft is still a placeholder callback and will not write any files.",
+  "review.placeholder.apply": "Only generated UserDecision, no files were written: {decision}",
+  "review.placeholder.cancel": "Review modal closed.",
+  "settings.title.language": "Language",
+  "settings.title.historyLimit": "History limit",
+  "settings.title.draftFolder": "Draft folder",
+  "settings.title.promptProfile": "Prompt Override Profile",
+  "settings.title.systemPrompt": "System Prompt Override",
+  "settings.title.userPrompt": "User Prompt Override",
+  "settings.desc.language": "Controls the language used for plugin UI strings.",
+  "settings.desc.historyLimit": "How many proposal sessions to keep per note.",
+  "settings.desc.draftFolder": "Target folder for future Save as Draft output.",
+  "settings.desc.promptProfile": "Only raw-refined profile override is supported in v0.1.0.",
+  "settings.desc.promptVariables": "Available variables: {{notePath}} {{noteTitle}} {{noteContent}}",
+  "settings.desc.systemPrompt": "Low-level override only. No highlighting, autocomplete, or advanced validation.",
+  "settings.desc.userPrompt": "Low-level override only. No highlighting, autocomplete, or advanced validation.",
+  "settings.option.language.zh-CN": "Simplified Chinese",
+  "settings.option.language.en": "English",
+  "notice.review.reopened": "Reopened last proposal: {sessionId} \xB7 {title} \xB7 token usage {mode}",
+  "notice.review.noSession": "No saved proposal session for the current note: {path}"
+};
+
+// src/ui/i18n/zh-CN.ts
+var zhCNStrings = {
+  "review.title": "Refined Proposal \u5BA1\u6838",
+  "review.noteMeta": "{title} \xB7 {path}",
+  "review.section.body": "Refined \u6B63\u6587\u9884\u89C8",
+  "review.section.frontmatter": "YAML \u4FEE\u6539\u5EFA\u8BAE",
+  "review.section.tags": "\u6807\u7B7E\u4FEE\u6539\u5EFA\u8BAE",
+  "review.section.tokenUsage": "Token Usage",
+  "review.section.warnings": "Warnings",
+  "review.empty.none": "\u65E0",
+  "review.toggle.body": "\u63A5\u53D7\u6B63\u6587\u4FEE\u6539",
+  "review.toggle.frontmatter.status": "\u63A5\u53D7 status \u4FEE\u6539",
+  "review.toggle.frontmatter.source": "\u63A5\u53D7 source \u4FEE\u6539",
+  "review.toggle.frontmatter.context": "\u63A5\u53D7 context \u4FEE\u6539",
+  "review.toggle.tag.add": "\u63A5\u53D7\u65B0\u589E\u6807\u7B7E\uFF1A{tag}",
+  "review.toggle.tag.remove": "\u63A5\u53D7\u79FB\u9664\u6807\u7B7E\uFF1A{tag}",
+  "review.button.apply": "Apply selected changes",
+  "review.button.saveDraft": "Save as Draft",
+  "review.button.close": "\u5173\u95ED",
+  "review.token.unavailable": "unavailable",
+  "review.token.summary": "{provider} / {model} / {mode} / total: {total}",
+  "review.placeholder.saveDraft": "Save as Draft \u4ECD\u4E3A\u5360\u4F4D\u56DE\u8C03\uFF0C\u5F53\u524D\u4E0D\u4F1A\u5199\u5165\u6587\u4EF6\u3002",
+  "review.placeholder.apply": "\u5F53\u524D\u53EA\u751F\u6210 UserDecision\uFF0C\u4E0D\u5199\u5165\u6587\u4EF6\uFF1A{decision}",
+  "review.placeholder.cancel": "\u5DF2\u5173\u95ED\u5BA1\u6838\u7A97\u53E3\u3002",
+  "settings.title.language": "\u754C\u9762\u8BED\u8A00",
+  "settings.title.historyLimit": "\u5386\u53F2\u8BB0\u5F55\u4E0A\u9650",
+  "settings.title.draftFolder": "\u8349\u7A3F\u76EE\u5F55",
+  "settings.title.promptProfile": "Prompt Override Profile",
+  "settings.title.systemPrompt": "System Prompt Override",
+  "settings.title.userPrompt": "User Prompt Override",
+  "settings.desc.language": "\u8BFB\u53D6\u5E76\u663E\u793A\u63D2\u4EF6 UI \u6587\u6848\u8BED\u8A00\u3002",
+  "settings.desc.historyLimit": "\u6309\u7B14\u8BB0\u4FDD\u7559\u7684 proposal session \u6570\u91CF\u3002",
+  "settings.desc.draftFolder": "\u672A\u6765 Save as Draft \u7684\u76EE\u6807\u76EE\u5F55\u3002",
+  "settings.desc.promptProfile": "\u5F53\u524D\u4EC5\u8986\u76D6 raw-refined profile\u3002",
+  "settings.desc.promptVariables": "\u53EF\u7528\u53D8\u91CF\uFF1A{{notePath}} {{noteTitle}} {{noteContent}}",
+  "settings.desc.systemPrompt": "\u4F4E\u7EA7\u8986\u76D6\u9879\uFF0C\u4E0D\u63D0\u4F9B\u9AD8\u4EAE\u3001\u8865\u5168\u6216\u590D\u6742\u6821\u9A8C\u3002",
+  "settings.desc.userPrompt": "\u4F4E\u7EA7\u8986\u76D6\u9879\uFF0C\u4E0D\u63D0\u4F9B\u9AD8\u4EAE\u3001\u8865\u5168\u6216\u590D\u6742\u6821\u9A8C\u3002",
+  "settings.option.language.zh-CN": "\u7B80\u4F53\u4E2D\u6587",
+  "settings.option.language.en": "English",
+  "notice.review.reopened": "\u5DF2\u6062\u590D\u6700\u8FD1 proposal\uFF1A{sessionId} \xB7 {title} \xB7 token usage {mode}",
+  "notice.review.noSession": "\u5F53\u524D\u7B14\u8BB0\u6CA1\u6709\u53EF\u6062\u590D\u7684 proposal session\uFF1A{path}"
+};
+
+// src/ui/i18n/index.ts
+var dictionaries = {
+  "zh-CN": zhCNStrings,
+  en: enStrings
+};
+function t(language, key, variables = {}) {
+  var _a, _b;
+  const template = (_b = (_a = dictionaries[language][key]) != null ? _a : dictionaries.en[key]) != null ? _b : key;
+  return Object.entries(variables).reduce(
+    (text, [name, value]) => text.split(`{${name}}`).join(String(value)),
+    template
+  );
+}
+
+// src/ui/review/ObsidianReviewGate.ts
+var import_obsidian3 = require("obsidian");
+
+// src/ui/review/ReviewModal.ts
+var import_obsidian2 = require("obsidian");
+var ReviewModal = class extends import_obsidian2.Modal {
+  constructor(app, viewModel, language, callbacks) {
+    super(app);
+    this.viewModel = viewModel;
+    this.language = language;
+    this.callbacks = callbacks;
+    this.completed = false;
+    this.decision = structuredClone(viewModel.initialDecision);
+  }
+  onOpen() {
+    const { contentEl, titleEl } = this;
+    titleEl.setText(t(this.language, "review.title"));
+    contentEl.empty();
+    contentEl.addClass("obsidian-refined-layer-review");
+    contentEl.createEl("p", {
+      cls: "obsidian-refined-layer-meta",
+      text: t(this.language, "review.noteMeta", {
+        title: this.viewModel.noteTitle,
+        path: this.viewModel.notePath
+      })
+    });
+    this.renderBodySection(contentEl);
+    this.renderFrontmatterSection(contentEl);
+    this.renderTagSection(contentEl);
+    this.renderTokenUsageSection(contentEl);
+    this.renderWarningsSection(contentEl);
+    this.renderActionRow(contentEl);
+  }
+  onClose() {
+    this.contentEl.empty();
+    if (!this.completed) {
+      this.callbacks.onCloseWithoutDecision();
+    }
+  }
+  renderBodySection(container) {
+    const section = container.createDiv("obsidian-refined-layer-section");
+    section.createEl("h3", { text: t(this.language, "review.section.body") });
+    const toggle = this.createCheckboxRow(section, t(this.language, "review.toggle.body"), false, (checked) => {
+      this.decision.acceptBody = checked;
+    });
+    toggle.addClass("obsidian-refined-layer-toggle");
+    section.createEl("pre", {
+      cls: "obsidian-refined-layer-preview",
+      text: this.viewModel.bodyPreview
+    });
+  }
+  renderFrontmatterSection(container) {
+    const section = container.createDiv("obsidian-refined-layer-section");
+    section.createEl("h3", { text: t(this.language, "review.section.frontmatter") });
+    if (this.viewModel.frontmatterSuggestions.length === 0) {
+      section.createEl("p", { text: t(this.language, "review.empty.none") });
+      return;
+    }
+    for (const suggestion of this.viewModel.frontmatterSuggestions) {
+      const key = `review.toggle.frontmatter.${suggestion.field}`;
+      const row = this.createCheckboxRow(section, t(this.language, key), false, (checked) => {
+        this.decision.acceptFrontmatter[suggestion.field] = checked;
+      });
+      row.createEl("code", { text: `${suggestion.field}: ${suggestion.value}` });
+    }
+  }
+  renderTagSection(container) {
+    const section = container.createDiv("obsidian-refined-layer-section");
+    section.createEl("h3", { text: t(this.language, "review.section.tags") });
+    const hasAdd = this.viewModel.tagSuggestions.add.length > 0;
+    const hasRemove = this.viewModel.tagSuggestions.remove.length > 0;
+    if (!hasAdd && !hasRemove) {
+      section.createEl("p", { text: t(this.language, "review.empty.none") });
+      return;
+    }
+    for (const tag of this.viewModel.tagSuggestions.add) {
+      this.createCheckboxRow(section, t(this.language, "review.toggle.tag.add", { tag }), false, (checked) => {
+        var _a;
+        const next = new Set((_a = this.decision.acceptTags.add) != null ? _a : []);
+        checked ? next.add(tag) : next.delete(tag);
+        this.decision.acceptTags.add = [...next];
+      });
+    }
+    for (const tag of this.viewModel.tagSuggestions.remove) {
+      this.createCheckboxRow(section, t(this.language, "review.toggle.tag.remove", { tag }), false, (checked) => {
+        var _a;
+        const next = new Set((_a = this.decision.acceptTags.remove) != null ? _a : []);
+        checked ? next.add(tag) : next.delete(tag);
+        this.decision.acceptTags.remove = [...next];
+      });
+    }
+  }
+  renderTokenUsageSection(container) {
+    var _a;
+    const section = container.createDiv("obsidian-refined-layer-section");
+    section.createEl("h3", { text: t(this.language, "review.section.tokenUsage") });
+    const usage = this.viewModel.tokenUsage;
+    section.createEl("p", {
+      text: usage ? t(this.language, "review.token.summary", {
+        provider: usage.provider,
+        model: usage.model,
+        mode: usage.countingMode,
+        total: (_a = usage.totalTokens) != null ? _a : t(this.language, "review.token.unavailable")
+      }) : t(this.language, "review.token.unavailable")
+    });
+  }
+  renderWarningsSection(container) {
+    const section = container.createDiv("obsidian-refined-layer-section");
+    section.createEl("h3", { text: t(this.language, "review.section.warnings") });
+    if (this.viewModel.warnings.length === 0) {
+      section.createEl("p", { text: t(this.language, "review.empty.none") });
+      return;
+    }
+    const list = section.createEl("ul");
+    for (const warning of this.viewModel.warnings) {
+      list.createEl("li", { text: warning });
+    }
+  }
+  renderActionRow(container) {
+    const row = container.createDiv("obsidian-refined-layer-actions");
+    const applyButton = row.createEl("button", { text: t(this.language, "review.button.apply") });
+    applyButton.addEventListener("click", () => {
+      this.completed = true;
+      this.callbacks.onApply(this.decision);
+      this.close();
+    });
+    const draftButton = row.createEl("button", { text: t(this.language, "review.button.saveDraft") });
+    draftButton.addEventListener("click", () => {
+      this.completed = true;
+      this.callbacks.onSaveDraft({
+        ...this.decision,
+        saveAsDraftOnly: true
+      });
+      this.close();
+    });
+    const closeButton = row.createEl("button", { text: t(this.language, "review.button.close") });
+    closeButton.addEventListener("click", () => {
+      this.close();
+    });
+  }
+  createCheckboxRow(container, labelText, checked, onChange) {
+    const row = container.createEl("label", { cls: "obsidian-refined-layer-checkbox-row" });
+    const checkbox = row.createEl("input", { type: "checkbox" });
+    checkbox.checked = checked;
+    checkbox.addEventListener("change", () => onChange(checkbox.checked));
+    row.createSpan({ text: labelText });
+    return row;
+  }
+};
+
+// src/ui/review/ReviewViewModel.ts
+var SECTION_HEADINGS = {
+  summary: "## \u6458\u8981",
+  coreQuestion: "## \u6838\u5FC3\u95EE\u9898",
+  currentConclusion: "## \u5F53\u524D\u7ED3\u8BBA",
+  reasoning: "## \u4F9D\u636E\u4E0E\u63A8\u7406",
+  scope: "## \u9002\u7528\u8FB9\u754C",
+  nextSteps: "## \u540E\u7EED\u5904\u7406",
+  refineNote: "## \u6574\u7406\u8BF4\u660E"
+};
+function createReviewViewModel(session) {
+  var _a, _b, _c, _d, _e, _f, _g;
+  const frontmatterSuggestions = [];
+  const suggestion = session.proposal.frontmatterSuggestion;
+  if (suggestion == null ? void 0 : suggestion.status) {
+    frontmatterSuggestions.push({ field: "status", value: suggestion.status });
+  }
+  if (suggestion == null ? void 0 : suggestion.source) {
+    frontmatterSuggestions.push({ field: "source", value: suggestion.source.join(", ") });
+  }
+  if (suggestion == null ? void 0 : suggestion.context) {
+    frontmatterSuggestions.push({ field: "context", value: suggestion.context.join(", ") });
+  }
+  return {
+    sessionId: session.id,
+    workflowProfileId: session.workflowProfileId,
+    notePath: session.notePath,
+    noteTitle: session.noteTitle,
+    bodyPreview: buildBodyPreview(session),
+    frontmatterSuggestions,
+    tagSuggestions: {
+      add: (_b = (_a = session.proposal.tagSuggestion) == null ? void 0 : _a.add) != null ? _b : [],
+      remove: (_d = (_c = session.proposal.tagSuggestion) == null ? void 0 : _c.remove) != null ? _d : []
+    },
+    warnings: (_e = session.proposal.warnings) != null ? _e : [],
+    tokenUsage: session.tokenUsage ? {
+      provider: session.tokenUsage.provider,
+      model: session.tokenUsage.model,
+      countingMode: session.tokenUsage.countingMode,
+      totalTokens: session.tokenUsage.totalTokens,
+      inputTokens: session.tokenUsage.inputTokens,
+      outputTokens: session.tokenUsage.outputTokens,
+      generatedAt: session.tokenUsage.generatedAt
+    } : null,
+    initialDecision: {
+      acceptBody: false,
+      acceptFrontmatter: {
+        ...(suggestion == null ? void 0 : suggestion.status) ? { status: false } : {},
+        ...(suggestion == null ? void 0 : suggestion.source) ? { source: false } : {},
+        ...(suggestion == null ? void 0 : suggestion.context) ? { context: false } : {}
+      },
+      acceptTags: {
+        ...((_f = session.proposal.tagSuggestion) == null ? void 0 : _f.add) ? { add: [] } : {},
+        ...((_g = session.proposal.tagSuggestion) == null ? void 0 : _g.remove) ? { remove: [] } : {}
+      }
+    }
+  };
+}
+function buildBodyPreview(session) {
+  const lines = [];
+  const sections = session.proposal.refinedSections;
+  for (const key of Object.keys(sections)) {
+    const content = sections[key];
+    if (!content) {
+      continue;
+    }
+    lines.push(SECTION_HEADINGS[key]);
+    lines.push(content);
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd();
+}
+
+// src/ui/review/ObsidianReviewGate.ts
+var ObsidianReviewGate = class {
+  constructor(app, language) {
+    this.app = app;
+    this.language = language;
+  }
+  async requestReview(session) {
+    const viewModel = createReviewViewModel(session);
+    return new Promise((resolve) => {
+      const modal = new ReviewModal(this.app, viewModel, this.language, {
+        onApply: (decision) => {
+          new import_obsidian3.Notice(
+            t(this.language, "review.placeholder.apply", {
+              decision: JSON.stringify(decision)
+            }),
+            8e3
+          );
+          resolve({ action: "apply", decision });
+        },
+        onSaveDraft: (decision) => {
+          new import_obsidian3.Notice(t(this.language, "review.placeholder.saveDraft"), 6e3);
+          resolve({ action: "save-draft", decision });
+        },
+        onCloseWithoutDecision: () => {
+          new import_obsidian3.Notice(t(this.language, "review.placeholder.cancel"), 4e3);
+          resolve({ action: "cancel" });
+        }
+      });
+      modal.open();
+    });
+  }
+};
+
+// src/ui/settings/SettingsTab.ts
+var import_obsidian4 = require("obsidian");
+var SettingsTab = class extends import_obsidian4.PluginSettingTab {
+  constructor(app, plugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+  display() {
+    const { containerEl } = this;
+    const settings = this.plugin.getSettings();
+    containerEl.empty();
+    new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.language")).setDesc(t(settings.language, "settings.desc.language")).addDropdown((dropdown) => {
+      dropdown.addOption("zh-CN", t(settings.language, "settings.option.language.zh-CN")).addOption("en", t(settings.language, "settings.option.language.en")).setValue(settings.language).onChange(async (value) => {
+        await this.plugin.updateSettings({ language: value });
+        this.display();
+      });
+    });
+    new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.historyLimit")).setDesc(t(settings.language, "settings.desc.historyLimit")).addText((text) => {
+      text.setPlaceholder("5").setValue(String(settings.historyLimit)).onChange(async (value) => {
+        const parsed = Number.parseInt(value, 10);
+        await this.plugin.updateSettings({
+          historyLimit: Number.isFinite(parsed) && parsed > 0 ? parsed : settings.historyLimit
+        });
+      });
+    });
+    new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.draftFolder")).setDesc(t(settings.language, "settings.desc.draftFolder")).addText((text) => {
+      text.setValue(settings.draftFolder).onChange(async (value) => {
+        await this.plugin.updateSettings({ draftFolder: value.trim() || settings.draftFolder });
+      });
+    });
+    new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.promptProfile")).setDesc(t(settings.language, "settings.desc.promptProfile"));
+    this.addPromptOverrideField(
+      containerEl,
+      settings,
+      "systemPrompt",
+      t(settings.language, "settings.title.systemPrompt"),
+      t(settings.language, "settings.desc.systemPrompt")
+    );
+    this.addPromptOverrideField(
+      containerEl,
+      settings,
+      "userPrompt",
+      t(settings.language, "settings.title.userPrompt"),
+      t(settings.language, "settings.desc.userPrompt")
+    );
+    containerEl.createEl("p", {
+      cls: "obsidian-refined-layer-settings-note",
+      text: t(settings.language, "settings.desc.promptVariables")
+    });
+  }
+  addPromptOverrideField(containerEl, settings, field, title, description) {
+    var _a, _b, _c;
+    const setting = new import_obsidian4.Setting(containerEl).setName(title).setDesc(description);
+    setting.controlEl.createDiv();
+    const textArea = new import_obsidian4.TextAreaComponent(setting.controlEl);
+    textArea.inputEl.rows = 5;
+    textArea.inputEl.cols = 40;
+    textArea.setValue((_c = (_b = (_a = settings.promptOverrides) == null ? void 0 : _a["raw-refined"]) == null ? void 0 : _b[field]) != null ? _c : "");
+    textArea.onChange(async (value) => {
+      await this.plugin.updatePromptOverride(field, value);
+    });
+  }
+};
+
 // src/main.ts
 var REFINE_COMMAND_ID = "refine-current-note";
 var REOPEN_LAST_PROPOSAL_COMMAND_ID = "reopen-last-proposal-for-current-note";
-var ObsidianRefinedLayerPlugin = class extends import_obsidian2.Plugin {
+var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
   constructor() {
     super(...arguments);
-    this.sessionStore = new ProposalSessionStore(5);
+    this.settings = DEFAULT_PLUGIN_SETTINGS;
+    this.settingsStore = new ObsidianSettingsStore(this);
+    this.sessionStore = new ProposalSessionStore(DEFAULT_PLUGIN_SETTINGS.historyLimit);
   }
   async onload() {
-    console.log("Obsidian Refined Layer loaded");
+    this.settings = await this.settingsStore.load();
+    this.sessionStore = new ProposalSessionStore(this.settings.historyLimit);
+    this.addSettingTab(new SettingsTab(this.app, this));
     this.addCommand({
       id: REFINE_COMMAND_ID,
       name: "Refine current note",
@@ -745,7 +1214,11 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian2.Plugin {
           this.sessionStore
         );
         const result = await createProposalUseCase.execute();
-        new import_obsidian2.Notice(formatCreateProposalMessage(result), 8e3);
+        if (result.kind === "created") {
+          await this.openReviewForSession(result.session.id);
+          return;
+        }
+        new import_obsidian5.Notice(formatCreateProposalMessage(this.settings.language, result), 8e3);
       }
     });
     this.addCommand({
@@ -756,30 +1229,88 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian2.Plugin {
         const noteRepository = new ObsidianNoteRepository(this.app);
         const activeNote = await noteRepository.getActiveNote();
         if (activeNote.kind !== "markdown") {
-          new import_obsidian2.Notice(formatEligibilityMessage({
-            hasActiveMarkdownNote: false,
-            reason: activeNote.kind,
-            ...activeNote.kind === "non-markdown-file" ? { notePath: activeNote.path, extension: activeNote.extension } : {}
-          }), 6e3);
+          new import_obsidian5.Notice(formatEligibilityMessage(activeNoteToEligibility(activeNote)), 6e3);
           return;
         }
         const session = await this.sessionStore.getLatestSessionForNote(activeNote.note.path);
         if (!session) {
-          new import_obsidian2.Notice(`Refined Layer: no saved proposal session for ${activeNote.note.path}.`, 6e3);
+          new import_obsidian5.Notice(
+            t(this.settings.language, "notice.review.noSession", {
+              path: activeNote.note.path
+            }),
+            6e3
+          );
           return;
         }
-        const tokenUsage = (_b = (_a = session.tokenUsage) == null ? void 0 : _a.countingMode) != null ? _b : "unavailable";
-        new import_obsidian2.Notice(
-          `Refined Layer: reopened ${session.id} for ${session.noteTitle} (${session.notePath}), token usage ${tokenUsage}.`,
-          8e3
+        new import_obsidian5.Notice(
+          t(this.settings.language, "notice.review.reopened", {
+            sessionId: session.id,
+            title: session.noteTitle,
+            mode: (_b = (_a = session.tokenUsage) == null ? void 0 : _a.countingMode) != null ? _b : "unavailable"
+          }),
+          6e3
         );
+        await this.openReviewForSession(session.id);
       }
     });
   }
   onunload() {
     console.log("Obsidian Refined Layer unloaded");
   }
+  getSettings() {
+    return this.settings;
+  }
+  async updateSettings(partial) {
+    this.settings = {
+      ...this.settings,
+      ...partial
+    };
+    if (partial.historyLimit !== void 0 && partial.historyLimit !== this.sessionStore["historyLimit"]) {
+      this.sessionStore = new ProposalSessionStore(this.settings.historyLimit);
+    }
+    await this.settingsStore.save(this.settings);
+  }
+  async updatePromptOverride(field, value) {
+    var _a, _b, _c, _d, _e;
+    const nextOverride = {
+      enabled: value.trim().length > 0,
+      systemPrompt: (_b = (_a = this.settings.promptOverrides) == null ? void 0 : _a["raw-refined"]) == null ? void 0 : _b.systemPrompt,
+      userPrompt: (_d = (_c = this.settings.promptOverrides) == null ? void 0 : _c["raw-refined"]) == null ? void 0 : _d.userPrompt,
+      [field]: value
+    };
+    this.settings = {
+      ...this.settings,
+      promptOverrides: {
+        ...(_e = this.settings.promptOverrides) != null ? _e : {},
+        "raw-refined": nextOverride
+      }
+    };
+    await this.settingsStore.save(this.settings);
+  }
+  async openReviewForSession(sessionId) {
+    const session = await this.sessionStore.get(sessionId);
+    if (!session) {
+      return;
+    }
+    const gate = new ObsidianReviewGate(this.app, this.settings.language);
+    const requestReviewUseCase = new RequestReviewUseCase(gate);
+    await requestReviewUseCase.execute(session);
+  }
 };
+function activeNoteToEligibility(activeNote) {
+  if (activeNote.kind === "no-active-file") {
+    return {
+      hasActiveMarkdownNote: false,
+      reason: "no-active-file"
+    };
+  }
+  return {
+    hasActiveMarkdownNote: false,
+    reason: "non-markdown-file",
+    notePath: activeNote.path,
+    extension: activeNote.extension
+  };
+}
 function formatEligibilityMessage(result) {
   var _a, _b, _c, _d, _e;
   if (!result.hasActiveMarkdownNote) {
@@ -796,7 +1327,7 @@ function formatEligibilityMessage(result) {
   }
   return `Refined Layer: ${result.noteTitle} (${result.notePath}), raw content length ${(_e = result.rawContentLength) != null ? _e : 0}.`;
 }
-function formatCreateProposalMessage(result) {
+function formatCreateProposalMessage(language, result) {
   var _a, _b;
   if (result.kind === "eligibility-failed") {
     return formatEligibilityMessage(result.eligibility);
@@ -805,6 +1336,6 @@ function formatCreateProposalMessage(result) {
     const detail = result.errors.map((error) => `${error.layer}:${error.code}`).join(", ");
     return `Refined Layer: proposal validation failed (${detail}).`;
   }
-  const tokenUsage = (_b = (_a = result.session.tokenUsage) == null ? void 0 : _a.totalTokens) != null ? _b : "unavailable";
+  const tokenUsage = (_b = (_a = result.session.tokenUsage) == null ? void 0 : _a.totalTokens) != null ? _b : t(language, "review.token.unavailable");
   return `Refined Layer: mock proposal created for ${result.session.noteTitle}, session ${result.session.id}, tokens ${tokenUsage}.`;
 }

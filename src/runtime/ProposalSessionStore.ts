@@ -3,10 +3,31 @@ import type { ProposalSession, ProposalSessionSummary } from "./ProposalSession"
 const DEFAULT_HISTORY_LIMIT = 5;
 
 export class ProposalSessionStore {
+  private historyLimit: number;
   private readonly sessionsById = new Map<string, ProposalSession>();
   private readonly sessionsByNotePath = new Map<string, ProposalSession[]>();
 
-  constructor(private readonly historyLimit = DEFAULT_HISTORY_LIMIT) {}
+  constructor(historyLimit = DEFAULT_HISTORY_LIMIT) {
+    this.historyLimit = historyLimit;
+  }
+
+  setHistoryLimit(historyLimit: number): void {
+    this.historyLimit = historyLimit;
+
+    for (const [notePath, sessions] of this.sessionsByNotePath.entries()) {
+      const trimmed = sessions
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        .slice(0, this.historyLimit);
+
+      this.sessionsByNotePath.set(notePath, trimmed);
+      const keptIds = new Set(trimmed.map((session) => session.id));
+      for (const session of sessions) {
+        if (!keptIds.has(session.id)) {
+          this.sessionsById.delete(session.id);
+        }
+      }
+    }
+  }
 
   async save(session: ProposalSession): Promise<void> {
     this.sessionsById.set(session.id, session);

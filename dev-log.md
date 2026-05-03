@@ -137,3 +137,59 @@ Phase 3 已完成。`MockLlmProvider` 现在返回 mock `TokenUsageReport`，`Pr
 - Change: 扩展 token usage 字段结构、在 session 中保存 usage，并新增“恢复当前笔记最近 proposal”命令与对应测试
 - Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
 - Next: Phase 3 验收已满足；下一步如继续则进入 D11，实现 i18n 字符串表与 `ReviewViewModel`
+
+## D11 开发日志
+
+### Current status
+
+已实现最小 i18n 字符串表与 `ReviewViewModel` 映射。`ReviewViewModel` 现在可以从 `ProposalSession` 生成 refined 正文预览、frontmatter/tag 建议、warnings、token usage 和默认全未选中的 `UserDecision` 初始值。`ReviewModal` 所需的用户可见文本已通过 i18n key 提供，不在 review 组件中硬编码显示文案。当前仅从 `settings.language` 读取语言，不实现独立语言切换 UI。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D11 / `src/ui/i18n/index.ts`、`src/ui/i18n/zh-CN.ts`、`src/ui/i18n/en.ts`、`src/ui/review/ReviewViewModel.ts`、`src/core/review/UserDecision.ts`
+- Reason: 为 Review UI 建立稳定的数据投影和双语文案入口
+- Change: 新增 zh-CN / en 字符串表、`t()` 函数、`ReviewViewModel` 映射函数，并将 `UserDecision` 调整为 review-first 结构
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
+- Next: 进入 D12，实现 `ObsidianReviewGate` 与 `ReviewModal` 静态预览
+
+## D12 开发日志
+
+### Current status
+
+已实现 `ObsidianReviewGate` 和 `ReviewModal`。当前 mock proposal 生成成功后会通过 `RequestReviewUseCase -> ReviewGate -> ReviewModal` 打开最小审核弹窗，展示 refined 正文预览、YAML 建议、tag 建议、token usage、warnings。Review UI 只消费 `ReviewViewModel`，不做 validation、不拼 protected region、不生成 ApplyPlan、不写文件。样式使用 Obsidian CSS variables，适配 light/dark theme 的可读性基础要求。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D12 / `src/application/RequestReviewUseCase.ts`、`src/ui/review/ObsidianReviewGate.ts`、`src/ui/review/ReviewModal.ts`、`styles.css`
+- Reason: 将 Phase 3 的 mock proposal 从 notice 提升到 review-first UI 预览
+- Change: 新增 ReviewGate 抽象接线和 Modal 渲染，实现 ReviewModal 静态预览与 theme 变量样式
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
+- Next: 进入 D13，补齐 `UserDecision` 交互与 Save as Draft 占位
+
+## D13 开发日志
+
+### Current status
+
+`ReviewModal` 已支持生成 `UserDecision`。正文、status/source/context、tag add/remove 都映射为独立 checkbox，默认全部未选中；点击 `Apply selected changes` 只会生成并提示 `UserDecision`，不会写文件；点击 `Save as Draft` 只会触发占位回调并提示当前仍不写文件。当前 note 的最近 session 恢复命令现在也会打开 ReviewModal，便于在不写文件的前提下重看 proposal。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D13 / `src/ui/review/ReviewModal.ts`、`src/ui/review/ObsidianReviewGate.ts`、`src/main.ts`
+- Reason: 完成 review-first UI 的部分接受与占位动作交互
+- Change: 将 UI 控件与 `UserDecision` 字段逐项映射，默认全未接受，并为 Apply / Save as Draft 接上纯占位行为
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
+- Next: 进入 D14，实现最小 SettingsTab 与 prompt override 存储
+
+## D14 开发日志
+
+### Current status
+
+Phase 4 已完成。已实现最小 `SettingsTab` 和 `ObsidianSettingsStore`：支持保存 `language`、`historyLimit`、`draftFolder`，并提供 `raw-refined` profile 的 `systemPrompt` / `userPrompt` override textarea。可用变量以静态文本展示，不实现自动补全、语法高亮、复杂校验或 profile 编辑器。prompt override 现在按 `profileId = raw-refined` 存在 `promptOverrides` 中，符合 profile-specific override 的边界要求。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D14 / `src/adapters/obsidian/ObsidianSettingsStore.ts`、`src/settings/PluginSettings.ts`、`src/ui/settings/SettingsTab.ts`、`src/main.ts`
+- Reason: 为 review UI 提供最小配置入口，并把设置持久化放回 Obsidian adapter 边界内
+- Change: 新增设置默认值、Obsidian 数据存储适配器、SettingsTab 与 profile-specific prompt override 保存逻辑，同时让 `historyLimit` 在运行时热更新
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
+- Next: Phase 4 验收已满足；下一步如继续则进入 D15，实现 `ApplyPlanner` 与 `BuildApplyPlanUseCase`

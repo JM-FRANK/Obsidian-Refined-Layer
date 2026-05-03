@@ -16,3 +16,13 @@ export interface PluginSettings {
     }
   >;
 }
+
+export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
+  language: "zh-CN",
+  historyLimit: 5,
+  draftFolder: "Drafts/Refined Layer",
+  provider: {
+    type: "mock",
+  },
+  promptOverrides: {},
+};
