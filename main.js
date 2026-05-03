@@ -23,7 +23,7 @@ __export(main_exports, {
   default: () => ObsidianRefinedLayerPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian5 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 
 // src/core/profile/FrontmatterParser.ts
 function parseFrontmatter(markdown) {
@@ -97,6 +97,471 @@ function stripQuotes(value) {
   return value.replace(/^["']|["']$/g, "");
 }
 
+// src/core/apply/FrontmatterTagApplier.ts
+function applyFrontmatterChanges(markdown, changes) {
+  const normalized = markdown.replace(/\r\n/g, "\n");
+  const parsed = parseFrontmatter(normalized);
+  const base = parsed.hasFrontmatter ? parsed.frontmatter : {};
+  const nextFrontmatter = {
+    ...base
+  };
+  if (changes.status) {
+    nextFrontmatter.status = changes.status;
+  }
+  if (changes.source) {
+    nextFrontmatter.source = changes.source;
+  }
+  if (changes.context) {
+    nextFrontmatter.context = changes.context;
+  }
+  const body = parsed.hasFrontmatter ? parsed.body : normalized;
+  return `---
+${serializeFrontmatter(nextFrontmatter)}
+---
+${trimLeadingNewlines(body)}`;
+}
+function applyTagChanges(markdown, add, remove, profile) {
+  const normalized = markdown.replace(/\r\n/g, "\n");
+  const parsed = parseFrontmatter(normalized);
+  const base = parsed.hasFrontmatter ? parsed.frontmatter : {};
+  const currentTags = Array.isArray(base.tags) ? base.tags : [];
+  const nextTags = new Set(currentTags.filter((tag) => typeof tag === "string"));
+  for (const tag of add) {
+    if (isAllowedTag(tag, profile)) {
+      nextTags.add(tag);
+    }
+  }
+  for (const tag of remove) {
+    nextTags.delete(tag);
+  }
+  const nextFrontmatter = {
+    ...base,
+    tags: [...nextTags]
+  };
+  const body = parsed.hasFrontmatter ? parsed.body : normalized;
+  return `---
+${serializeFrontmatter(nextFrontmatter)}
+---
+${trimLeadingNewlines(body)}`;
+}
+function isAllowedTag(tag, profile) {
+  return profile.tags.allowedTags.includes(tag) && !profile.tags.blockedTags.some((blocked) => blocked.endsWith("*") ? tag.startsWith(blocked.slice(0, -1)) : tag === blocked);
+}
+function serializeFrontmatter(frontmatter) {
+  return Object.entries(frontmatter).map(([key, value]) => {
+    if (Array.isArray(value)) {
+      if (value.length === 0) {
+        return `${key}: []`;
+      }
+      return `${key}:
+${value.map((item) => `  - ${item}`).join("\n")}`;
+    }
+    return `${key}: ${value}`;
+  }).join("\n");
+}
+function trimLeadingNewlines(value) {
+  return value.replace(/^\n+/, "");
+}
+
+// src/core/protected-region/hash.ts
+var import_node_crypto = require("node:crypto");
+function hashText(text) {
+  return (0, import_node_crypto.createHash)("sha256").update(text, "utf8").digest("hex");
+}
+
+// src/core/protected-region/ProtectedRegionExtractor.ts
+var ProtectedRegionExtractor = class {
+  extract(markdown, definition) {
+    var _a;
+    if (definition.mode !== "from-heading-to-end") {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported-mode",
+          message: `Protected region mode ${definition.mode} is not implemented in v0.1.0.`
+        }
+      };
+    }
+    const headingPattern = new RegExp(`^${escapeRegExp(definition.heading)}\\s*\\r?$`, "gm");
+    const matches = [...markdown.matchAll(headingPattern)];
+    if (matches.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: "missing-heading",
+          message: `Required heading ${definition.heading} was not found.`
+        }
+      };
+    }
+    if (matches.length > 1) {
+      return {
+        ok: false,
+        error: {
+          code: "multiple-heading",
+          message: `Protected heading ${definition.heading} appears multiple times.`
+        }
+      };
+    }
+    const regionStart = (_a = matches[0].index) != null ? _a : 0;
+    const text = markdown.slice(regionStart);
+    if (text.trim() === definition.heading) {
+      return {
+        ok: false,
+        error: {
+          code: "empty-protected-region",
+          message: `Protected heading ${definition.heading} has no content after it.`
+        }
+      };
+    }
+    return {
+      ok: true,
+      region: {
+        id: definition.id,
+        heading: definition.heading,
+        mode: definition.mode,
+        text
+      }
+    };
+  }
+};
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// src/core/profile/rawRefinedProfile.ts
+var rawRefinedProfile = {
+  id: "raw-refined",
+  name: "Raw Refined",
+  version: "0.1.0",
+  eligibility: {
+    requiredExtension: "md",
+    requireFrontmatter: true,
+    requiredStatus: "raw",
+    requiredHeading: "## \u539F\u59CB\u5185\u5BB9"
+  },
+  protectedRegions: {
+    definitions: [
+      {
+        id: "original-content",
+        heading: "## \u539F\u59CB\u5185\u5BB9",
+        mode: "from-heading-to-end",
+        required: true,
+        preserveExactText: true
+      }
+    ]
+  },
+  outputSections: {
+    required: ["summary", "coreQuestion", "currentConclusion", "reasoning"],
+    optional: ["scope", "nextSteps", "refineNote"]
+  },
+  frontmatter: {
+    allowedFields: ["status", "created", "source", "context"],
+    readonlyFields: ["created"],
+    confirmRequiredFields: ["status", "source", "context"],
+    forbiddenFields: ["ai", "type", "subtype", "domain", "topic", "confidence", "verified", "updated"]
+  },
+  tags: {
+    mode: "allow-list",
+    allowedTags: [
+      "#ai/generated",
+      "#ai/assisted",
+      "#ai/reviewed",
+      "#ai/suggested",
+      "#todo/refine",
+      "#todo/link",
+      "#todo/review",
+      "#flag/core",
+      "#flag/sensitive"
+    ],
+    blockedTags: ["#raw", "#refined", "#self", "#external", "#practice", "#rel/*"]
+  },
+  prompt: {
+    systemPrompt: "",
+    userPrompt: ""
+  },
+  proposalSchema: {
+    workflowProfileId: "raw-refined"
+  },
+  review: {
+    required: true,
+    defaultChannel: "obsidian-ui",
+    allowApplyWithoutReview: false
+  },
+  apply: {
+    requireFreshnessCheck: true,
+    preserveProtectedRegions: true,
+    requireApplyPlan: true,
+    allowPartialApply: true,
+    onConflict: "block-and-offer-draft"
+  },
+  capabilities: {
+    body: true,
+    frontmatter: true,
+    tags: true,
+    rename: false,
+    move: false,
+    links: false,
+    moc: false,
+    archive: false,
+    delete: false
+  }
+};
+
+// src/application/ApplyDecisionUseCase.ts
+var ApplyDecisionUseCase = class {
+  constructor(profile, sessionStore, noteFilePort) {
+    this.profile = profile;
+    this.sessionStore = sessionStore;
+    this.noteFilePort = noteFilePort;
+    this.extractor = new ProtectedRegionExtractor();
+  }
+  async execute(plan) {
+    const session = await this.sessionStore.get(plan.sessionId);
+    if (!session) {
+      return {
+        kind: "failed",
+        code: "missing-session",
+        message: `Proposal session ${plan.sessionId} was not found.`
+      };
+    }
+    const note = await this.noteFilePort.readNoteByPath(plan.notePath);
+    if (!note) {
+      return {
+        kind: "failed",
+        code: "missing-note",
+        message: `Target note ${plan.notePath} was not found.`
+      };
+    }
+    if (hashText(note.content) !== session.baseFileHash) {
+      session.status = "conflicted";
+      session.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+      await this.sessionStore.save(session);
+      return this.conflict("file-changed");
+    }
+    const protectedRegion = this.extractor.extract(
+      note.content,
+      rawRefinedProfile.protectedRegions.definitions[0]
+    );
+    if (!protectedRegion.ok) {
+      return {
+        kind: "failed",
+        code: protectedRegion.error.code,
+        message: protectedRegion.error.message
+      };
+    }
+    if (hashText(protectedRegion.region.text) !== session.baseProtectedRegionHash) {
+      session.status = "conflicted";
+      session.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+      await this.sessionStore.save(session);
+      return this.conflict("protected-region-changed");
+    }
+    let nextContent = note.content;
+    for (const operation of plan.operations) {
+      switch (operation.type) {
+        case "replace-refined-body":
+          nextContent = mergeBodyIntoMarkdown(nextContent, operation.body);
+          break;
+        case "update-frontmatter":
+          nextContent = applyFrontmatterChanges(nextContent, operation.changes);
+          break;
+        case "update-tags":
+          nextContent = applyTagChanges(nextContent, operation.add, operation.remove, this.profile);
+          break;
+      }
+    }
+    await this.noteFilePort.writeNote(plan.notePath, nextContent);
+    session.status = "applied";
+    session.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    session.applyPlan = plan;
+    await this.sessionStore.save(session);
+    return {
+      kind: "applied",
+      notePath: plan.notePath
+    };
+  }
+  conflict(reason) {
+    return {
+      kind: "conflict",
+      reason,
+      options: ["save-draft", "regenerate", "manual-copy", "discard"]
+    };
+  }
+};
+function mergeBodyIntoMarkdown(markdown, body) {
+  const normalized = markdown.replace(/\r\n/g, "\n");
+  const hasFrontmatter = normalized.startsWith("---\n") || normalized.startsWith("---\r\n");
+  if (!hasFrontmatter) {
+    return body;
+  }
+  const closingMarkerIndex = normalized.indexOf("\n---\n", 4);
+  if (closingMarkerIndex === -1) {
+    return body;
+  }
+  const frontmatterBlock = normalized.slice(0, closingMarkerIndex + 5);
+  return `${frontmatterBlock}${body.startsWith("\n") ? "" : "\n"}${body}`;
+}
+
+// src/core/apply/ApplyPlanner.ts
+var ApplyPlanner = class {
+  buildPlan(session, decision, body) {
+    var _a, _b, _c, _d, _e;
+    const operations = [];
+    if (decision.acceptBody && body) {
+      operations.push({
+        type: "replace-refined-body",
+        targetPath: session.notePath,
+        body
+      });
+    }
+    const frontmatterChanges = {
+      ...decision.acceptFrontmatter.status && ((_a = session.proposal.frontmatterSuggestion) == null ? void 0 : _a.status) ? { status: session.proposal.frontmatterSuggestion.status } : {},
+      ...decision.acceptFrontmatter.source && ((_b = session.proposal.frontmatterSuggestion) == null ? void 0 : _b.source) ? { source: session.proposal.frontmatterSuggestion.source } : {},
+      ...decision.acceptFrontmatter.context && ((_c = session.proposal.frontmatterSuggestion) == null ? void 0 : _c.context) ? { context: session.proposal.frontmatterSuggestion.context } : {}
+    };
+    if (Object.keys(frontmatterChanges).length > 0) {
+      operations.push({
+        type: "update-frontmatter",
+        targetPath: session.notePath,
+        changes: frontmatterChanges
+      });
+    }
+    const add = ((_d = decision.acceptTags.add) != null ? _d : []).filter((tag) => {
+      var _a2, _b2;
+      return (_b2 = (_a2 = session.proposal.tagSuggestion) == null ? void 0 : _a2.add) == null ? void 0 : _b2.includes(tag);
+    });
+    const remove = ((_e = decision.acceptTags.remove) != null ? _e : []).filter((tag) => {
+      var _a2, _b2;
+      return (_b2 = (_a2 = session.proposal.tagSuggestion) == null ? void 0 : _a2.remove) == null ? void 0 : _b2.includes(tag);
+    });
+    if (add.length > 0 || remove.length > 0) {
+      operations.push({
+        type: "update-tags",
+        targetPath: session.notePath,
+        add,
+        remove
+      });
+    }
+    return {
+      notePath: session.notePath,
+      sessionId: session.id,
+      operations
+    };
+  }
+};
+
+// src/core/apply/BodyAssembler.ts
+var SECTION_HEADINGS = {
+  summary: "## \u6458\u8981",
+  coreQuestion: "## \u6838\u5FC3\u95EE\u9898",
+  currentConclusion: "## \u5F53\u524D\u7ED3\u8BBA",
+  reasoning: "## \u4F9D\u636E\u4E0E\u63A8\u7406",
+  scope: "## \u9002\u7528\u8FB9\u754C",
+  nextSteps: "## \u540E\u7EED\u5904\u7406",
+  refineNote: "## \u6574\u7406\u8BF4\u660E"
+};
+var BodyAssembler = class {
+  constructor() {
+    this.extractor = new ProtectedRegionExtractor();
+  }
+  assemble(session, currentContent) {
+    const protectedRegion = this.extractor.extract(
+      currentContent,
+      rawRefinedProfile.protectedRegions.definitions[0]
+    );
+    if (!protectedRegion.ok) {
+      return protectedRegion;
+    }
+    const refinedBody = this.buildRefinedBody(session);
+    const body = `${refinedBody}
+
+${protectedRegion.region.text}`;
+    if (!body.endsWith(protectedRegion.region.text)) {
+      return {
+        ok: false,
+        error: {
+          code: "empty-protected-region",
+          message: "Protected region text was not preserved during body assembly."
+        }
+      };
+    }
+    return {
+      ok: true,
+      body,
+      protectedRegionText: protectedRegion.region.text
+    };
+  }
+  buildRefinedBody(session) {
+    const lines = [];
+    for (const key of Object.keys(session.proposal.refinedSections)) {
+      const content = session.proposal.refinedSections[key];
+      if (!content) {
+        continue;
+      }
+      lines.push(SECTION_HEADINGS[key]);
+      lines.push(content);
+      lines.push("");
+    }
+    return lines.join("\n").trimEnd();
+  }
+};
+
+// src/core/policy/PolicyGuard.ts
+var PolicyGuard = class {
+  constructor(profile) {
+    this.profile = profile;
+  }
+  guardRequest(request) {
+    void this.profile;
+    return request;
+  }
+};
+
+// src/application/BuildApplyPlanUseCase.ts
+var BuildApplyPlanUseCase = class {
+  constructor(profile, sessionStore, noteFilePort) {
+    this.sessionStore = sessionStore;
+    this.noteFilePort = noteFilePort;
+    this.planner = new ApplyPlanner();
+    this.bodyAssembler = new BodyAssembler();
+    this.policyGuard = new PolicyGuard(profile);
+  }
+  async execute(sessionId, decision) {
+    const session = await this.sessionStore.get(sessionId);
+    if (!session) {
+      return {
+        ok: false,
+        code: "missing-session",
+        message: `Proposal session ${sessionId} was not found.`
+      };
+    }
+    const guardedDecision = this.policyGuard.guardRequest(decision);
+    const note = await this.noteFilePort.readNoteByPath(session.notePath);
+    if (!note) {
+      return {
+        ok: false,
+        code: "missing-note",
+        message: `Target note ${session.notePath} was not found.`
+      };
+    }
+    let body;
+    if (guardedDecision.acceptBody) {
+      const assembled = this.bodyAssembler.assemble(session, note.content);
+      if (!assembled.ok) {
+        return {
+          ok: false,
+          code: assembled.error.code,
+          message: assembled.error.message
+        };
+      }
+      body = assembled.body;
+    }
+    return {
+      ok: true,
+      plan: this.planner.buildPlan(session, guardedDecision, body)
+    };
+  }
+};
+
 // src/application/CheckEligibilityUseCase.ts
 var CheckEligibilityUseCase = class {
   constructor(noteRepository, profile) {
@@ -128,7 +593,7 @@ var CheckEligibilityUseCase = class {
     if (statusValue !== this.profile.eligibility.requiredStatus) {
       failureReasons.push("invalidStatus");
     }
-    const headingPattern = new RegExp(`^${escapeRegExp(this.profile.eligibility.requiredHeading)}\\s*$`, "m");
+    const headingPattern = new RegExp(`^${escapeRegExp2(this.profile.eligibility.requiredHeading)}\\s*$`, "m");
     if (!headingPattern.test(activeNote.note.content)) {
       failureReasons.push("missingOriginalContentHeading");
     }
@@ -143,7 +608,7 @@ var CheckEligibilityUseCase = class {
     };
   }
 };
-function escapeRegExp(value) {
+function escapeRegExp2(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
@@ -376,71 +841,6 @@ function collectStringValues(value) {
   return [];
 }
 
-// src/core/protected-region/ProtectedRegionExtractor.ts
-var ProtectedRegionExtractor = class {
-  extract(markdown, definition) {
-    var _a;
-    if (definition.mode !== "from-heading-to-end") {
-      return {
-        ok: false,
-        error: {
-          code: "unsupported-mode",
-          message: `Protected region mode ${definition.mode} is not implemented in v0.1.0.`
-        }
-      };
-    }
-    const headingPattern = new RegExp(`^${escapeRegExp2(definition.heading)}\\s*\\r?$`, "gm");
-    const matches = [...markdown.matchAll(headingPattern)];
-    if (matches.length === 0) {
-      return {
-        ok: false,
-        error: {
-          code: "missing-heading",
-          message: `Required heading ${definition.heading} was not found.`
-        }
-      };
-    }
-    if (matches.length > 1) {
-      return {
-        ok: false,
-        error: {
-          code: "multiple-heading",
-          message: `Protected heading ${definition.heading} appears multiple times.`
-        }
-      };
-    }
-    const regionStart = (_a = matches[0].index) != null ? _a : 0;
-    const text = markdown.slice(regionStart);
-    if (text.trim() === definition.heading) {
-      return {
-        ok: false,
-        error: {
-          code: "empty-protected-region",
-          message: `Protected heading ${definition.heading} has no content after it.`
-        }
-      };
-    }
-    return {
-      ok: true,
-      region: {
-        id: definition.id,
-        heading: definition.heading,
-        mode: definition.mode,
-        text
-      }
-    };
-  }
-};
-function escapeRegExp2(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-// src/core/protected-region/hash.ts
-var import_node_crypto = require("node:crypto");
-function hashText(text) {
-  return (0, import_node_crypto.createHash)("sha256").update(text, "utf8").digest("hex");
-}
-
 // src/application/CreateProposalUseCase.ts
 var CreateProposalUseCase = class {
   constructor(noteRepository, profile, llmProvider, sessionStore) {
@@ -541,6 +941,55 @@ var RequestReviewUseCase = class {
   }
 };
 
+// src/application/SaveDraftUseCase.ts
+var SaveDraftUseCase = class {
+  constructor(sessionStore, noteFilePort, settings) {
+    this.sessionStore = sessionStore;
+    this.noteFilePort = noteFilePort;
+    this.settings = settings;
+  }
+  async execute(sessionId, conflictReason) {
+    var _a, _b, _c;
+    const session = await this.sessionStore.get(sessionId);
+    if (!session) {
+      return {
+        saved: false,
+        message: `Proposal session ${sessionId} was not found.`
+      };
+    }
+    const fileName = `${sanitizeFileName(session.noteTitle)}-${session.id}.md`;
+    const draftPath = `${this.settings.draftFolder}/${fileName}`;
+    const content = [
+      `# Refined Layer Draft`,
+      ``,
+      `- source note path: ${session.notePath}`,
+      `- workflow id: ${session.workflowProfileId}`,
+      `- created time: ${session.createdAt}`,
+      `- token usage: ${(_b = (_a = session.tokenUsage) == null ? void 0 : _a.countingMode) != null ? _b : "unavailable"}`,
+      ...conflictReason ? [`- conflict reason: ${conflictReason}`] : [],
+      ``,
+      `## Proposed Sections`,
+      ``,
+      ...Object.entries(session.proposal.refinedSections).flatMap(([key, value]) => value ? [`### ${key}`, String(value), ``] : []),
+      `## Warnings`,
+      ``,
+      ...((_c = session.proposal.warnings) == null ? void 0 : _c.length) ? session.proposal.warnings : ["none"],
+      ``
+    ].join("\n");
+    await this.noteFilePort.writeDraft(draftPath, content);
+    session.status = "saved_as_draft";
+    session.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    await this.sessionStore.save(session);
+    return {
+      saved: true,
+      draftPath
+    };
+  }
+};
+function sanitizeFileName(value) {
+  return value.replace(/[<>:"/\\|?*]/g, "-");
+}
+
 // src/adapters/llm/MockLlmProvider.ts
 var MockLlmProvider = class {
   async generateProposal(request) {
@@ -608,13 +1057,51 @@ var ObsidianNoteRepository = class {
       }
     };
   }
+  async readNoteByPath(path) {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof import_obsidian.TFile) || file.extension !== "md") {
+      return null;
+    }
+    const content = await this.app.vault.cachedRead(file);
+    return {
+      path: file.path,
+      title: file.basename,
+      content
+    };
+  }
+  async writeNote(path, content) {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof import_obsidian.TFile) || file.extension !== "md") {
+      throw new Error(`Markdown note not found: ${path}`);
+    }
+    await this.app.vault.modify(file, content);
+  }
+  async writeDraft(path, content) {
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (existing instanceof import_obsidian.TFile) {
+      await this.app.vault.modify(existing, content);
+      return;
+    }
+    await ensureFolders(this.app, path);
+    await this.app.vault.create(path, content);
+  }
 };
+async function ensureFolders(app, filePath) {
+  const parts = filePath.split("/").slice(0, -1);
+  let current = "";
+  for (const part of parts) {
+    current = current ? `${current}/${part}` : part;
+    if (!app.vault.getAbstractFileByPath(current)) {
+      await app.vault.createFolder(current);
+    }
+  }
+}
 
 // src/settings/PluginSettings.ts
 var DEFAULT_PLUGIN_SETTINGS = {
   language: "zh-CN",
   historyLimit: 5,
-  draftFolder: "Drafts/Refined Layer",
+  draftFolder: "80_Runtime/refine-drafts",
   provider: {
     type: "mock"
   },
@@ -645,92 +1132,26 @@ function mergeSettings(value) {
   };
 }
 
-// src/core/profile/rawRefinedProfile.ts
-var rawRefinedProfile = {
-  id: "raw-refined",
-  name: "Raw Refined",
-  version: "0.1.0",
-  eligibility: {
-    requiredExtension: "md",
-    requireFrontmatter: true,
-    requiredStatus: "raw",
-    requiredHeading: "## \u539F\u59CB\u5185\u5BB9"
-  },
-  protectedRegions: {
-    definitions: [
-      {
-        id: "original-content",
-        heading: "## \u539F\u59CB\u5185\u5BB9",
-        mode: "from-heading-to-end",
-        required: true,
-        preserveExactText: true
-      }
-    ]
-  },
-  outputSections: {
-    required: ["summary", "coreQuestion", "currentConclusion", "reasoning"],
-    optional: ["scope", "nextSteps", "refineNote"]
-  },
-  frontmatter: {
-    allowedFields: ["status", "created", "source", "context"],
-    readonlyFields: ["created"],
-    confirmRequiredFields: ["status", "source", "context"],
-    forbiddenFields: ["ai", "type", "subtype", "domain", "topic", "confidence", "verified", "updated"]
-  },
-  tags: {
-    mode: "allow-list",
-    allowedTags: [
-      "#ai/generated",
-      "#ai/assisted",
-      "#ai/reviewed",
-      "#ai/suggested",
-      "#todo/refine",
-      "#todo/link",
-      "#todo/review",
-      "#flag/core",
-      "#flag/sensitive"
-    ],
-    blockedTags: ["#raw", "#refined", "#self", "#external", "#practice", "#rel/*"]
-  },
-  prompt: {
-    systemPrompt: "",
-    userPrompt: ""
-  },
-  proposalSchema: {
-    workflowProfileId: "raw-refined"
-  },
-  review: {
-    required: true,
-    defaultChannel: "obsidian-ui",
-    allowApplyWithoutReview: false
-  },
-  apply: {
-    requireFreshnessCheck: true,
-    preserveProtectedRegions: true,
-    requireApplyPlan: true,
-    allowPartialApply: true,
-    onConflict: "block-and-offer-draft"
-  },
-  capabilities: {
-    body: true,
-    frontmatter: true,
-    tags: true,
-    rename: false,
-    move: false,
-    links: false,
-    moc: false,
-    archive: false,
-    delete: false
-  }
-};
-
 // src/runtime/ProposalSessionStore.ts
 var DEFAULT_HISTORY_LIMIT = 5;
 var ProposalSessionStore = class {
   constructor(historyLimit = DEFAULT_HISTORY_LIMIT) {
-    this.historyLimit = historyLimit;
     this.sessionsById = /* @__PURE__ */ new Map();
     this.sessionsByNotePath = /* @__PURE__ */ new Map();
+    this.historyLimit = historyLimit;
+  }
+  setHistoryLimit(historyLimit) {
+    this.historyLimit = historyLimit;
+    for (const [notePath, sessions] of this.sessionsByNotePath.entries()) {
+      const trimmed = sessions.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, this.historyLimit);
+      this.sessionsByNotePath.set(notePath, trimmed);
+      const keptIds = new Set(trimmed.map((session) => session.id));
+      for (const session of sessions) {
+        if (!keptIds.has(session.id)) {
+          this.sessionsById.delete(session.id);
+        }
+      }
+    }
   }
   async save(session) {
     var _a;
@@ -867,9 +1288,6 @@ function t(language, key, variables = {}) {
     template
   );
 }
-
-// src/ui/review/ObsidianReviewGate.ts
-var import_obsidian3 = require("obsidian");
 
 // src/ui/review/ReviewModal.ts
 var import_obsidian2 = require("obsidian");
@@ -1019,7 +1437,7 @@ var ReviewModal = class extends import_obsidian2.Modal {
 };
 
 // src/ui/review/ReviewViewModel.ts
-var SECTION_HEADINGS = {
+var SECTION_HEADINGS2 = {
   summary: "## \u6458\u8981",
   coreQuestion: "## \u6838\u5FC3\u95EE\u9898",
   currentConclusion: "## \u5F53\u524D\u7ED3\u8BBA",
@@ -1084,7 +1502,7 @@ function buildBodyPreview(session) {
     if (!content) {
       continue;
     }
-    lines.push(SECTION_HEADINGS[key]);
+    lines.push(SECTION_HEADINGS2[key]);
     lines.push(content);
     lines.push("");
   }
@@ -1093,29 +1511,28 @@ function buildBodyPreview(session) {
 
 // src/ui/review/ObsidianReviewGate.ts
 var ObsidianReviewGate = class {
-  constructor(app, language) {
+  constructor(app, language, handlers) {
     this.app = app;
     this.language = language;
+    this.handlers = handlers;
   }
   async requestReview(session) {
     const viewModel = createReviewViewModel(session);
     return new Promise((resolve) => {
       const modal = new ReviewModal(this.app, viewModel, this.language, {
         onApply: (decision) => {
-          new import_obsidian3.Notice(
-            t(this.language, "review.placeholder.apply", {
-              decision: JSON.stringify(decision)
-            }),
-            8e3
-          );
+          var _a, _b;
+          void ((_b = (_a = this.handlers) == null ? void 0 : _a.onApplyNotice) == null ? void 0 : _b.call(_a, decision));
           resolve({ action: "apply", decision });
         },
         onSaveDraft: (decision) => {
-          new import_obsidian3.Notice(t(this.language, "review.placeholder.saveDraft"), 6e3);
+          var _a, _b;
+          void ((_b = (_a = this.handlers) == null ? void 0 : _a.onSaveDraftNotice) == null ? void 0 : _b.call(_a, decision));
           resolve({ action: "save-draft", decision });
         },
         onCloseWithoutDecision: () => {
-          new import_obsidian3.Notice(t(this.language, "review.placeholder.cancel"), 4e3);
+          var _a, _b;
+          void ((_b = (_a = this.handlers) == null ? void 0 : _a.onCancelNotice) == null ? void 0 : _b.call(_a));
           resolve({ action: "cancel" });
         }
       });
@@ -1125,8 +1542,8 @@ var ObsidianReviewGate = class {
 };
 
 // src/ui/settings/SettingsTab.ts
-var import_obsidian4 = require("obsidian");
-var SettingsTab = class extends import_obsidian4.PluginSettingTab {
+var import_obsidian3 = require("obsidian");
+var SettingsTab = class extends import_obsidian3.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -1135,13 +1552,13 @@ var SettingsTab = class extends import_obsidian4.PluginSettingTab {
     const { containerEl } = this;
     const settings = this.plugin.getSettings();
     containerEl.empty();
-    new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.language")).setDesc(t(settings.language, "settings.desc.language")).addDropdown((dropdown) => {
+    new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.language")).setDesc(t(settings.language, "settings.desc.language")).addDropdown((dropdown) => {
       dropdown.addOption("zh-CN", t(settings.language, "settings.option.language.zh-CN")).addOption("en", t(settings.language, "settings.option.language.en")).setValue(settings.language).onChange(async (value) => {
         await this.plugin.updateSettings({ language: value });
         this.display();
       });
     });
-    new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.historyLimit")).setDesc(t(settings.language, "settings.desc.historyLimit")).addText((text) => {
+    new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.historyLimit")).setDesc(t(settings.language, "settings.desc.historyLimit")).addText((text) => {
       text.setPlaceholder("5").setValue(String(settings.historyLimit)).onChange(async (value) => {
         const parsed = Number.parseInt(value, 10);
         await this.plugin.updateSettings({
@@ -1149,12 +1566,12 @@ var SettingsTab = class extends import_obsidian4.PluginSettingTab {
         });
       });
     });
-    new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.draftFolder")).setDesc(t(settings.language, "settings.desc.draftFolder")).addText((text) => {
+    new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.draftFolder")).setDesc(t(settings.language, "settings.desc.draftFolder")).addText((text) => {
       text.setValue(settings.draftFolder).onChange(async (value) => {
         await this.plugin.updateSettings({ draftFolder: value.trim() || settings.draftFolder });
       });
     });
-    new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.promptProfile")).setDesc(t(settings.language, "settings.desc.promptProfile"));
+    new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.promptProfile")).setDesc(t(settings.language, "settings.desc.promptProfile"));
     this.addPromptOverrideField(
       containerEl,
       settings,
@@ -1176,9 +1593,9 @@ var SettingsTab = class extends import_obsidian4.PluginSettingTab {
   }
   addPromptOverrideField(containerEl, settings, field, title, description) {
     var _a, _b, _c;
-    const setting = new import_obsidian4.Setting(containerEl).setName(title).setDesc(description);
+    const setting = new import_obsidian3.Setting(containerEl).setName(title).setDesc(description);
     setting.controlEl.createDiv();
-    const textArea = new import_obsidian4.TextAreaComponent(setting.controlEl);
+    const textArea = new import_obsidian3.TextAreaComponent(setting.controlEl);
     textArea.inputEl.rows = 5;
     textArea.inputEl.cols = 40;
     textArea.setValue((_c = (_b = (_a = settings.promptOverrides) == null ? void 0 : _a["raw-refined"]) == null ? void 0 : _b[field]) != null ? _c : "");
@@ -1191,7 +1608,7 @@ var SettingsTab = class extends import_obsidian4.PluginSettingTab {
 // src/main.ts
 var REFINE_COMMAND_ID = "refine-current-note";
 var REOPEN_LAST_PROPOSAL_COMMAND_ID = "reopen-last-proposal-for-current-note";
-var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
+var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_PLUGIN_SETTINGS;
@@ -1218,7 +1635,7 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
           await this.openReviewForSession(result.session.id);
           return;
         }
-        new import_obsidian5.Notice(formatCreateProposalMessage(this.settings.language, result), 8e3);
+        new import_obsidian4.Notice(formatCreateProposalMessage(this.settings.language, result), 8e3);
       }
     });
     this.addCommand({
@@ -1229,12 +1646,12 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
         const noteRepository = new ObsidianNoteRepository(this.app);
         const activeNote = await noteRepository.getActiveNote();
         if (activeNote.kind !== "markdown") {
-          new import_obsidian5.Notice(formatEligibilityMessage(activeNoteToEligibility(activeNote)), 6e3);
+          new import_obsidian4.Notice(formatEligibilityMessage(activeNoteToEligibility(activeNote)), 6e3);
           return;
         }
         const session = await this.sessionStore.getLatestSessionForNote(activeNote.note.path);
         if (!session) {
-          new import_obsidian5.Notice(
+          new import_obsidian4.Notice(
             t(this.settings.language, "notice.review.noSession", {
               path: activeNote.note.path
             }),
@@ -1242,7 +1659,7 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
           );
           return;
         }
-        new import_obsidian5.Notice(
+        new import_obsidian4.Notice(
           t(this.settings.language, "notice.review.reopened", {
             sessionId: session.id,
             title: session.noteTitle,
@@ -1265,8 +1682,8 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
       ...this.settings,
       ...partial
     };
-    if (partial.historyLimit !== void 0 && partial.historyLimit !== this.sessionStore["historyLimit"]) {
-      this.sessionStore = new ProposalSessionStore(this.settings.historyLimit);
+    if (partial.historyLimit !== void 0) {
+      this.sessionStore.setHistoryLimit(this.settings.historyLimit);
     }
     await this.settingsStore.save(this.settings);
   }
@@ -1292,9 +1709,62 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
     if (!session) {
       return;
     }
-    const gate = new ObsidianReviewGate(this.app, this.settings.language);
+    const noteRepository = new ObsidianNoteRepository(this.app);
+    const gate = new ObsidianReviewGate(this.app, this.settings.language, {
+      onApplyNotice: async (decision) => {
+        await this.applySelectedChanges(sessionId, decision);
+      },
+      onSaveDraftNotice: async () => {
+        await this.saveDraft(sessionId);
+      },
+      onCancelNotice: () => {
+        new import_obsidian4.Notice(t(this.settings.language, "review.placeholder.cancel"), 4e3);
+      }
+    });
     const requestReviewUseCase = new RequestReviewUseCase(gate);
     await requestReviewUseCase.execute(session);
+    void noteRepository;
+  }
+  async applySelectedChanges(sessionId, decision) {
+    const noteRepository = new ObsidianNoteRepository(this.app);
+    const buildApplyPlanUseCase = new BuildApplyPlanUseCase(
+      rawRefinedProfile,
+      this.sessionStore,
+      noteRepository
+    );
+    const planResult = await buildApplyPlanUseCase.execute(sessionId, decision);
+    if (!planResult.ok) {
+      new import_obsidian4.Notice(`Refined Layer: apply plan failed (${planResult.code}) - ${planResult.message}`, 8e3);
+      return;
+    }
+    const applyDecisionUseCase = new ApplyDecisionUseCase(
+      rawRefinedProfile,
+      this.sessionStore,
+      noteRepository
+    );
+    const applyResult = await applyDecisionUseCase.execute(planResult.plan);
+    if (applyResult.kind === "applied") {
+      new import_obsidian4.Notice(`Refined Layer: applied selected changes to ${applyResult.notePath}.`, 6e3);
+      return;
+    }
+    if (applyResult.kind === "conflict") {
+      new import_obsidian4.Notice(
+        `Refined Layer: apply blocked by conflict (${applyResult.reason}). Options: ${applyResult.options.join(", ")}.`,
+        8e3
+      );
+      return;
+    }
+    new import_obsidian4.Notice(`Refined Layer: apply failed (${applyResult.code}) - ${applyResult.message}`, 8e3);
+  }
+  async saveDraft(sessionId, conflictReason) {
+    const noteRepository = new ObsidianNoteRepository(this.app);
+    const saveDraftUseCase = new SaveDraftUseCase(this.sessionStore, noteRepository, this.settings);
+    const result = await saveDraftUseCase.execute(sessionId, conflictReason);
+    if (result.saved) {
+      new import_obsidian4.Notice(`Refined Layer: draft saved to ${result.draftPath}.`, 6e3);
+      return;
+    }
+    new import_obsidian4.Notice(`Refined Layer: save draft failed - ${result.message}`, 8e3);
   }
 };
 function activeNoteToEligibility(activeNote) {

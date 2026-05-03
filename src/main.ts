@@ -1,8 +1,12 @@
 import { Notice, Plugin } from "obsidian";
 
+import { ApplyDecisionUseCase } from "./application/ApplyDecisionUseCase";
+import { BuildApplyPlanUseCase } from "./application/BuildApplyPlanUseCase";
 import { CreateProposalUseCase } from "./application/CreateProposalUseCase";
 import { RequestReviewUseCase } from "./application/RequestReviewUseCase";
+import { SaveDraftUseCase } from "./application/SaveDraftUseCase";
 import type { CheckEligibilityResult } from "./application/CheckEligibilityUseCase";
+import type { UserDecision } from "./core/review/UserDecision";
 import { MockLlmProvider } from "./adapters/llm/MockLlmProvider";
 import { ObsidianNoteRepository } from "./adapters/obsidian/ObsidianNoteRepository";
 import { ObsidianSettingsStore } from "./adapters/obsidian/ObsidianSettingsStore";
@@ -132,9 +136,72 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
       return;
     }
 
-    const gate = new ObsidianReviewGate(this.app, this.settings.language);
+    const noteRepository = new ObsidianNoteRepository(this.app);
+    const gate = new ObsidianReviewGate(this.app, this.settings.language, {
+      onApplyNotice: async (decision) => {
+        await this.applySelectedChanges(sessionId, decision);
+      },
+      onSaveDraftNotice: async () => {
+        await this.saveDraft(sessionId);
+      },
+      onCancelNotice: () => {
+        new Notice(t(this.settings.language, "review.placeholder.cancel"), 4000);
+      },
+    });
     const requestReviewUseCase = new RequestReviewUseCase(gate);
     await requestReviewUseCase.execute(session);
+
+    void noteRepository;
+  }
+
+  private async applySelectedChanges(sessionId: string, decision: UserDecision): Promise<void> {
+    const noteRepository = new ObsidianNoteRepository(this.app);
+    const buildApplyPlanUseCase = new BuildApplyPlanUseCase(
+      rawRefinedProfile,
+      this.sessionStore,
+      noteRepository,
+    );
+    const planResult = await buildApplyPlanUseCase.execute(sessionId, decision);
+
+    if (!planResult.ok) {
+      new Notice(`Refined Layer: apply plan failed (${planResult.code}) - ${planResult.message}`, 8000);
+      return;
+    }
+
+    const applyDecisionUseCase = new ApplyDecisionUseCase(
+      rawRefinedProfile,
+      this.sessionStore,
+      noteRepository,
+    );
+    const applyResult = await applyDecisionUseCase.execute(planResult.plan);
+
+    if (applyResult.kind === "applied") {
+      new Notice(`Refined Layer: applied selected changes to ${applyResult.notePath}.`, 6000);
+      return;
+    }
+
+    if (applyResult.kind === "conflict") {
+      new Notice(
+        `Refined Layer: apply blocked by conflict (${applyResult.reason}). Options: ${applyResult.options.join(", ")}.`,
+        8000,
+      );
+      return;
+    }
+
+    new Notice(`Refined Layer: apply failed (${applyResult.code}) - ${applyResult.message}`, 8000);
+  }
+
+  private async saveDraft(sessionId: string, conflictReason?: string): Promise<void> {
+    const noteRepository = new ObsidianNoteRepository(this.app);
+    const saveDraftUseCase = new SaveDraftUseCase(this.sessionStore, noteRepository, this.settings);
+    const result = await saveDraftUseCase.execute(sessionId, conflictReason);
+
+    if (result.saved) {
+      new Notice(`Refined Layer: draft saved to ${result.draftPath}.`, 6000);
+      return;
+    }
+
+    new Notice(`Refined Layer: save draft failed - ${result.message}`, 8000);
   }
 }
 

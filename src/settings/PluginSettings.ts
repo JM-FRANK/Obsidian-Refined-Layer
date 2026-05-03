@@ -20,7 +20,7 @@ export interface PluginSettings {
 export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   language: "zh-CN",
   historyLimit: 5,
-  draftFolder: "Drafts/Refined Layer",
+  draftFolder: "80_Runtime/refine-drafts",
   provider: {
     type: "mock",
   },

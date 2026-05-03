@@ -193,3 +193,73 @@ Phase 4 已完成。已实现最小 `SettingsTab` 和 `ObsidianSettingsStore`：
 - Change: 新增设置默认值、Obsidian 数据存储适配器、SettingsTab 与 profile-specific prompt override 保存逻辑，同时让 `historyLimit` 在运行时热更新
 - Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
 - Next: Phase 4 验收已满足；下一步如继续则进入 D15，实现 `ApplyPlanner` 与 `BuildApplyPlanUseCase`
+
+## D15 开发日志
+
+### Current status
+
+已实现 `ApplyPlanner`、`ApplyPlan` 和 `BuildApplyPlanUseCase`。当前 `ApplyPlan` 是唯一的写入计划入口，只允许 `replace-refined-body`、`update-frontmatter`、`update-tags` 三种 operation；`rename/move/link/moc/archive/delete` 不会进入计划。`BuildApplyPlanUseCase` 会先读取 session 和当前 note，再根据 `UserDecision` 仅生成用户明确接受的 operation，并通过 `PolicyGuard` 统一经过入口。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D15 / `src/core/apply/ApplyPlan.ts`、`src/core/apply/ApplyPlanner.ts`、`src/application/BuildApplyPlanUseCase.ts`
+- Reason: 为后续安全写入建立唯一可审计的写入计划层
+- Change: 定义三种合法 apply operation，并实现 `UserDecision -> ApplyPlan` 的转换与最小 use case
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
+- Next: 进入 D16，实现 `replace-refined-body` 的安全正文组装
+
+## D16 开发日志
+
+### Current status
+
+已实现 `BodyAssembler`。当前 apply 前会重新读取当前文件，从当前文件提取 `## 原始内容` protected region，并使用 proposal sections 重新组装 refined 正文，再拼接当前文件中的 protected region 原文。组装结果在内存中完成，且以“新正文必须逐字以当前 protected region 结尾”的方式保证受保护区域未被 proposal 污染。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D16 / `src/core/apply/BodyAssembler.ts`
+- Reason: 落实 review-first 架构对 protected region 逐字保留的要求
+- Change: 实现从当前文件提取 protected region、重建 refined 正文、再安全拼接 protected region 的内存组装逻辑
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
+- Next: 进入 D17，实现 frontmatter 与 tag 写入逻辑
+
+## D17 开发日志
+
+### Current status
+
+已实现 `update-frontmatter` 和 `update-tags` 的执行逻辑。frontmatter 只会写入用户确认后的 `status/source/context`，`created` 不会被修改，未知 YAML 会保留；tag 更新当前通过 frontmatter `tags` 字段落地，只写入 allow-list 内标签，`#rel/*` 和其他非法 tag 不会写入。`ApplyDecisionUseCase` 会按 `ApplyPlan` 顺序在内存中应用这些变更，最终统一写回 note。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D17 / `src/core/apply/FrontmatterTagApplier.ts`、`src/application/ApplyDecisionUseCase.ts`
+- Reason: 将 apply 计划扩展为可执行的 frontmatter/tag 修改流程，同时守住 profile 写入边界
+- Change: 实现 frontmatter 合并、未知字段保留、frontmatter `tags` 更新与 allow-list 过滤
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
+- Next: 进入 D18，实现 freshness check 与 conflict flow
+
+## D18 开发日志
+
+### Current status
+
+已实现 freshness check 和 conflict flow。apply 前会重新读取当前文件，对比 `baseFileHash` 和当前 protected region hash；任一发生变化都会阻止 apply，不执行写入，并返回 `Save as Draft / Regenerate / Manual copy / Discard` 选项。当前实现不会提供 force apply；发生冲突时对应 session 会标记为 `conflicted`。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D18 / `src/application/ApplyDecisionUseCase.ts`
+- Reason: 避免 proposal 生成后源文件变化导致静默覆盖
+- Change: 增加 file/protected-region freshness 比较、冲突结果模型和 session 冲突状态更新
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
+- Next: 进入 D19，实现 Save as Draft 与端到端 mock apply
+
+## D19 开发日志
+
+### Current status
+
+Phase 5 已完成。已实现 `SaveDraftUseCase`、Obsidian note/draft 写入 adapter，并将 ReviewModal 的 `Apply selected changes` 接到 `BuildApplyPlanUseCase + ApplyDecisionUseCase`，将 `Save as Draft` 接到 `SaveDraftUseCase`。默认草稿目录已调整为 `80_Runtime/refine-drafts/`；草稿会包含 source note path、workflow id、created time、token usage、proposed sections、warnings 和 conflict reason。当前自动测试已覆盖端到端 mock apply 的关键逻辑，但尚未在真实 Obsidian vault 中手动走完整 UI 写入回归。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D19 / `src/application/SaveDraftUseCase.ts`、`src/adapters/obsidian/ObsidianNoteRepository.ts`、`src/main.ts`
+- Reason: 打通 review-first 流程从 proposal 到安全 apply / draft 保存的最小闭环
+- Change: 实现草稿写入、Obsidian Markdown 读写适配器，并把 Review UI 的 Apply / Save as Draft 从占位回调切换到真实 application use case
+- Verification: 运行 `npm run typecheck`、`npm test`、`npm run build` 成功
+- Next: Phase 5 验收已满足；下一步如继续则进入 D20，实现 `ObsidianSecretStore` 与安全设置 UI
