@@ -631,6 +631,89 @@ function restoreDecision(raw) {
 }
 
 // src/settings/PluginSettings.ts
+var DEFAULT_TAG_WHITELIST = [
+  "#ai/generated",
+  "#ai/assisted",
+  "#ai/reviewed",
+  "#ai/suggested",
+  "#todo/refine",
+  "#todo/link",
+  "#todo/review",
+  "#flag/core",
+  "#flag/sensitive"
+];
+var DEFAULT_A_BLOCKS = [
+  {
+    id: "summary",
+    name: "\u6458\u8981",
+    heading: "\u6458\u8981",
+    headingLevel: 2,
+    prompt: "\u7528\u4E2D\u6587\u751F\u6210\u4E00\u6BB5\u7B80\u6D01\u7684\u6458\u8981\uFF0C\u6982\u62EC\u7B14\u8BB0\u7684\u6838\u5FC3\u5185\u5BB9\u3002",
+    order: 1,
+    enabled: true
+  },
+  {
+    id: "coreQuestion",
+    name: "\u6838\u5FC3\u95EE\u9898",
+    heading: "\u6838\u5FC3\u95EE\u9898",
+    headingLevel: 2,
+    prompt: "\u63D0\u70BC\u7B14\u8BB0\u8981\u89E3\u51B3\u7684\u6838\u5FC3\u95EE\u9898\u6216\u4E3B\u8981\u7591\u95EE\u3002",
+    order: 2,
+    enabled: true
+  },
+  {
+    id: "currentConclusion",
+    name: "\u5F53\u524D\u7ED3\u8BBA",
+    heading: "\u5F53\u524D\u7ED3\u8BBA",
+    headingLevel: 2,
+    prompt: "\u603B\u7ED3\u5F53\u524D\u7B14\u8BB0\u5DF2\u7ECF\u5F97\u51FA\u7684\u7ED3\u8BBA\u6216\u5224\u65AD\u3002",
+    order: 3,
+    enabled: true
+  },
+  {
+    id: "reasoning",
+    name: "\u4F9D\u636E\u4E0E\u63A8\u7406",
+    heading: "\u4F9D\u636E\u4E0E\u63A8\u7406",
+    headingLevel: 2,
+    prompt: "\u6574\u7406\u7B14\u8BB0\u4E2D\u7684\u63A8\u7406\u8FC7\u7A0B\u3001\u8BC1\u636E\u548C\u903B\u8F91\u94FE\u3002",
+    order: 4,
+    enabled: true
+  },
+  {
+    id: "scope",
+    name: "\u9002\u7528\u8FB9\u754C",
+    heading: "\u9002\u7528\u8FB9\u754C",
+    headingLevel: 2,
+    prompt: "\u6307\u51FA\u7ED3\u8BBA\u7684\u9002\u7528\u8303\u56F4\u3001\u9650\u5236\u6761\u4EF6\u548C\u8FB9\u754C\u60C5\u51B5\u3002\u5982\u65E0\u660E\u786E\u8FB9\u754C\uFF0C\u53EF\u7559\u7A7A\u3002",
+    order: 5,
+    enabled: true
+  },
+  {
+    id: "nextSteps",
+    name: "\u540E\u7EED\u5904\u7406",
+    heading: "\u540E\u7EED\u5904\u7406",
+    headingLevel: 2,
+    prompt: "\u5217\u51FA\u9700\u8981\u8FDB\u4E00\u6B65\u7814\u7A76\u6216\u5904\u7406\u7684\u4E8B\u9879\u3002\u5982\u65E0\u540E\u7EED\u4E8B\u9879\uFF0C\u53EF\u7559\u7A7A\u3002",
+    order: 6,
+    enabled: true
+  },
+  {
+    id: "refineNote",
+    name: "\u6574\u7406\u8BF4\u660E",
+    heading: "\u6574\u7406\u8BF4\u660E",
+    headingLevel: 2,
+    prompt: "\u8BF4\u660E\u672C\u6B21\u6574\u7406\u505A\u4E86\u4EC0\u4E48\u6539\u52A8\u3001\u4E3A\u4F55\u505A\u8FD9\u4E9B\u6539\u52A8\u3002\u5982\u65E0\u7279\u522B\u8BF4\u660E\uFF0C\u53EF\u7559\u7A7A\u3002",
+    order: 7,
+    enabled: true
+  }
+];
+var DEFAULT_B_BLOCK = {
+  id: "original-content",
+  name: "\u539F\u59CB\u5185\u5BB9",
+  heading: "\u539F\u59CB\u5185\u5BB9",
+  headingLevel: 2,
+  required: true
+};
 var DEFAULT_PLUGIN_SETTINGS = {
   language: "zh-CN",
   historyLimit: 5,
@@ -638,7 +721,22 @@ var DEFAULT_PLUGIN_SETTINGS = {
   provider: {
     type: "mock"
   },
-  promptOverrides: {}
+  promptOverrides: {},
+  rawRefined: {
+    protectH1: true,
+    aBlocks: DEFAULT_A_BLOCKS,
+    bBlock: DEFAULT_B_BLOCK,
+    tagWhitelist: DEFAULT_TAG_WHITELIST,
+    tagPrompt: "\u4ECE tagWhitelist \u4E2D\u9009\u62E9\u5408\u9002\u7684\u6807\u7B7E\u4F5C\u4E3A selectedTags\uFF0C\u5982\u6709\u5FC5\u8981\u5EFA\u8BAE\u65B0\u6807\u7B7E\u4F5C\u4E3A newTagSuggestions\u3002\u4E0D\u8981\u5C06\u975E\u767D\u540D\u5355\u6807\u7B7E\u653E\u5165 selectedTags\u3002",
+    promptObservationEnabled: false
+  },
+  sessionCache: {
+    limit: 5
+  },
+  errorSessionCache: {
+    enabled: true,
+    limit: 30
+  }
 };
 
 // src/adapters/obsidian/ObsidianSettingsStore.ts
@@ -655,24 +753,59 @@ var ObsidianSettingsStore = class {
   }
 };
 function mergeSettings(value) {
-  var _a, _b;
+  var _a, _b, _c, _d, _e, _f, _g, _h;
   const loaded = typeof value === "object" && value !== null ? value : {};
+  const rawRefined = (_a = loaded.rawRefined) != null ? _a : DEFAULT_PLUGIN_SETTINGS.rawRefined;
+  const sessionCache = (_b = loaded.sessionCache) != null ? _b : loaded.historyLimit !== void 0 ? { limit: loaded.historyLimit } : DEFAULT_PLUGIN_SETTINGS.sessionCache;
   return {
     ...DEFAULT_PLUGIN_SETTINGS,
     ...loaded,
-    provider: (_a = loaded.provider) != null ? _a : DEFAULT_PLUGIN_SETTINGS.provider,
-    promptOverrides: (_b = loaded.promptOverrides) != null ? _b : DEFAULT_PLUGIN_SETTINGS.promptOverrides
+    provider: (_c = loaded.provider) != null ? _c : DEFAULT_PLUGIN_SETTINGS.provider,
+    promptOverrides: (_d = loaded.promptOverrides) != null ? _d : DEFAULT_PLUGIN_SETTINGS.promptOverrides,
+    rawRefined: {
+      ...DEFAULT_PLUGIN_SETTINGS.rawRefined,
+      ...rawRefined,
+      aBlocks: (_e = rawRefined.aBlocks) != null ? _e : DEFAULT_PLUGIN_SETTINGS.rawRefined.aBlocks,
+      bBlock: (_f = rawRefined.bBlock) != null ? _f : DEFAULT_PLUGIN_SETTINGS.rawRefined.bBlock,
+      tagWhitelist: (_g = rawRefined.tagWhitelist) != null ? _g : DEFAULT_PLUGIN_SETTINGS.rawRefined.tagWhitelist
+    },
+    sessionCache,
+    errorSessionCache: (_h = loaded.errorSessionCache) != null ? _h : DEFAULT_PLUGIN_SETTINGS.errorSessionCache
   };
 }
 function sanitizeSettings(settings) {
-  var _a;
-  return {
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s;
+  const sanitized = {
     language: settings.language,
     historyLimit: settings.historyLimit,
     draftFolder: settings.draftFolder,
     provider: settings.provider ? sanitizeProvider(settings.provider) : void 0,
-    promptOverrides: (_a = settings.promptOverrides) != null ? _a : {}
+    promptOverrides: (_a = settings.promptOverrides) != null ? _a : {},
+    rawRefined: {
+      protectH1: (_c = (_b = settings.rawRefined) == null ? void 0 : _b.protectH1) != null ? _c : true,
+      aBlocks: ((_e = (_d = settings.rawRefined) == null ? void 0 : _d.aBlocks) != null ? _e : []).map((b) => ({
+        id: b.id,
+        name: b.name,
+        heading: b.heading,
+        headingLevel: b.headingLevel,
+        prompt: b.prompt,
+        order: b.order,
+        enabled: b.enabled
+      })),
+      bBlock: (_g = (_f = settings.rawRefined) == null ? void 0 : _f.bBlock) != null ? _g : DEFAULT_PLUGIN_SETTINGS.rawRefined.bBlock,
+      tagWhitelist: (_i = (_h = settings.rawRefined) == null ? void 0 : _h.tagWhitelist) != null ? _i : [],
+      tagPrompt: (_k = (_j = settings.rawRefined) == null ? void 0 : _j.tagPrompt) != null ? _k : "",
+      promptObservationEnabled: (_m = (_l = settings.rawRefined) == null ? void 0 : _l.promptObservationEnabled) != null ? _m : false
+    },
+    sessionCache: {
+      limit: (_o = (_n = settings.sessionCache) == null ? void 0 : _n.limit) != null ? _o : 5
+    },
+    errorSessionCache: {
+      enabled: (_q = (_p = settings.errorSessionCache) == null ? void 0 : _p.enabled) != null ? _q : true,
+      limit: (_s = (_r = settings.errorSessionCache) == null ? void 0 : _r.limit) != null ? _s : 30
+    }
   };
+  return sanitized;
 }
 function sanitizeProvider(provider) {
   return {

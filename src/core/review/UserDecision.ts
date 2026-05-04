@@ -14,3 +14,21 @@ export interface UserDecision {
   };
   saveAsDraftOnly?: boolean;
 }
+
+// ── v0.2.0 ──
+
+export interface UserDecisionV2 {
+  acceptBlocks: Record<string, boolean>;
+
+  acceptFrontmatter: {
+    status?: boolean;
+    source?: boolean;
+    context?: boolean;
+  };
+
+  acceptTags: {
+    add: string[];
+  };
+
+  saveAsDraftOnly?: boolean;
+}
