@@ -151,4 +151,112 @@ describe("OpenAICompatibleProvider", () => {
       }),
     );
   });
+
+  it("sends the real key from getSecret in the Authorization header, not the secretRef", async () => {
+    const fetchSpy = vi.fn(async () => ({
+      ok: true,
+      async json() {
+        return { choices: [{ message: { content: "{}" } }] };
+      },
+    }));
+    globalThis.fetch = fetchSpy as any;
+
+    const secretStore = {
+      isAvailable: () => true,
+      getSecret: vi.fn((ref: string) => {
+        if (ref === "test") return "sk-real-deepseek-key-12345";
+        return null;
+      }),
+      setSecret: () => undefined,
+    };
+
+    const provider = new OpenAICompatibleProvider({
+      providerId: "deepseek",
+      secretStore,
+      secretRef: "test",
+      model: "deepseek-v4-flash",
+      baseUrl: "https://api.deepseek.com/v1",
+    });
+
+    await provider.generateProposal({
+      workflowProfileId: "raw-refined",
+      notePath: "note.md",
+      noteTitle: "note",
+      noteContent: "content",
+      systemPrompt: "system",
+      userPrompt: "user",
+      promptVariables: { notePath: "note.md", noteTitle: "note", noteContent: "content" },
+    });
+
+    expect(secretStore.getSecret).toHaveBeenCalledWith("test");
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://api.deepseek.com/v1/chat/completions",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer sk-real-deepseek-key-12345",
+        }),
+      }),
+    );
+    expect(fetchSpy).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer test" }),
+      }),
+    );
+  });
+
+  it("throws when getSecret returns a value equal to the secretRef (polluted)", async () => {
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as any;
+
+    const provider = new OpenAICompatibleProvider({
+      secretStore: {
+        isAvailable: () => true,
+        getSecret: () => "test",
+        setSecret: () => undefined,
+      },
+      secretRef: "test",
+      model: "gpt-test",
+    });
+
+    await expect(provider.generateProposal({
+      workflowProfileId: "raw-refined",
+      notePath: "note.md",
+      noteTitle: "note",
+      noteContent: "content",
+      systemPrompt: "system",
+      userPrompt: "user",
+      promptVariables: { notePath: "note.md", noteTitle: "note", noteContent: "content" },
+    })).rejects.toThrow(/reference name itself/);
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("throws when getSecret returns null and requiresApiKey is true", async () => {
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as any;
+
+    const provider = new OpenAICompatibleProvider({
+      secretStore: {
+        isAvailable: () => true,
+        getSecret: () => null,
+        setSecret: () => undefined,
+      },
+      secretRef: "test",
+      model: "gpt-test",
+      requiresApiKey: true,
+    });
+
+    await expect(provider.generateProposal({
+      workflowProfileId: "raw-refined",
+      notePath: "note.md",
+      noteTitle: "note",
+      noteContent: "content",
+      systemPrompt: "system",
+      userPrompt: "user",
+      promptVariables: { notePath: "note.md", noteTitle: "note", noteContent: "content" },
+    })).rejects.toThrow("API key is missing");
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 });

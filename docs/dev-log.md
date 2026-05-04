@@ -609,3 +609,18 @@ Next: 执行 D29：按 `docs/fix-feature-tasks.md` 实现 ProposalSessionStore �
 [ ] GitHub 仓库未新建（需手动创建后 push）
 [ ] 真实 Obsidian 环境 TEST-MATRIX 手动测试（需用户执行）
 ```
+
+## D35 开发日志
+
+### Current status
+
+已修复 DeepSeek provider 调用时 `Authorization: Bearer test` 问题。根因为 SecretStorage 中 key="test" 的 value 被污染为字符串 "test"（用户首次配置时误写或 UI 交互导致）。本次修复建立四层防御：(1) `SettingsTab` — `SecretComponent.onChange` 增加 `if (!value.trim()) return` 守卫，`setValue("")` 移到 `onChange` 注册之后，防止空值触发保存。(2) `main.ts saveProviderApiKey` — 增加 `if (!value.trim()) return` 守卫，catch 块错误映射改为三路分支（Secret reference 格式错误 / 其他错误用 `toSafeErrorMessage` 脱敏 / 空值静默跳过），不再把 "API key value cannot be empty" 误报为 SecretStorage 不可用。(3) `OpenAICompatibleProvider.generateProposal` — 新增 L4 污染值纵深防御：`apiKey.trim() === secretRef.trim()` 时抛出明确错误（指出 secretRef 名，不含真实 key），不发送 fetch 请求。(4) 新增 3 个 provider 测试覆盖真实 key 使用、污染值拒绝、null key 拒绝路径。data.json 仍只保存 secretRef，真实 key 只写入 SecretStorage。
+
+### Active summary
+- Date: 2026-05-05
+- Scope: D35 / `src/ui/settings/SettingsTab.ts`（空值守卫 + 顺序修正）、`src/main.ts`（saveProviderApiKey 空值守卫 + 三路错误分支 + toSafeErrorMessage 导入）、`src/adapters/llm/OpenAICompatibleProvider.ts`（L4 污染值防御）、`tests/adapters/llm/OpenAICompatibleProvider.test.ts`（新增 3 测试）
+- Reason: 修复 SecretStorage 中 key="test" 的 value 被污染为 "test" 导致 DeepSeek 收到 `Bearer test` 的问题
+- Change: SettingsTab — `onChange` 移到 `setValue("")` 之前 + `if (!value.trim()) return`；main.ts — `if (!value.trim()) return` + catch 三路分支；OpenAICompatibleProvider — `apiKey.trim() === secretRef.trim()` 污染检测；测试 — 真实 key 使用、污染值拒绝、null key 拒绝
+- Verification: `npm run typecheck` 通过；`npm test` (94/94，17 文件) 通过；`npm run build` 成功；新测试确认 Authorization header 使用 `sk-real-deepseek-key-12345` 而非 `"test"`，污染值触发 "reference name itself" 错误且不发送 fetch
+- Next: 需用户在真实 Obsidian 中重载插件 → 手动覆盖/删除已有污染的 `test` key → 按 D35 验证步骤确认 `getSecret("test")` 返回真实 key
+- 剩余问题：若已有污染的 `test` key 未手动清除，`selectLlmProvider` 的 `!apiKey` 检查会通过（"test" 非空），但 L4 provider 层防御会拦截并给出明确错误；用户需重新保存真实 API key 覆盖污染值

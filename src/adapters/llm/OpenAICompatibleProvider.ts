@@ -34,6 +34,13 @@ export class OpenAICompatibleProvider implements LlmProvider {
       throw new Error("API key is missing for the configured secret reference.");
     }
 
+    if (apiKey && this.options.secretRef && apiKey.trim() === this.options.secretRef.trim()) {
+      throw new Error(
+        `The stored value for secret reference "${this.options.secretRef}" appears to be the reference name itself. ` +
+        "Please re-enter your real API key in Settings → API Key.",
+      );
+    }
+
     const response = await fetch(this.endpoint, {
       method: "POST",
       headers: {

@@ -142,11 +142,12 @@ export class SettingsTab extends PluginSettingTab {
 
       if (secretAvailable) {
         const secretComponent = new SecretComponent(this.app, apiKeySetting.controlEl);
-        secretComponent.setValue("");
         secretComponent.onChange(async (value) => {
+          if (!value.trim()) return;
           const secretRef = this.plugin.getSettings().provider?.secretRef ?? "";
           await this.plugin.saveProviderApiKey(secretRef, value);
         });
+        secretComponent.setValue("");
       } else {
         apiKeySetting.addText((text) => {
           text

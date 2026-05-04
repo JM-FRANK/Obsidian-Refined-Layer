@@ -105,6 +105,11 @@ var OpenAICompatibleProvider = class {
     if (this.requiresApiKey && !apiKey) {
       throw new Error("API key is missing for the configured secret reference.");
     }
+    if (apiKey && this.options.secretRef && apiKey.trim() === this.options.secretRef.trim()) {
+      throw new Error(
+        `The stored value for secret reference "${this.options.secretRef}" appears to be the reference name itself. Please re-enter your real API key in Settings \u2192 API Key.`
+      );
+    }
     const response = await fetch(this.endpoint, {
       method: "POST",
       headers: {
@@ -2782,12 +2787,13 @@ var SettingsTab = class extends import_obsidian4.PluginSettingTab {
       const apiKeySetting = new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.apiKey")).setDesc(t(settings.language, "settings.desc.apiKey")).setDisabled(!secretAvailable);
       if (secretAvailable) {
         const secretComponent = new import_obsidian4.SecretComponent(this.app, apiKeySetting.controlEl);
-        secretComponent.setValue("");
         secretComponent.onChange(async (value) => {
           var _a2, _b;
+          if (!value.trim()) return;
           const secretRef = (_b = (_a2 = this.plugin.getSettings().provider) == null ? void 0 : _a2.secretRef) != null ? _b : "";
           await this.plugin.saveProviderApiKey(secretRef, value);
         });
+        secretComponent.setValue("");
       } else {
         apiKeySetting.addText((text) => {
           text.setPlaceholder(t(settings.language, "settings.placeholder.apiKeyUnavailable")).setDisabled(true);
@@ -3000,14 +3006,22 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
       new import_obsidian5.Notice(t(this.settings.language, "notice.provider.missingSecretRef"), 8e3);
       return;
     }
+    if (!value.trim()) {
+      return;
+    }
     try {
       this.secretStore.setSecret(secretRef.trim(), value);
       new import_obsidian5.Notice(t(this.settings.language, "notice.provider.secretSaved"), 4e3);
     } catch (error) {
-      new import_obsidian5.Notice(
-        error instanceof Error && error.message.includes("Secret reference") ? t(this.settings.language, "notice.provider.secretInvalidRef") : t(this.settings.language, "notice.provider.secretBlocked"),
-        8e3
-      );
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("Secret reference")) {
+        new import_obsidian5.Notice(t(this.settings.language, "notice.provider.secretInvalidRef"), 8e3);
+      } else {
+        new import_obsidian5.Notice(
+          t(this.settings.language, "notice.provider.error", { message: toSafeErrorMessage(error) }),
+          8e3
+        );
+      }
     }
   }
   async updatePromptOverride(field, value) {

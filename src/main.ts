@@ -18,6 +18,7 @@ import { SaveDraftUseCase } from "./application/SaveDraftUseCase";
 import { rawRefinedProfile } from "./core/profile/rawRefinedProfile";
 import type { UserDecision } from "./core/review/UserDecision";
 import { ProposalSessionStore } from "./runtime/ProposalSessionStore";
+import { toSafeErrorMessage } from "./runtime/redaction";
 import { getDefaultProviderSettings, getProviderPreset, type ProviderType } from "./settings/ProviderConfig";
 import type { PluginSettings } from "./settings/PluginSettings";
 import { DEFAULT_PLUGIN_SETTINGS } from "./settings/PluginSettings";
@@ -195,16 +196,23 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
       return;
     }
 
+    if (!value.trim()) {
+      return;
+    }
+
     try {
       this.secretStore.setSecret(secretRef.trim(), value);
       new Notice(t(this.settings.language, "notice.provider.secretSaved"), 4000);
     } catch (error) {
-      new Notice(
-        error instanceof Error && error.message.includes("Secret reference")
-          ? t(this.settings.language, "notice.provider.secretInvalidRef")
-          : t(this.settings.language, "notice.provider.secretBlocked"),
-        8000,
-      );
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("Secret reference")) {
+        new Notice(t(this.settings.language, "notice.provider.secretInvalidRef"), 8000);
+      } else {
+        new Notice(
+          t(this.settings.language, "notice.provider.error", { message: toSafeErrorMessage(error) }),
+          8000,
+        );
+      }
     }
   }
 
