@@ -1,3 +1,4 @@
+import { toSafeErrorMessage } from "./redaction";
 import type { ProposalSession, ProposalSessionSummary } from "./ProposalSession";
 import type { SessionPersistenceStore } from "./SessionPersistenceStore";
 
@@ -122,8 +123,11 @@ export class ProposalSessionStore {
 
     try {
       await this.persistence.saveAll(new Map(this.sessionsByNotePath));
-    } catch {
-      // Persistence failure should not break the runtime flow.
+    } catch (error) {
+      console.warn(
+        "[Obsidian-Refined-Layer] Session persistence failed:",
+        toSafeErrorMessage(error),
+      );
     }
   }
 }

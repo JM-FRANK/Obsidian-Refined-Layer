@@ -4,7 +4,6 @@ import { BodyAssembler } from "../core/apply/BodyAssembler";
 import { PolicyGuard } from "../core/policy/PolicyGuard";
 import { ProposalValidator } from "../core/proposal/ProposalValidator";
 import { ProtectedRegionExtractor } from "../core/protected-region/ProtectedRegionExtractor";
-import { rawRefinedProfile } from "../core/profile/rawRefinedProfile";
 import type { WorkflowProfile } from "../core/profile/WorkflowProfile";
 import type { UserDecision } from "../core/review/UserDecision";
 import type { ProposalSessionStore } from "../runtime/ProposalSessionStore";
@@ -27,12 +26,14 @@ export class BuildApplyPlanUseCase {
   private readonly policyGuard: PolicyGuard;
   private readonly proposalValidator: ProposalValidator;
   private readonly protectedRegionExtractor = new ProtectedRegionExtractor();
+  private readonly profile: WorkflowProfile;
 
   constructor(
     profile: WorkflowProfile,
     private readonly sessionStore: ProposalSessionStore,
     private readonly noteFilePort: NoteFilePort,
   ) {
+    this.profile = profile;
     this.policyGuard = new PolicyGuard(profile);
     this.proposalValidator = new ProposalValidator(profile);
   }
@@ -62,7 +63,7 @@ export class BuildApplyPlanUseCase {
       const editedSections = guardedDecision.editedRefinedSections ?? session.proposal.refinedSections;
       const protectedRegion = this.protectedRegionExtractor.extract(
         note.content,
-        rawRefinedProfile.protectedRegions.definitions[0],
+        this.profile.protectedRegions.definitions[0],
       );
       if (!protectedRegion.ok) {
         return {
@@ -82,7 +83,12 @@ export class BuildApplyPlanUseCase {
         };
       }
 
-      const assembled = this.bodyAssembler.assemble(session, note.content, validation.refinedSections);
+      const assembled = this.bodyAssembler.assemble(
+        session,
+        this.profile.protectedRegions.definitions[0],
+        note.content,
+        validation.refinedSections,
+      );
       if (!assembled.ok) {
         return {
           ok: false,

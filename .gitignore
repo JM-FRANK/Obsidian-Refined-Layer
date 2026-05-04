@@ -9,3 +9,6 @@ vitest.config.ts.timestamp-*
 # Local Obsidian/plugin build noise
 .obsidian/
 data.json
+
+# claude
+.claude

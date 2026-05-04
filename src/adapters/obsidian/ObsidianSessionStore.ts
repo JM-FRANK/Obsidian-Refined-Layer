@@ -170,11 +170,15 @@ function toPersisted(session: ProposalSession): PersistedProposalSession | null 
   };
 }
 
+function hasRequiredSections(sections: RawRefinedProposal["refinedSections"]): boolean {
+  return !!(sections.summary && sections.coreQuestion && sections.currentConclusion && sections.reasoning);
+}
+
 function toPersistedProposal(proposal: RawRefinedProposal): PersistedRawRefinedProposal | null {
   if (proposal.workflowProfileId !== "raw-refined") {
     return null;
   }
-  if (!proposal.refinedSections?.summary || !proposal.refinedSections?.coreQuestion || !proposal.refinedSections?.currentConclusion || !proposal.refinedSections?.reasoning) {
+  if (!hasRequiredSections(proposal.refinedSections)) {
     return null;
   }
 

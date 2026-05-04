@@ -68,10 +68,13 @@ var MockLlmProvider = class {
 
 // src/runtime/redaction.ts
 var SECRET_PATTERNS = [
-  /Bearer\s+[A-Za-z0-9._\-]+/gi,
-  /Authorization:\s*[^\s,;]+/gi,
-  /api[_-]?key["']?\s*[:=]\s*["'][^"']+["']/gi,
-  /token["']?\s*[:=]\s*["'][^"']+["']/gi
+  /Bearer\s+[A-Za-z0-9._\-\+\/=]+/gi,
+  /Authorization:\s*\S+(\s+\S+)?/gi,
+  /api[_-]?key["'`]?\s*[:=]\s*["'`][^"'`]+["'`]/gi,
+  /token["'`]?\s*[:=]\s*["'`][^"'`]+["'`]/gi,
+  /secret["'`]?\s*[:=]\s*["'`][^"'`]+["'`]/gi,
+  /x-api-key["']?\s*[:=]\s*[^\s,;]+/gi,
+  /sk-[A-Za-z0-9_\-]+/gi
 ];
 function redactSensitiveText(text) {
   return SECRET_PATTERNS.reduce(
@@ -419,12 +422,14 @@ function toPersisted(session) {
     decision: session.decision ? toPersistedDecision(session.decision) : void 0
   };
 }
+function hasRequiredSections(sections) {
+  return !!(sections.summary && sections.coreQuestion && sections.currentConclusion && sections.reasoning);
+}
 function toPersistedProposal(proposal) {
-  var _a, _b, _c, _d;
   if (proposal.workflowProfileId !== "raw-refined") {
     return null;
   }
-  if (!((_a = proposal.refinedSections) == null ? void 0 : _a.summary) || !((_b = proposal.refinedSections) == null ? void 0 : _b.coreQuestion) || !((_c = proposal.refinedSections) == null ? void 0 : _c.currentConclusion) || !((_d = proposal.refinedSections) == null ? void 0 : _d.reasoning)) {
+  if (!hasRequiredSections(proposal.refinedSections)) {
     return null;
   }
   return {
@@ -876,98 +881,6 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// src/core/profile/rawRefinedProfile.ts
-var rawRefinedProfile = {
-  id: "raw-refined",
-  name: "Raw Refined",
-  version: "0.1.0",
-  eligibility: {
-    requiredExtension: "md",
-    requireFrontmatter: true,
-    requiredStatus: "raw",
-    requiredHeading: "## \u539F\u59CB\u5185\u5BB9"
-  },
-  protectedRegions: {
-    definitions: [
-      {
-        id: "original-content",
-        heading: "## \u539F\u59CB\u5185\u5BB9",
-        mode: "from-heading-to-end",
-        required: true,
-        preserveExactText: true
-      }
-    ]
-  },
-  outputSections: {
-    required: ["summary", "coreQuestion", "currentConclusion", "reasoning"],
-    optional: ["scope", "nextSteps", "refineNote"]
-  },
-  frontmatter: {
-    allowedFields: ["status", "created", "source", "context"],
-    readonlyFields: ["created"],
-    confirmRequiredFields: ["status", "source", "context"],
-    forbiddenFields: ["ai", "type", "subtype", "domain", "topic", "confidence", "verified", "updated"]
-  },
-  tags: {
-    mode: "allow-list",
-    allowedTags: [
-      "#ai/generated",
-      "#ai/assisted",
-      "#ai/reviewed",
-      "#ai/suggested",
-      "#todo/refine",
-      "#todo/link",
-      "#todo/review",
-      "#flag/core",
-      "#flag/sensitive"
-    ],
-    blockedTags: ["#raw", "#refined", "#self", "#external", "#practice", "#rel/*"]
-  },
-  prompt: {
-    systemPrompt: [
-      "You are generating a raw-refined proposal for an Obsidian note.",
-      "Return JSON only.",
-      "Do not include any text outside JSON.",
-      "Never include or rewrite the protected heading ## \u539F\u59CB\u5185\u5BB9 or any protected-region content.",
-      "Use this schema:",
-      '{"workflowProfileId":"raw-refined","refinedSections":{"summary":"string","coreQuestion":"string","currentConclusion":"string","reasoning":"string","scope":"string?","nextSteps":"string?","refineNote":"string?"},"frontmatterSuggestion":{"status":"refined","source":["self|external|practice"],"context":["string"]},"tagSuggestion":{"add":["string"],"remove":["string"]},"warnings":["string"]}'
-    ].join("\n"),
-    userPrompt: [
-      "Refine the current note into the approved raw-refined structure.",
-      "notePath: {{notePath}}",
-      "noteTitle: {{noteTitle}}",
-      "noteContent:",
-      "{{noteContent}}"
-    ].join("\n")
-  },
-  proposalSchema: {
-    workflowProfileId: "raw-refined"
-  },
-  review: {
-    required: true,
-    defaultChannel: "obsidian-ui",
-    allowApplyWithoutReview: false
-  },
-  apply: {
-    requireFreshnessCheck: true,
-    preserveProtectedRegions: true,
-    requireApplyPlan: true,
-    allowPartialApply: true,
-    onConflict: "block-and-offer-draft"
-  },
-  capabilities: {
-    body: true,
-    frontmatter: true,
-    tags: true,
-    rename: false,
-    move: false,
-    links: false,
-    moc: false,
-    archive: false,
-    delete: false
-  }
-};
-
 // src/application/ApplyDecisionUseCase.ts
 var ApplyDecisionUseCase = class {
   constructor(profile, sessionStore, noteFilePort) {
@@ -1001,7 +914,7 @@ var ApplyDecisionUseCase = class {
     }
     const protectedRegion = this.extractor.extract(
       note.content,
-      rawRefinedProfile.protectedRegions.definitions[0]
+      this.profile.protectedRegions.definitions[0]
     );
     if (!protectedRegion.ok) {
       return {
@@ -1139,27 +1052,24 @@ var BodyAssembler = class {
   constructor() {
     this.extractor = new ProtectedRegionExtractor();
   }
-  assemble(session, currentContent, refinedSections) {
-    const protectedRegion = this.extractor.extract(
-      currentContent,
-      rawRefinedProfile.protectedRegions.definitions[0]
-    );
+  assemble(session, protectedRegionDef, currentContent, refinedSections) {
+    const protectedRegion = this.extractor.extract(currentContent, protectedRegionDef);
     if (!protectedRegion.ok) {
       return protectedRegion;
+    }
+    if (!protectedRegion.region.text) {
+      return {
+        ok: false,
+        error: {
+          code: "empty-protected-region",
+          message: "Protected region text is empty; cannot assemble body."
+        }
+      };
     }
     const refinedBody = buildRefinedBodyPreview(refinedSections != null ? refinedSections : session.proposal.refinedSections);
     const body = `${refinedBody}
 
 ${protectedRegion.region.text}`;
-    if (!body.endsWith(protectedRegion.region.text)) {
-      return {
-        ok: false,
-        error: {
-          code: "empty-protected-region",
-          message: "Protected region text was not preserved during body assembly."
-        }
-      };
-    }
     return {
       ok: true,
       body,
@@ -1231,11 +1141,8 @@ var ProposalValidator = class {
     };
   }
   parseJsonLikeOutput(output) {
-    const candidates = [output.trim(), extractJsonBlock(output)];
+    const candidates = [output.trim(), extractJsonBlock(output)].filter(Boolean);
     for (const candidate of candidates) {
-      if (!candidate) {
-        continue;
-      }
       try {
         return {
           ok: true,
@@ -1465,6 +1372,7 @@ var BuildApplyPlanUseCase = class {
     this.planner = new ApplyPlanner();
     this.bodyAssembler = new BodyAssembler();
     this.protectedRegionExtractor = new ProtectedRegionExtractor();
+    this.profile = profile;
     this.policyGuard = new PolicyGuard(profile);
     this.proposalValidator = new ProposalValidator(profile);
   }
@@ -1492,7 +1400,7 @@ var BuildApplyPlanUseCase = class {
       const editedSections = (_a = guardedDecision.editedRefinedSections) != null ? _a : session.proposal.refinedSections;
       const protectedRegion = this.protectedRegionExtractor.extract(
         note.content,
-        rawRefinedProfile.protectedRegions.definitions[0]
+        this.profile.protectedRegions.definitions[0]
       );
       if (!protectedRegion.ok) {
         return {
@@ -1511,7 +1419,12 @@ var BuildApplyPlanUseCase = class {
           message: validation.errors[0].message
         };
       }
-      const assembled = this.bodyAssembler.assemble(session, note.content, validation.refinedSections);
+      const assembled = this.bodyAssembler.assemble(
+        session,
+        this.profile.protectedRegions.definitions[0],
+        note.content,
+        validation.refinedSections
+      );
       if (!assembled.ok) {
         return {
           ok: false,
@@ -1662,13 +1575,18 @@ var CreateProposalUseCase = class {
         ]
       };
     }
+    const variables = {
+      notePath: lookup.note.path,
+      noteTitle: lookup.note.title,
+      noteContent: lookup.note.content
+    };
     const systemPrompt = renderPromptTemplate(
       ((_a = this.promptOverride) == null ? void 0 : _a.enabled) && this.promptOverride.systemPrompt ? this.promptOverride.systemPrompt : this.profile.prompt.systemPrompt,
-      lookup.note
+      variables
     );
     const userPrompt = renderPromptTemplate(
       ((_b = this.promptOverride) == null ? void 0 : _b.enabled) && this.promptOverride.userPrompt ? this.promptOverride.userPrompt : this.profile.prompt.userPrompt,
-      lookup.note
+      variables
     );
     let llmResponse;
     try {
@@ -1734,9 +1652,104 @@ ${userPrompt}`,
 function createSessionId() {
   return `proposal-session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
-function renderPromptTemplate(template, note) {
-  return template.split("{{notePath}}").join(note.path).split("{{noteTitle}}").join(note.title).split("{{noteContent}}").join(note.content);
+function renderPromptTemplate(template, variables) {
+  return template.replace(/\{\{([a-zA-Z]+)\}\}/g, (_match, name) => {
+    var _a;
+    return (_a = variables[name]) != null ? _a : `{{${name}}}`;
+  });
 }
+
+// src/core/profile/rawRefinedProfile.ts
+var rawRefinedProfile = {
+  id: "raw-refined",
+  name: "Raw Refined",
+  version: "0.1.0",
+  eligibility: {
+    requiredExtension: "md",
+    requireFrontmatter: true,
+    requiredStatus: "raw",
+    requiredHeading: "## \u539F\u59CB\u5185\u5BB9"
+  },
+  protectedRegions: {
+    definitions: [
+      {
+        id: "original-content",
+        heading: "## \u539F\u59CB\u5185\u5BB9",
+        mode: "from-heading-to-end",
+        required: true,
+        preserveExactText: true
+      }
+    ]
+  },
+  outputSections: {
+    required: ["summary", "coreQuestion", "currentConclusion", "reasoning"],
+    optional: ["scope", "nextSteps", "refineNote"]
+  },
+  frontmatter: {
+    allowedFields: ["status", "created", "source", "context"],
+    readonlyFields: ["created"],
+    confirmRequiredFields: ["status", "source", "context"],
+    forbiddenFields: ["ai", "type", "subtype", "domain", "topic", "confidence", "verified", "updated"]
+  },
+  tags: {
+    mode: "allow-list",
+    allowedTags: [
+      "#ai/generated",
+      "#ai/assisted",
+      "#ai/reviewed",
+      "#ai/suggested",
+      "#todo/refine",
+      "#todo/link",
+      "#todo/review",
+      "#flag/core",
+      "#flag/sensitive"
+    ],
+    blockedTags: ["#raw", "#refined", "#self", "#external", "#practice", "#rel/*"]
+  },
+  prompt: {
+    systemPrompt: [
+      "You are generating a raw-refined proposal for an Obsidian note.",
+      "Return JSON only.",
+      "Do not include any text outside JSON.",
+      "Never include or rewrite the protected heading ## \u539F\u59CB\u5185\u5BB9 or any protected-region content.",
+      "Use this schema:",
+      '{"workflowProfileId":"raw-refined","refinedSections":{"summary":"string","coreQuestion":"string","currentConclusion":"string","reasoning":"string","scope":"string?","nextSteps":"string?","refineNote":"string?"},"frontmatterSuggestion":{"status":"refined","source":["self|external|practice"],"context":["string"]},"tagSuggestion":{"add":["string"],"remove":["string"]},"warnings":["string"]}'
+    ].join("\n"),
+    userPrompt: [
+      "Refine the current note into the approved raw-refined structure.",
+      "notePath: {{notePath}}",
+      "noteTitle: {{noteTitle}}",
+      "noteContent:",
+      "{{noteContent}}"
+    ].join("\n")
+  },
+  proposalSchema: {
+    workflowProfileId: "raw-refined"
+  },
+  review: {
+    required: true,
+    defaultChannel: "obsidian-ui",
+    allowApplyWithoutReview: false
+  },
+  apply: {
+    requireFreshnessCheck: true,
+    preserveProtectedRegions: true,
+    requireApplyPlan: true,
+    allowPartialApply: true,
+    onConflict: "block-and-offer-draft"
+  },
+  capabilities: {
+    body: true,
+    frontmatter: true,
+    tags: true,
+    rename: false,
+    move: false,
+    links: false,
+    moc: false,
+    archive: false,
+    delete: false
+  }
+};
 
 // src/application/ListRecoverableSessionsUseCase.ts
 var ListRecoverableSessionsUseCase = class {
@@ -1988,7 +2001,11 @@ var ProposalSessionStore = class {
     if (!this.persistence) return;
     try {
       await this.persistence.saveAll(new Map(this.sessionsByNotePath));
-    } catch (e) {
+    } catch (error) {
+      console.warn(
+        "[Obsidian-Refined-Layer] Session persistence failed:",
+        toSafeErrorMessage(error)
+      );
     }
   }
 };

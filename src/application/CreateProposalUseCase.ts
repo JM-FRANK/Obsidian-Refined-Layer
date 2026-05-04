@@ -93,17 +93,22 @@ export class CreateProposalUseCase {
       };
     }
 
+    const variables: Record<string, string> = {
+      notePath: lookup.note.path,
+      noteTitle: lookup.note.title,
+      noteContent: lookup.note.content,
+    };
     const systemPrompt = renderPromptTemplate(
       this.promptOverride?.enabled && this.promptOverride.systemPrompt
         ? this.promptOverride.systemPrompt
         : this.profile.prompt.systemPrompt,
-      lookup.note,
+      variables,
     );
     const userPrompt = renderPromptTemplate(
       this.promptOverride?.enabled && this.promptOverride.userPrompt
         ? this.promptOverride.userPrompt
         : this.profile.prompt.userPrompt,
-      lookup.note,
+      variables,
     );
 
     let llmResponse;
@@ -178,16 +183,11 @@ function createSessionId(): string {
   return `proposal-session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function renderPromptTemplate(
+export function renderPromptTemplate(
   template: string,
-  note: {
-    path: string;
-    title: string;
-    content: string;
-  },
+  variables: Record<string, string>,
 ): string {
-  return template
-    .split("{{notePath}}").join(note.path)
-    .split("{{noteTitle}}").join(note.title)
-    .split("{{noteContent}}").join(note.content);
+  return template.replace(/\{\{([a-zA-Z]+)\}\}/g, (_match, name) => {
+    return variables[name] ?? `{{${name}}}`;
+  });
 }

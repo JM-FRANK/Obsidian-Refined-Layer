@@ -474,3 +474,39 @@ Next: 执行 D29：按 `docs/fix-feature-tasks.md` 实现 ProposalSessionStore �
 - Change: 新增两个 use case 处理 session 列表与恢复；新增 SessionPickerModal 含 freshness 状态展示与 5 种操作；Reopen 命令改为 SessionPicker；main.ts 中接入恢复流程并废弃旧函数；补充 i18n 13 个 key + CSS 7 个样式类
 - Verification: `npm run typecheck`、`npm test` (64/64)、`npm run build` 成功；产物已同步到测试 vault
 - Next: Phase 8 继续；下一步执行 D31：保护 H1 / 文件标题，修正 replace-refined-body 边界
+
+## D31 开发日志
+
+### Current status
+
+已完成 code-review-excellence 审查发现的必须修复项与建议修复项。共修复 10 项问题，新增 20 个自动测试（3 个测试文件），改造 8 个源文件。未引入任何 v0.1.0 明确不做的长期能力。
+
+**必须修复 (3 项):**
+
+1. `BodyAssembler` 死代码移除。原 `endsWith` 检查由 `refinedBody + protectedRegion.region.text` 拼接而来，永远为真。已将检查前移到拼接之前，验证 `protectedRegion.region.text` 非空而非验证拼接后的不变式。同时将硬编码 `rawRefinedProfile` 替换为参数化 `ProtectedRegionDefinition`，由调用方传入。
+
+2. `ProposalSessionStore.persistIfNeeded` 静默吞错问题。已将空 `catch` 块改为 `console.warn` 输出脱敏诊断信息，使用既有的 `toSafeErrorMessage()` 确保不泄露 API key、Authorization header 或 secret。
+
+3. `ApplyDecisionUseCase` / `BuildApplyPlanUseCase` / `BodyAssembler` 硬编码 `rawRefinedProfile` 问题。三处均已改为使用构造函数注入的 `WorkflowProfile` 或方法参数传入的 `ProtectedRegionDefinition`。v0.1.0 仍只有一个内置 profile，但不再制造未来扩展断点。
+
+**建议修复 (3 项):**
+
+4. Prompt template 改为单次 `String.replace` 替换。原 `.split().join()` 链式替换在 `noteContent` 包含 `{{notePath}}` 或 `{{noteTitle}}` 时会造成嵌套二次替换。现使用 `/\{\{([a-zA-Z]+)\}\}/g` 正则单次遍历替换，未知变量保留原样。不引入完整模板引擎。
+
+5. `redaction.ts` 规则扩展。Bearer token 字符类增加 `+/=`（JWT/base64url 兼容）；新增 `secret`、`x-api-key`、`sk-`（OpenAI key 前缀）检测规则；使用反引号作为额外定界符。保持规则保守，避免误删正常日志主体。
+
+6. `onunload` 清理评估。确认 Obsidian `Plugin` 基类自动处理 `addCommand` 的 command deregistration，且 Modal 由 Obsidian 在 plugin unload 时自动关闭。无需额外清理代码。
+
+**顺手处理的 nit (3 项):**
+
+7. `parseJsonLikeOutput` 的 `null` candidate 通过 `.filter(Boolean)` 提前清除。
+8. `toPersistedProposal` 长条件提取为 `hasRequiredSections()` 辅助函数。
+9. `main.ts` composition root 评估：当前 458 行，provider 选择逻辑可独立为 `ProviderSelector`，但 v0.1.0 不做大规模重构。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D31 / `src/core/apply/BodyAssembler.ts`、`src/application/ApplyDecisionUseCase.ts`、`src/application/BuildApplyPlanUseCase.ts`、`src/application/CreateProposalUseCase.ts`、`src/runtime/ProposalSessionStore.ts`、`src/runtime/redaction.ts`、`src/core/proposal/ProposalValidator.ts`、`src/adapters/obsidian/ObsidianSessionStore.ts`
+- Reason: 根据 code-review-excellence 审查报告修复 10 项发现，消除死代码、脆弱的模板替换、静默错误吞没和硬编码扩展断点
+- Change: 详见上方 Current status 的 9 项细分；新增 `tests/core/apply/BodyAssembler.test.ts`（5 测试）、`tests/runtime/redaction.test.ts`（12 测试）、`tests/application/CreateProposalUseCase.test.ts` 补充 prompt template 3 测试
+- Verification: `npm run typecheck`、`npm test` (84/84，17 文件)、`npm run build` 成功；persistence 失败脱敏日志在 stderr 中可见 `[Obsidian-Refined-Layer] Session persistence failed: <redacted>`
+- Next: 原始 D31 计划（保护 H1 / 文件标题，修正 replace-refined-body 边界）延后为 D32

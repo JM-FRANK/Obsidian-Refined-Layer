@@ -2,7 +2,6 @@ import { applyFrontmatterChanges, applyTagChanges } from "../core/apply/Frontmat
 import type { ApplyPlan } from "../core/apply/ApplyPlan";
 import { hashText } from "../core/protected-region/hash";
 import { ProtectedRegionExtractor } from "../core/protected-region/ProtectedRegionExtractor";
-import { rawRefinedProfile } from "../core/profile/rawRefinedProfile";
 import type { WorkflowProfile } from "../core/profile/WorkflowProfile";
 import type { ProposalSessionStore } from "../runtime/ProposalSessionStore";
 import type { NoteFilePort } from "./ports/NoteFilePort";
@@ -63,7 +62,7 @@ export class ApplyDecisionUseCase {
 
     const protectedRegion = this.extractor.extract(
       note.content,
-      rawRefinedProfile.protectedRegions.definitions[0],
+      this.profile.protectedRegions.definitions[0],
     );
     if (!protectedRegion.ok) {
       return {

@@ -1,8 +1,11 @@
 const SECRET_PATTERNS = [
-  /Bearer\s+[A-Za-z0-9._\-]+/gi,
-  /Authorization:\s*[^\s,;]+/gi,
-  /api[_-]?key["']?\s*[:=]\s*["'][^"']+["']/gi,
-  /token["']?\s*[:=]\s*["'][^"']+["']/gi,
+  /Bearer\s+[A-Za-z0-9._\-\+\/=]+/gi,
+  /Authorization:\s*\S+(\s+\S+)?/gi,
+  /api[_-]?key["'`]?\s*[:=]\s*["'`][^"'`]+["'`]/gi,
+  /token["'`]?\s*[:=]\s*["'`][^"'`]+["'`]/gi,
+  /secret["'`]?\s*[:=]\s*["'`][^"'`]+["'`]/gi,
+  /x-api-key["']?\s*[:=]\s*[^\s,;]+/gi,
+  /sk-[A-Za-z0-9_\-]+/gi,
 ];
 
 export function redactSensitiveText(text: string): string {

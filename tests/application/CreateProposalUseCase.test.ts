@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { CreateProposalUseCase } from "../../src/application/CreateProposalUseCase";
+import { CreateProposalUseCase, renderPromptTemplate } from "../../src/application/CreateProposalUseCase";
 import type { ActiveNoteRepository } from "../../src/application/CheckEligibilityUseCase";
 import type { LlmProvider } from "../../src/adapters/llm/LlmProvider";
 import { rawRefinedProfile } from "../../src/core/profile/rawRefinedProfile";
@@ -168,5 +168,41 @@ describe("CreateProposalUseCase", () => {
       throw new Error("expected created result");
     }
     expect(result.session.tokenUsage?.countingMode).toBe("estimated");
+  });
+});
+
+describe("renderPromptTemplate", () => {
+  it("replaces template variables in a single pass", () => {
+    const template = "Path: {{notePath}}, Title: {{noteTitle}}, Content: {{noteContent}}";
+    const variables = {
+      notePath: "10_Raw/test.md",
+      noteTitle: "Test Note",
+      noteContent: "Some content with {{notePath}} and {{noteTitle}} inside",
+    };
+    const result = renderPromptTemplate(template, variables);
+
+    expect(result).toBe(
+      "Path: 10_Raw/test.md, Title: Test Note, Content: Some content with {{notePath}} and {{noteTitle}} inside",
+    );
+  });
+
+  it("does not double-substitute when noteContent contains template variable syntax", () => {
+    const template = "{{noteContent}}";
+    const variables = {
+      noteContent: "This has {{notePath}} embedded in it",
+      notePath: "/should/not/appear",
+    };
+    const result = renderPromptTemplate(template, variables);
+
+    expect(result).toBe("This has {{notePath}} embedded in it");
+    expect(result).not.toContain("/should/not/appear");
+  });
+
+  it("preserves unknown template variables", () => {
+    const template = "Hello {{unknown}} and {{noteTitle}}";
+    const variables = { noteTitle: "Test" };
+    const result = renderPromptTemplate(template, variables);
+
+    expect(result).toBe("Hello {{unknown}} and Test");
   });
 });

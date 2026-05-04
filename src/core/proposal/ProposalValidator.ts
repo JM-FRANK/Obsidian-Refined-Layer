@@ -84,13 +84,9 @@ export class ProposalValidator {
   }
 
   private parseJsonLikeOutput(output: string): { ok: true; value: unknown } | { ok: false; errors: ProposalValidationError[] } {
-    const candidates = [output.trim(), extractJsonBlock(output)];
+    const candidates = [output.trim(), extractJsonBlock(output)].filter(Boolean) as string[];
 
     for (const candidate of candidates) {
-      if (!candidate) {
-        continue;
-      }
-
       try {
         return {
           ok: true,
