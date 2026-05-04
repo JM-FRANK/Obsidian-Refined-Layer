@@ -5,11 +5,14 @@ import { OpenAICompatibleProvider } from "./adapters/llm/OpenAICompatibleProvide
 import type { LlmProvider } from "./adapters/llm/LlmProvider";
 import { ObsidianNoteRepository } from "./adapters/obsidian/ObsidianNoteRepository";
 import { ObsidianSecretStore, type SecretStorageDiagnostics } from "./adapters/obsidian/ObsidianSecretStore";
+import { ObsidianSessionStore } from "./adapters/obsidian/ObsidianSessionStore";
 import { ObsidianSettingsStore } from "./adapters/obsidian/ObsidianSettingsStore";
 import { ApplyDecisionUseCase } from "./application/ApplyDecisionUseCase";
 import { BuildApplyPlanUseCase } from "./application/BuildApplyPlanUseCase";
 import type { CheckEligibilityResult } from "./application/CheckEligibilityUseCase";
 import { CreateProposalUseCase } from "./application/CreateProposalUseCase";
+import { ListRecoverableSessionsUseCase } from "./application/ListRecoverableSessionsUseCase";
+import { RecoverProposalSessionUseCase } from "./application/RecoverProposalSessionUseCase";
 import { RequestReviewUseCase } from "./application/RequestReviewUseCase";
 import { SaveDraftUseCase } from "./application/SaveDraftUseCase";
 import { rawRefinedProfile } from "./core/profile/rawRefinedProfile";
@@ -20,6 +23,7 @@ import type { PluginSettings } from "./settings/PluginSettings";
 import { DEFAULT_PLUGIN_SETTINGS } from "./settings/PluginSettings";
 import { t } from "./ui/i18n";
 import { ObsidianReviewGate } from "./ui/review/ObsidianReviewGate";
+import { SessionPickerModal } from "./ui/review/SessionPickerModal";
 import { SettingsTab } from "./ui/settings/SettingsTab";
 
 const REFINE_COMMAND_ID = "refine-current-note";
@@ -28,12 +32,13 @@ const REOPEN_LAST_PROPOSAL_COMMAND_ID = "reopen-last-proposal-for-current-note";
 export default class ObsidianRefinedLayerPlugin extends Plugin {
   private settings: PluginSettings = DEFAULT_PLUGIN_SETTINGS;
   private settingsStore = new ObsidianSettingsStore(this);
-  private sessionStore = new ProposalSessionStore(DEFAULT_PLUGIN_SETTINGS.historyLimit);
+  private sessionStore = new ProposalSessionStore(DEFAULT_PLUGIN_SETTINGS.historyLimit, new ObsidianSessionStore(this));
   private secretStore = new ObsidianSecretStore(this.app);
 
   async onload(): Promise<void> {
     this.settings = await this.settingsStore.load();
-    this.sessionStore = new ProposalSessionStore(this.settings.historyLimit);
+    this.sessionStore = new ProposalSessionStore(this.settings.historyLimit, new ObsidianSessionStore(this));
+    await this.sessionStore.restoreFromDisk();
     this.secretStore = new ObsidianSecretStore(this.app);
 
     this.addSettingTab(new SettingsTab(this.app, this));
@@ -76,33 +81,43 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
       name: "Reopen last proposal for current note",
       callback: async () => {
         const noteRepository = new ObsidianNoteRepository(this.app);
-        const activeNote = await noteRepository.getActiveNote();
+        const listUseCase = new ListRecoverableSessionsUseCase(this.sessionStore, noteRepository);
+        const result = await listUseCase.execute();
 
-        if (activeNote.kind !== "markdown") {
-          new Notice(formatEligibilityMessage(activeNoteToEligibility(activeNote)), 6000);
+        if (result.sessions.length === 0) {
+          new Notice(t(this.settings.language, "sessionPicker.empty"), 6000);
           return;
         }
 
-        const session = await this.sessionStore.getLatestSessionForNote(activeNote.note.path);
-        if (!session) {
-          new Notice(
-            t(this.settings.language, "notice.review.noSession", {
-              path: activeNote.note.path,
-            }),
-            6000,
-          );
-          return;
-        }
-
-        new Notice(
-          t(this.settings.language, "notice.review.reopened", {
-            sessionId: session.id,
-            title: session.noteTitle,
-            mode: session.tokenUsage?.countingMode ?? "unavailable",
-          }),
-          6000,
-        );
-        await this.openReviewForSession(session.id);
+        new SessionPickerModal(
+          this.app,
+          result.sessions,
+          result.sessions[0]?.noteTitle ?? "",
+          result.notePath,
+          this.settings.language,
+          {
+            onContinue: async (sessionId) => {
+              await this.recoverAndOpenReview(sessionId);
+            },
+            onSaveDraft: async (sessionId) => {
+              await this.saveDraft(sessionId, "manual-draft-from-picker");
+            },
+            onManualCopy: async (sessionId) => {
+              await this.discardSession(sessionId);
+              new Notice("Session content shown for manual copy. Copy and close the modal.", 6000);
+            },
+            onRegenerate: () => {
+              // Just close the picker; user can run Refine manually
+            },
+            onDiscard: async (sessionId) => {
+              await this.discardSession(sessionId);
+              new Notice("Session discarded.", 4000);
+            },
+            onCancel: () => {
+              // Modal closed; nothing to do
+            },
+          },
+        ).open();
       },
     });
   }
@@ -218,11 +233,15 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
       return;
     }
 
+    await this.sessionStore.updateSessionStatus(sessionId, "reviewing");
+
     const gate = new ObsidianReviewGate(this.app, this.settings.language, {
       onApplyNotice: async (decision) => {
+        await this.sessionStore.updateSessionDecision(sessionId, decision);
         await this.applySelectedChanges(sessionId, decision);
       },
       onSaveDraftNotice: async (decision) => {
+        await this.sessionStore.updateSessionDecision(sessionId, decision);
         await this.saveDraft(sessionId, undefined, decision);
       },
       onCancelNotice: () => {
@@ -231,6 +250,34 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     });
     const requestReviewUseCase = new RequestReviewUseCase(gate);
     await requestReviewUseCase.execute(session);
+  }
+
+  private async recoverAndOpenReview(sessionId: string): Promise<void> {
+    const noteRepository = new ObsidianNoteRepository(this.app);
+    const recoverUseCase = new RecoverProposalSessionUseCase(this.sessionStore, noteRepository);
+    const recovery = await recoverUseCase.execute(sessionId);
+
+    if (!recovery) {
+      new Notice("Session not found.", 6000);
+      return;
+    }
+
+    if (recovery.kind === "fresh") {
+      await this.openReviewForSession(sessionId);
+      return;
+    }
+
+    new Notice(
+      t(this.settings.language, "sessionPicker.conflict", {
+        reason: recovery.reason,
+      }),
+      8000,
+    );
+    await this.sessionStore.updateSessionStatus(sessionId, "conflicted");
+  }
+
+  private async discardSession(sessionId: string): Promise<void> {
+    await this.sessionStore.updateSessionStatus(sessionId, "discarded");
   }
 
   private async applySelectedChanges(sessionId: string, decision: UserDecision): Promise<void> {
@@ -255,11 +302,13 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     const applyResult = await applyDecisionUseCase.execute(planResult.plan);
 
     if (applyResult.kind === "applied") {
+      await this.sessionStore.updateSessionStatus(sessionId, "applied");
       new Notice(`Refined Layer: applied selected changes to ${applyResult.notePath}.`, 6000);
       return;
     }
 
     if (applyResult.kind === "conflict") {
+      await this.sessionStore.updateSessionStatus(sessionId, "conflicted");
       new Notice(
         `Refined Layer: apply blocked by conflict (${applyResult.reason}). Options: ${applyResult.options.join(", ")}.`,
         8000,
@@ -276,6 +325,7 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     const result = await saveDraftUseCase.execute(sessionId, conflictReason, decision?.editedRefinedSections);
 
     if (result.saved) {
+      await this.sessionStore.updateSessionStatus(sessionId, "saved_as_draft");
       new Notice(`Refined Layer: draft saved to ${result.draftPath}.`, 6000);
       return;
     }
@@ -362,26 +412,6 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
       }),
     };
   }
-}
-
-function activeNoteToEligibility(
-  activeNote:
-    | { kind: "no-active-file" }
-    | { kind: "non-markdown-file"; path: string; extension: string },
-): CheckEligibilityResult {
-  if (activeNote.kind === "no-active-file") {
-    return {
-      hasActiveMarkdownNote: false,
-      reason: "no-active-file",
-    };
-  }
-
-  return {
-    hasActiveMarkdownNote: false,
-    reason: "non-markdown-file",
-    notePath: activeNote.path,
-    extension: activeNote.extension,
-  };
 }
 
 function formatEligibilityMessage(result: CheckEligibilityResult): string {

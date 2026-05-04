@@ -15,6 +15,7 @@ Use these project documents as the implementation source of truth:
 ```text
 docs/Obsidian Refined Layer 插件架构书 v0.1.0 Codex执行版.md
 docs/Obsidian Refined Layer 插件开发日计划 v0.1.0.md
+docs/fix-feature-tasks.md
 docs/dev-log.md
 ```
 

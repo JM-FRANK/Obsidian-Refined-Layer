@@ -23,7 +23,7 @@ __export(main_exports, {
   default: () => ObsidianRefinedLayerPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 
 // src/adapters/llm/MockLlmProvider.ts
 var MockLlmProvider = class {
@@ -289,6 +289,336 @@ var ObsidianSecretStore = class {
     }
   }
 };
+
+// src/adapters/obsidian/ObsidianSessionStore.ts
+var SESSION_CACHE_PATH = ".obsidian/plugins/obsidian-refined-layer/session-cache";
+var SESSION_FILE_NAME = "sessions.v1.json";
+var SESSION_FILE_PATH = `${SESSION_CACHE_PATH}/${SESSION_FILE_NAME}`;
+var VALID_STATUSES = /* @__PURE__ */ new Set([
+  "generated",
+  "reviewing",
+  "applied",
+  "saved_as_draft",
+  "discarded",
+  "conflicted"
+]);
+var SECRET_KEYWORDS = /* @__PURE__ */ new Set([
+  "apikey",
+  "api_key",
+  "key",
+  "secret",
+  "authorization",
+  "authheader",
+  "bearer",
+  "credential",
+  "x-api-key",
+  "rawrequest",
+  "rawresponse",
+  "providerrawresponse"
+]);
+var SAFE_TOKEN_KEYS = /* @__PURE__ */ new Set(["inputtokens", "outputtokens", "totaltokens", "countingmode"]);
+var ObsidianSessionStore = class {
+  constructor(plugin) {
+    this.plugin = plugin;
+  }
+  async saveAll(sessionsByPath) {
+    const data = {};
+    for (const [notePath, sessions] of sessionsByPath.entries()) {
+      const persisted = sessions.map((session) => toPersisted(session)).filter(Boolean);
+      if (persisted.length > 0) {
+        data[notePath] = persisted;
+      }
+    }
+    const payload = {
+      version: 1,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      sessionsByNotePath: data
+    };
+    const json = JSON.stringify(payload);
+    if (containsSecretPattern(json)) {
+      throw new Error("Session persistence blocked: serialized data contains potential secret patterns.");
+    }
+    const adapter = this.plugin.app.vault.adapter;
+    const cacheDir = SESSION_CACHE_PATH;
+    if (!await adapter.exists(cacheDir)) {
+      await adapter.mkdir(cacheDir);
+    }
+    await adapter.write(SESSION_FILE_PATH, json);
+  }
+  async loadAll() {
+    const result = /* @__PURE__ */ new Map();
+    const adapter = this.plugin.app.vault.adapter;
+    if (!await adapter.exists(SESSION_FILE_PATH)) {
+      return result;
+    }
+    let raw;
+    try {
+      raw = await adapter.read(SESSION_FILE_PATH);
+    } catch (e) {
+      return result;
+    }
+    let payload;
+    try {
+      payload = JSON.parse(raw);
+    } catch (e) {
+      return result;
+    }
+    if (typeof payload !== "object" || payload === null || !("version" in payload) || payload.version !== 1) {
+      return result;
+    }
+    const sessionsByNotePath = payload.sessionsByNotePath;
+    if (typeof sessionsByNotePath !== "object" || sessionsByNotePath === null) {
+      return result;
+    }
+    for (const [notePath, sessions] of Object.entries(sessionsByNotePath)) {
+      if (!Array.isArray(sessions)) continue;
+      if (!notePath.trim()) continue;
+      const validSessions = [];
+      for (const session of sessions) {
+        const restored = restoreSession(session);
+        if (restored) {
+          validSessions.push(restored);
+        }
+      }
+      if (validSessions.length > 0) {
+        validSessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        result.set(notePath, validSessions);
+      }
+    }
+    return result;
+  }
+};
+function toPersisted(session) {
+  if (!session.id || !session.notePath || !session.createdAt || !session.updatedAt) {
+    return null;
+  }
+  if (session.workflowProfileId !== "raw-refined") {
+    return null;
+  }
+  if (!VALID_STATUSES.has(session.status)) {
+    return null;
+  }
+  const proposal = toPersistedProposal(session.proposal);
+  if (!proposal) {
+    return null;
+  }
+  return {
+    id: session.id,
+    workflowProfileId: session.workflowProfileId,
+    policySnapshotId: session.policySnapshotId,
+    notePath: session.notePath,
+    noteTitle: session.noteTitle,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    baseFileHash: session.baseFileHash,
+    baseFrontmatterHash: session.baseFrontmatterHash,
+    baseProtectedRegionHash: session.baseProtectedRegionHash,
+    proposal,
+    tokenUsage: session.tokenUsage ? toPersistedTokenUsage(session.tokenUsage) : void 0,
+    status: session.status,
+    decision: session.decision ? toPersistedDecision(session.decision) : void 0
+  };
+}
+function toPersistedProposal(proposal) {
+  var _a, _b, _c, _d;
+  if (proposal.workflowProfileId !== "raw-refined") {
+    return null;
+  }
+  if (!((_a = proposal.refinedSections) == null ? void 0 : _a.summary) || !((_b = proposal.refinedSections) == null ? void 0 : _b.coreQuestion) || !((_c = proposal.refinedSections) == null ? void 0 : _c.currentConclusion) || !((_d = proposal.refinedSections) == null ? void 0 : _d.reasoning)) {
+    return null;
+  }
+  return {
+    workflowProfileId: proposal.workflowProfileId,
+    refinedSections: {
+      summary: proposal.refinedSections.summary,
+      coreQuestion: proposal.refinedSections.coreQuestion,
+      currentConclusion: proposal.refinedSections.currentConclusion,
+      reasoning: proposal.refinedSections.reasoning,
+      scope: proposal.refinedSections.scope,
+      nextSteps: proposal.refinedSections.nextSteps,
+      refineNote: proposal.refinedSections.refineNote
+    },
+    frontmatterSuggestion: proposal.frontmatterSuggestion ? {
+      status: proposal.frontmatterSuggestion.status,
+      source: proposal.frontmatterSuggestion.source,
+      context: proposal.frontmatterSuggestion.context
+    } : void 0,
+    tagSuggestion: proposal.tagSuggestion ? {
+      add: proposal.tagSuggestion.add,
+      remove: proposal.tagSuggestion.remove
+    } : void 0,
+    warnings: proposal.warnings
+  };
+}
+function toPersistedTokenUsage(usage) {
+  if (!usage) return void 0;
+  return {
+    provider: usage.provider,
+    model: usage.model,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    totalTokens: usage.totalTokens,
+    countingMode: usage.countingMode,
+    generatedAt: usage.generatedAt
+  };
+}
+function toPersistedDecision(decision) {
+  return {
+    acceptBody: decision.acceptBody,
+    editedRefinedSections: decision.editedRefinedSections ? {
+      summary: decision.editedRefinedSections.summary,
+      coreQuestion: decision.editedRefinedSections.coreQuestion,
+      currentConclusion: decision.editedRefinedSections.currentConclusion,
+      reasoning: decision.editedRefinedSections.reasoning,
+      scope: decision.editedRefinedSections.scope,
+      nextSteps: decision.editedRefinedSections.nextSteps,
+      refineNote: decision.editedRefinedSections.refineNote
+    } : void 0,
+    acceptFrontmatter: {
+      status: decision.acceptFrontmatter.status,
+      source: decision.acceptFrontmatter.source,
+      context: decision.acceptFrontmatter.context
+    },
+    acceptTags: {
+      add: decision.acceptTags.add,
+      remove: decision.acceptTags.remove
+    },
+    saveAsDraftOnly: decision.saveAsDraftOnly
+  };
+}
+function containsSecretPattern(json) {
+  try {
+    const obj = JSON.parse(json);
+    return scanObjectForSecrets(obj);
+  } catch (e) {
+    return true;
+  }
+}
+function scanObjectForSecrets(obj, currentKey) {
+  if (obj === null || obj === void 0) return false;
+  if (currentKey !== void 0) {
+    const lower = currentKey.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (SECRET_KEYWORDS.has(lower) && !SAFE_TOKEN_KEYS.has(lower)) {
+      return true;
+    }
+  }
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      if (scanObjectForSecrets(item)) return true;
+    }
+    return false;
+  }
+  if (typeof obj === "object") {
+    for (const [key, value] of Object.entries(obj)) {
+      if (scanObjectForSecrets(value, key)) return true;
+    }
+    return false;
+  }
+  return false;
+}
+function restoreSession(raw) {
+  if (typeof raw !== "object" || raw === null) return null;
+  const s = raw;
+  if (typeof s.id !== "string" || typeof s.notePath !== "string" || typeof s.noteTitle !== "string" || typeof s.createdAt !== "string" || typeof s.updatedAt !== "string" || typeof s.baseFileHash !== "string" || typeof s.policySnapshotId !== "string" || s.workflowProfileId !== "raw-refined" || !VALID_STATUSES.has(s.status)) {
+    return null;
+  }
+  const proposal = restoreProposal(s.proposal);
+  if (!proposal) return null;
+  return {
+    id: s.id,
+    workflowProfileId: s.workflowProfileId,
+    policySnapshotId: s.policySnapshotId,
+    notePath: s.notePath,
+    noteTitle: s.noteTitle,
+    createdAt: s.createdAt,
+    updatedAt: s.updatedAt,
+    baseFileHash: s.baseFileHash,
+    baseFrontmatterHash: typeof s.baseFrontmatterHash === "string" ? s.baseFrontmatterHash : void 0,
+    baseProtectedRegionHash: typeof s.baseProtectedRegionHash === "string" ? s.baseProtectedRegionHash : void 0,
+    proposal,
+    tokenUsage: restoreTokenUsage(s.tokenUsage),
+    status: s.status,
+    decision: restoreDecision(s.decision)
+  };
+}
+function restoreProposal(raw) {
+  if (typeof raw !== "object" || raw === null) return null;
+  const p = raw;
+  if (p.workflowProfileId !== "raw-refined") return null;
+  if (typeof p.refinedSections !== "object" || p.refinedSections === null) return null;
+  const sections = p.refinedSections;
+  if (typeof sections.summary !== "string" || typeof sections.coreQuestion !== "string" || typeof sections.currentConclusion !== "string" || typeof sections.reasoning !== "string") {
+    return null;
+  }
+  return {
+    workflowProfileId: "raw-refined",
+    refinedSections: {
+      summary: sections.summary,
+      coreQuestion: sections.coreQuestion,
+      currentConclusion: sections.currentConclusion,
+      reasoning: sections.reasoning,
+      scope: typeof sections.scope === "string" ? sections.scope : void 0,
+      nextSteps: typeof sections.nextSteps === "string" ? sections.nextSteps : void 0,
+      refineNote: typeof sections.refineNote === "string" ? sections.refineNote : void 0
+    },
+    frontmatterSuggestion: restoreFrontmatterSuggestion(p.frontmatterSuggestion),
+    tagSuggestion: restoreTagSuggestion(p.tagSuggestion),
+    warnings: Array.isArray(p.warnings) ? p.warnings.filter((w) => typeof w === "string") : void 0
+  };
+}
+function restoreTokenUsage(raw) {
+  if (typeof raw !== "object" || raw === null) return void 0;
+  const t2 = raw;
+  const validModes = /* @__PURE__ */ new Set(["actual", "estimated", "mixed", "unavailable"]);
+  if (typeof t2.provider !== "string" || typeof t2.model !== "string" || typeof t2.countingMode !== "string" || !validModes.has(t2.countingMode)) {
+    return void 0;
+  }
+  return {
+    provider: t2.provider,
+    model: t2.model,
+    inputTokens: typeof t2.inputTokens === "number" ? t2.inputTokens : void 0,
+    outputTokens: typeof t2.outputTokens === "number" ? t2.outputTokens : void 0,
+    totalTokens: typeof t2.totalTokens === "number" ? t2.totalTokens : void 0,
+    countingMode: t2.countingMode,
+    generatedAt: typeof t2.generatedAt === "string" ? t2.generatedAt : (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+function restoreFrontmatterSuggestion(raw) {
+  if (typeof raw !== "object" || raw === null) return void 0;
+  const f = raw;
+  return {
+    status: f.status,
+    source: Array.isArray(f.source) ? f.source.filter((s) => typeof s === "string") : void 0,
+    context: Array.isArray(f.context) ? f.context.filter((c) => typeof c === "string") : void 0
+  };
+}
+function restoreTagSuggestion(raw) {
+  if (typeof raw !== "object" || raw === null) return void 0;
+  const t2 = raw;
+  return {
+    add: Array.isArray(t2.add) ? t2.add.filter((a) => typeof a === "string") : void 0,
+    remove: Array.isArray(t2.remove) ? t2.remove.filter((r) => typeof r === "string") : void 0
+  };
+}
+function restoreDecision(raw) {
+  if (typeof raw !== "object" || raw === null) return void 0;
+  const d = raw;
+  return {
+    acceptBody: d.acceptBody === true,
+    editedRefinedSections: void 0,
+    // never restore edited sections — they are transient
+    acceptFrontmatter: {
+      status: d.acceptFrontmatter && typeof d.acceptFrontmatter === "object" ? d.acceptFrontmatter.status === true : void 0,
+      source: d.acceptFrontmatter && typeof d.acceptFrontmatter === "object" ? d.acceptFrontmatter.source === true : void 0,
+      context: d.acceptFrontmatter && typeof d.acceptFrontmatter === "object" ? d.acceptFrontmatter.context === true : void 0
+    },
+    acceptTags: {
+      add: d.acceptTags && typeof d.acceptTags === "object" ? Array.isArray(d.acceptTags.add) ? d.acceptTags.add.filter((a) => typeof a === "string") : void 0 : void 0,
+      remove: d.acceptTags && typeof d.acceptTags === "object" ? Array.isArray(d.acceptTags.remove) ? d.acceptTags.remove.filter((r) => typeof r === "string") : void 0 : void 0
+    },
+    saveAsDraftOnly: d.saveAsDraftOnly === true
+  };
+}
 
 // src/settings/PluginSettings.ts
 var DEFAULT_PLUGIN_SETTINGS = {
@@ -1408,6 +1738,106 @@ function renderPromptTemplate(template, note) {
   return template.split("{{notePath}}").join(note.path).split("{{noteTitle}}").join(note.title).split("{{noteContent}}").join(note.content);
 }
 
+// src/application/ListRecoverableSessionsUseCase.ts
+var ListRecoverableSessionsUseCase = class {
+  constructor(sessionStore, noteRepository) {
+    this.sessionStore = sessionStore;
+    this.noteRepository = noteRepository;
+    this.extractor = new ProtectedRegionExtractor();
+  }
+  async execute() {
+    const activeNote = await this.noteRepository.getActiveNote();
+    if (activeNote.kind !== "markdown") {
+      return { sessions: [], notePath: null };
+    }
+    const sessions = await this.sessionStore.listSessionsForNote(activeNote.note.path);
+    const recoverable = [];
+    for (const summary of sessions) {
+      const session = await this.sessionStore.get(summary.id);
+      if (!session) continue;
+      if (session.status === "discarded") continue;
+      const freshness = this.computeFreshness(session, activeNote.note.content);
+      recoverable.push({
+        id: session.id,
+        notePath: session.notePath,
+        noteTitle: session.noteTitle,
+        status: session.status,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        workflowProfileId: session.workflowProfileId,
+        tokenUsage: session.tokenUsage,
+        warnings: session.proposal.warnings,
+        summary: session.proposal.refinedSections.summary,
+        currentConclusion: session.proposal.refinedSections.currentConclusion,
+        freshness
+      });
+    }
+    return {
+      sessions: recoverable,
+      notePath: activeNote.note.path
+    };
+  }
+  computeFreshness(session, currentContent) {
+    const currentFileHash = hashText(currentContent);
+    if (currentFileHash !== session.baseFileHash) {
+      return "stale-file";
+    }
+    if (session.baseProtectedRegionHash) {
+      const region = this.extractor.extract(
+        currentContent,
+        rawRefinedProfile.protectedRegions.definitions[0]
+      );
+      if (region.ok) {
+        const currentRegionHash = hashText(region.region.text);
+        if (currentRegionHash !== session.baseProtectedRegionHash) {
+          return "stale-region";
+        }
+      }
+    }
+    return "fresh";
+  }
+};
+
+// src/application/RecoverProposalSessionUseCase.ts
+var RecoverProposalSessionUseCase = class {
+  constructor(sessionStore, noteRepository) {
+    this.sessionStore = sessionStore;
+    this.noteRepository = noteRepository;
+    this.extractor = new ProtectedRegionExtractor();
+  }
+  async execute(sessionId) {
+    const session = await this.sessionStore.get(sessionId);
+    if (!session) return null;
+    const activeNote = await this.noteRepository.getActiveNote();
+    if (activeNote.kind !== "markdown") {
+      return { kind: "stale", session, reason: "note-unavailable" };
+    }
+    if (activeNote.note.path !== session.notePath) {
+      return { kind: "stale", session, reason: "note-unavailable" };
+    }
+    const currentContent = activeNote.note.content;
+    const currentFileHash = hashText(currentContent);
+    if (currentFileHash !== session.baseFileHash) {
+      return { kind: "stale", session, reason: "file-changed" };
+    }
+    if (session.baseProtectedRegionHash) {
+      const region = this.extractor.extract(
+        currentContent,
+        rawRefinedProfile.protectedRegions.definitions[0]
+      );
+      if (region.ok) {
+        const currentRegionHash = hashText(region.region.text);
+        if (currentRegionHash !== session.baseProtectedRegionHash) {
+          return { kind: "stale", session, reason: "region-changed" };
+        }
+      } else {
+        return { kind: "stale", session, reason: "region-changed" };
+      }
+    }
+    return { kind: "fresh", session };
+  }
+};
+
 // src/application/RequestReviewUseCase.ts
 var RequestReviewUseCase = class {
   constructor(reviewGate) {
@@ -1471,10 +1901,11 @@ function sanitizeFileName(value) {
 // src/runtime/ProposalSessionStore.ts
 var DEFAULT_HISTORY_LIMIT = 5;
 var ProposalSessionStore = class {
-  constructor(historyLimit = DEFAULT_HISTORY_LIMIT) {
+  constructor(historyLimit = DEFAULT_HISTORY_LIMIT, persistence) {
     this.sessionsById = /* @__PURE__ */ new Map();
     this.sessionsByNotePath = /* @__PURE__ */ new Map();
     this.historyLimit = historyLimit;
+    this.persistence = persistence;
   }
   setHistoryLimit(historyLimit) {
     this.historyLimit = historyLimit;
@@ -1488,6 +1919,7 @@ var ProposalSessionStore = class {
         }
       }
     }
+    this.persistIfNeeded();
   }
   async save(session) {
     var _a;
@@ -1502,6 +1934,7 @@ var ProposalSessionStore = class {
         this.sessionsById.delete(previous.id);
       }
     }
+    await this.persistIfNeeded();
   }
   async get(sessionId) {
     var _a;
@@ -1522,6 +1955,41 @@ var ProposalSessionStore = class {
       status: session.status,
       updatedAt: session.updatedAt
     }));
+  }
+  async restoreFromDisk() {
+    if (!this.persistence) return;
+    const loaded = await this.persistence.loadAll();
+    this.sessionsById.clear();
+    this.sessionsByNotePath.clear();
+    for (const [notePath, sessions] of loaded.entries()) {
+      const trimmed = sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, this.historyLimit);
+      this.sessionsByNotePath.set(notePath, trimmed);
+      for (const session of trimmed) {
+        this.sessionsById.set(session.id, session);
+      }
+    }
+  }
+  async updateSessionStatus(sessionId, status) {
+    const session = this.sessionsById.get(sessionId);
+    if (!session) return;
+    session.status = status;
+    session.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    await this.persistIfNeeded();
+  }
+  async updateSessionDecision(sessionId, decision) {
+    const session = this.sessionsById.get(sessionId);
+    if (!session) return;
+    session.decision = decision;
+    session.status = "reviewing";
+    session.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    await this.persistIfNeeded();
+  }
+  async persistIfNeeded() {
+    if (!this.persistence) return;
+    try {
+      await this.persistence.saveAll(new Map(this.sessionsByNotePath));
+    } catch (e) {
+    }
   }
 };
 
@@ -1657,7 +2125,20 @@ var enStrings = {
   "notice.provider.secretSaved": "API key saved to secure secret storage.",
   "notice.provider.secretBlocked": "Cannot save API key because secure secret storage is unavailable.",
   "notice.provider.secretInvalidRef": "Secret reference must use lowercase letters, numbers, and dashes only.",
-  "notice.provider.error": "Provider error: {message}"
+  "notice.provider.error": "Provider error: {message}",
+  "sessionPicker.title": "Recoverable Proposal Sessions",
+  "sessionPicker.freshness.fresh": "Fresh",
+  "sessionPicker.freshness.stale-file": "File changed",
+  "sessionPicker.freshness.stale-region": "Protected region changed",
+  "sessionPicker.freshness.unknown": "Unknown",
+  "sessionPicker.button.continue": "Continue review",
+  "sessionPicker.button.manualCopy": "Manual copy",
+  "sessionPicker.button.regenerate": "Regenerate",
+  "sessionPicker.button.discard": "Discard",
+  "sessionPicker.button.cancel": "Cancel",
+  "sessionPicker.empty": "No recoverable proposal sessions for this note.",
+  "sessionPicker.sessionMeta": "{createdAt} \xB7 {status} \xB7 token {mode}",
+  "sessionPicker.conflict": "File has changed: {reason}. Cannot apply directly."
 };
 
 // src/ui/i18n/zh-CN.ts
@@ -1742,7 +2223,20 @@ var zhCNStrings = {
   "notice.provider.secretSaved": "API key \u5DF2\u4FDD\u5B58\u5230\u5B89\u5168 SecretStorage\u3002",
   "notice.provider.secretBlocked": "\u5F53\u524D\u73AF\u5883\u4E0D\u652F\u6301\u5B89\u5168 secret \u5B58\u50A8\uFF0C\u65E0\u6CD5\u4FDD\u5B58 API key\u3002",
   "notice.provider.secretInvalidRef": "Secret reference \u53EA\u80FD\u5305\u542B\u5C0F\u5199\u5B57\u6BCD\u3001\u6570\u5B57\u548C\u8FDE\u5B57\u7B26\u3002",
-  "notice.provider.error": "Provider \u9519\u8BEF\uFF1A{message}"
+  "notice.provider.error": "Provider \u9519\u8BEF\uFF1A{message}",
+  "sessionPicker.title": "\u53EF\u6062\u590D\u7684 Proposal Session",
+  "sessionPicker.freshness.fresh": "\u6587\u4EF6\u672A\u53D8\u5316",
+  "sessionPicker.freshness.stale-file": "\u6587\u4EF6\u5DF2\u53D8\u5316",
+  "sessionPicker.freshness.stale-region": "\u53D7\u4FDD\u62A4\u533A\u57DF\u5DF2\u53D8\u5316",
+  "sessionPicker.freshness.unknown": "\u672A\u77E5",
+  "sessionPicker.button.continue": "\u7EE7\u7EED\u5BA1\u6838",
+  "sessionPicker.button.manualCopy": "\u624B\u52A8\u590D\u5236",
+  "sessionPicker.button.regenerate": "\u91CD\u65B0\u751F\u6210",
+  "sessionPicker.button.discard": "\u4E22\u5F03",
+  "sessionPicker.button.cancel": "\u53D6\u6D88",
+  "sessionPicker.empty": "\u5F53\u524D\u7B14\u8BB0\u6CA1\u6709\u53EF\u6062\u590D\u7684 proposal session\u3002",
+  "sessionPicker.sessionMeta": "{createdAt} \xB7 {status} \xB7 token {mode}",
+  "sessionPicker.conflict": "\u6587\u4EF6\u5DF2\u53D8\u5316\uFF1A{reason}\u3002\u65E0\u6CD5\u76F4\u63A5 apply\u3002"
 };
 
 // src/ui/i18n/index.ts
@@ -2034,9 +2528,133 @@ var ObsidianReviewGate = class {
   }
 };
 
-// src/ui/settings/SettingsTab.ts
+// src/ui/review/SessionPickerModal.ts
 var import_obsidian3 = require("obsidian");
-var SettingsTab = class extends import_obsidian3.PluginSettingTab {
+var SessionPickerModal = class extends import_obsidian3.Modal {
+  constructor(app, sessions, noteTitle, notePath, language, callbacks) {
+    super(app);
+    this.sessions = sessions;
+    this.noteTitle = noteTitle;
+    this.notePath = notePath;
+    this.language = language;
+    this.callbacks = callbacks;
+    this.completed = false;
+  }
+  onOpen() {
+    const { contentEl, titleEl } = this;
+    titleEl.setText(t(this.language, "sessionPicker.title"));
+    contentEl.empty();
+    contentEl.addClass("obsidian-refined-layer-session-picker");
+    if (this.notePath) {
+      contentEl.createEl("p", {
+        cls: "obsidian-refined-layer-meta",
+        text: t(this.language, "review.noteMeta", {
+          title: this.noteTitle,
+          path: this.notePath
+        })
+      });
+    }
+    if (this.sessions.length === 0) {
+      contentEl.createEl("p", {
+        cls: "obsidian-refined-layer-empty",
+        text: t(this.language, "sessionPicker.empty")
+      });
+      this.renderCloseButton(contentEl);
+      return;
+    }
+    for (const session of this.sessions) {
+      this.renderSessionItem(contentEl, session);
+    }
+    this.renderCloseButton(contentEl);
+  }
+  onClose() {
+    this.contentEl.empty();
+    if (!this.completed) {
+      this.callbacks.onCancel();
+    }
+  }
+  renderSessionItem(container, session) {
+    var _a, _b;
+    const item = container.createDiv("obsidian-refined-layer-session-item");
+    const header = item.createDiv("obsidian-refined-layer-session-header");
+    header.createEl("strong", { text: session.summary });
+    const meta = item.createDiv("obsidian-refined-layer-session-meta");
+    const countingMode = (_b = (_a = session.tokenUsage) == null ? void 0 : _a.countingMode) != null ? _b : "unavailable";
+    meta.createSpan({
+      text: t(this.language, "sessionPicker.sessionMeta", {
+        createdAt: session.createdAt.slice(0, 10),
+        status: session.status,
+        mode: countingMode
+      })
+    });
+    const freshness = item.createDiv("obsidian-refined-layer-session-freshness");
+    freshness.createSpan({
+      text: t(this.language, `sessionPicker.freshness.${session.freshness}`),
+      cls: `obsidian-refined-layer-freshness-${session.freshness}`
+    });
+    const actions = item.createDiv("obsidian-refined-layer-session-actions");
+    if (session.freshness === "fresh") {
+      const continueBtn = actions.createEl("button", {
+        text: t(this.language, "sessionPicker.button.continue")
+      });
+      continueBtn.addEventListener("click", () => {
+        this.completed = true;
+        this.callbacks.onContinue(session.id);
+        this.close();
+      });
+    } else {
+      const conflictMsg = actions.createDiv("obsidian-refined-layer-conflict-msg");
+      conflictMsg.createSpan({
+        text: t(this.language, "sessionPicker.conflict", {
+          reason: session.freshness
+        })
+      });
+      const draftBtn = actions.createEl("button", {
+        text: t(this.language, "review.button.saveDraft")
+      });
+      draftBtn.addEventListener("click", () => {
+        this.completed = true;
+        this.callbacks.onSaveDraft(session.id);
+        this.close();
+      });
+      const manualBtn = actions.createEl("button", {
+        text: t(this.language, "sessionPicker.button.manualCopy")
+      });
+      manualBtn.addEventListener("click", () => {
+        this.completed = true;
+        this.callbacks.onManualCopy(session.id);
+        this.close();
+      });
+    }
+    const regenerateBtn = actions.createEl("button", {
+      text: t(this.language, "sessionPicker.button.regenerate")
+    });
+    regenerateBtn.addEventListener("click", () => {
+      this.completed = true;
+      this.callbacks.onRegenerate();
+      this.close();
+    });
+    const discardBtn = actions.createEl("button", {
+      text: t(this.language, "sessionPicker.button.discard")
+    });
+    discardBtn.addEventListener("click", () => {
+      this.callbacks.onDiscard(session.id);
+    });
+  }
+  renderCloseButton(container) {
+    const row = container.createDiv("obsidian-refined-layer-actions");
+    const closeBtn = row.createEl("button", {
+      text: t(this.language, "sessionPicker.button.cancel")
+    });
+    closeBtn.addEventListener("click", () => {
+      this.close();
+    });
+  }
+};
+
+// src/ui/settings/SettingsTab.ts
+var import_obsidian4 = require("obsidian");
+var SettingsTab = class extends import_obsidian4.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -2051,13 +2669,13 @@ var SettingsTab = class extends import_obsidian3.PluginSettingTab {
     const secretAvailable = this.plugin.hasSecureSecretStorage();
     const secretDiagnostics = this.plugin.getSecretStorageDiagnostics();
     containerEl.empty();
-    new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.language")).setDesc(t(settings.language, "settings.desc.language")).addDropdown((dropdown) => {
+    new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.language")).setDesc(t(settings.language, "settings.desc.language")).addDropdown((dropdown) => {
       dropdown.addOption("zh-CN", t(settings.language, "settings.option.language.zh-CN")).addOption("en", t(settings.language, "settings.option.language.en")).setValue(settings.language).onChange(async (value) => {
         await this.plugin.updateSettings({ language: value });
         this.display();
       });
     });
-    new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.historyLimit")).setDesc(t(settings.language, "settings.desc.historyLimit")).addText((text) => {
+    new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.historyLimit")).setDesc(t(settings.language, "settings.desc.historyLimit")).addText((text) => {
       text.setPlaceholder("5").setValue(String(settings.historyLimit)).onChange(async (value) => {
         const parsed = Number.parseInt(value, 10);
         await this.plugin.updateSettings({
@@ -2065,12 +2683,12 @@ var SettingsTab = class extends import_obsidian3.PluginSettingTab {
         });
       });
     });
-    new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.draftFolder")).setDesc(t(settings.language, "settings.desc.draftFolder")).addText((text) => {
+    new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.draftFolder")).setDesc(t(settings.language, "settings.desc.draftFolder")).addText((text) => {
       text.setValue(settings.draftFolder).onChange(async (value) => {
         await this.plugin.updateSettings({ draftFolder: value.trim() || settings.draftFolder });
       });
     });
-    const providerSetting = new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.providerType")).setDesc(secretAvailable ? t(settings.language, "settings.desc.providerType") : t(settings.language, "settings.warning.secretUnavailable"));
+    const providerSetting = new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.providerType")).setDesc(secretAvailable ? t(settings.language, "settings.desc.providerType") : t(settings.language, "settings.warning.secretUnavailable"));
     providerSetting.addDropdown((dropdown) => {
       dropdown.addOption("mock", t(settings.language, "settings.option.provider.mock")).addOption("openai-compatible", t(settings.language, "settings.option.provider.openai")).addOption("deepseek", t(settings.language, "settings.option.provider.deepseek")).addOption("custom-openai-compatible", t(settings.language, "settings.option.provider.custom")).addOption("local-openai-compatible", t(settings.language, "settings.option.provider.local")).setValue(providerType).onChange(async (value) => {
         await this.plugin.switchProviderType(value);
@@ -2082,7 +2700,7 @@ var SettingsTab = class extends import_obsidian3.PluginSettingTab {
       text: t(settings.language, `settings.help.provider.${providerType}`)
     });
     if (providerType !== "mock") {
-      const modelSetting = new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.providerModel")).setDesc(t(settings.language, "settings.desc.providerModel"));
+      const modelSetting = new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.providerModel")).setDesc(t(settings.language, "settings.desc.providerModel"));
       modelSetting.addText((text) => {
         var _a2;
         text.setValue((_a2 = provider == null ? void 0 : provider.model) != null ? _a2 : "").setPlaceholder(t(settings.language, `settings.placeholder.model.${providerType}`)).onChange(async (value) => {
@@ -2091,7 +2709,7 @@ var SettingsTab = class extends import_obsidian3.PluginSettingTab {
       });
     }
     if (providerPreset.allowsBaseUrlEdit) {
-      const baseUrlSetting = new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.baseUrl")).setDesc(t(settings.language, "settings.desc.baseUrl"));
+      const baseUrlSetting = new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.baseUrl")).setDesc(t(settings.language, "settings.desc.baseUrl"));
       baseUrlSetting.addText((text) => {
         var _a2;
         text.setValue((_a2 = provider == null ? void 0 : provider.baseUrl) != null ? _a2 : "").setPlaceholder(t(settings.language, `settings.placeholder.baseUrl.${providerType}`)).onChange(async (value) => {
@@ -2100,16 +2718,16 @@ var SettingsTab = class extends import_obsidian3.PluginSettingTab {
       });
     }
     if (providerPreset.requiresSecret) {
-      const secretRefSetting = new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.secretRef")).setDesc(t(settings.language, "settings.desc.secretRef")).setDisabled(!secretAvailable);
+      const secretRefSetting = new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.secretRef")).setDesc(t(settings.language, "settings.desc.secretRef")).setDisabled(!secretAvailable);
       secretRefSetting.addText((text) => {
         var _a2;
         text.setValue((_a2 = provider == null ? void 0 : provider.secretRef) != null ? _a2 : "").setPlaceholder(t(settings.language, `settings.placeholder.secretRef.${providerType}`)).setDisabled(!secretAvailable).onChange(async (value) => {
           await this.plugin.updateProviderSettings({ secretRef: value.trim() });
         });
       });
-      const apiKeySetting = new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.apiKey")).setDesc(t(settings.language, "settings.desc.apiKey")).setDisabled(!secretAvailable);
+      const apiKeySetting = new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.apiKey")).setDesc(t(settings.language, "settings.desc.apiKey")).setDisabled(!secretAvailable);
       if (secretAvailable) {
-        const secretComponent = new import_obsidian3.SecretComponent(this.app, apiKeySetting.controlEl);
+        const secretComponent = new import_obsidian4.SecretComponent(this.app, apiKeySetting.controlEl);
         secretComponent.setValue("");
         secretComponent.onChange(async (value) => {
           var _a2, _b;
@@ -2145,7 +2763,7 @@ var SettingsTab = class extends import_obsidian3.PluginSettingTab {
         `reason: ${secretDiagnostics.reason}`
       ].join("\n")
     });
-    new import_obsidian3.Setting(containerEl).setName(t(settings.language, "settings.title.promptProfile")).setDesc(t(settings.language, "settings.desc.promptProfile"));
+    new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.promptProfile")).setDesc(t(settings.language, "settings.desc.promptProfile"));
     this.addPromptOverrideField(
       containerEl,
       settings,
@@ -2167,9 +2785,9 @@ var SettingsTab = class extends import_obsidian3.PluginSettingTab {
   }
   addPromptOverrideField(containerEl, settings, field, title, description) {
     var _a, _b, _c;
-    const setting = new import_obsidian3.Setting(containerEl).setName(title).setDesc(description);
+    const setting = new import_obsidian4.Setting(containerEl).setName(title).setDesc(description);
     setting.controlEl.createDiv();
-    const textArea = new import_obsidian3.TextAreaComponent(setting.controlEl);
+    const textArea = new import_obsidian4.TextAreaComponent(setting.controlEl);
     textArea.inputEl.rows = 5;
     textArea.inputEl.cols = 40;
     textArea.setValue((_c = (_b = (_a = settings.promptOverrides) == null ? void 0 : _a["raw-refined"]) == null ? void 0 : _b[field]) != null ? _c : "");
@@ -2182,17 +2800,18 @@ var SettingsTab = class extends import_obsidian3.PluginSettingTab {
 // src/main.ts
 var REFINE_COMMAND_ID = "refine-current-note";
 var REOPEN_LAST_PROPOSAL_COMMAND_ID = "reopen-last-proposal-for-current-note";
-var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
+var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_PLUGIN_SETTINGS;
     this.settingsStore = new ObsidianSettingsStore(this);
-    this.sessionStore = new ProposalSessionStore(DEFAULT_PLUGIN_SETTINGS.historyLimit);
+    this.sessionStore = new ProposalSessionStore(DEFAULT_PLUGIN_SETTINGS.historyLimit, new ObsidianSessionStore(this));
     this.secretStore = new ObsidianSecretStore(this.app);
   }
   async onload() {
     this.settings = await this.settingsStore.load();
-    this.sessionStore = new ProposalSessionStore(this.settings.historyLimit);
+    this.sessionStore = new ProposalSessionStore(this.settings.historyLimit, new ObsidianSessionStore(this));
+    await this.sessionStore.restoreFromDisk();
     this.secretStore = new ObsidianSecretStore(this.app);
     this.addSettingTab(new SettingsTab(this.app, this));
     this.addCommand({
@@ -2202,11 +2821,11 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
         var _a;
         const providerSelection = this.selectLlmProvider();
         if (providerSelection.kind === "error") {
-          new import_obsidian4.Notice(providerSelection.message, 8e3);
+          new import_obsidian5.Notice(providerSelection.message, 8e3);
           return;
         }
         if (providerSelection.warning) {
-          new import_obsidian4.Notice(providerSelection.warning, 6e3);
+          new import_obsidian5.Notice(providerSelection.warning, 6e3);
         }
         const noteRepository = new ObsidianNoteRepository(this.app);
         const createProposalUseCase = new CreateProposalUseCase(
@@ -2221,7 +2840,7 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
           await this.openReviewForSession(result.session.id);
           return;
         }
-        new import_obsidian4.Notice(formatCreateProposalMessage(this.settings.language, result), 8e3);
+        new import_obsidian5.Notice(formatCreateProposalMessage(this.settings.language, result), 8e3);
       }
     });
     this.addCommand({
@@ -2230,30 +2849,39 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
       callback: async () => {
         var _a, _b;
         const noteRepository = new ObsidianNoteRepository(this.app);
-        const activeNote = await noteRepository.getActiveNote();
-        if (activeNote.kind !== "markdown") {
-          new import_obsidian4.Notice(formatEligibilityMessage(activeNoteToEligibility(activeNote)), 6e3);
+        const listUseCase = new ListRecoverableSessionsUseCase(this.sessionStore, noteRepository);
+        const result = await listUseCase.execute();
+        if (result.sessions.length === 0) {
+          new import_obsidian5.Notice(t(this.settings.language, "sessionPicker.empty"), 6e3);
           return;
         }
-        const session = await this.sessionStore.getLatestSessionForNote(activeNote.note.path);
-        if (!session) {
-          new import_obsidian4.Notice(
-            t(this.settings.language, "notice.review.noSession", {
-              path: activeNote.note.path
-            }),
-            6e3
-          );
-          return;
-        }
-        new import_obsidian4.Notice(
-          t(this.settings.language, "notice.review.reopened", {
-            sessionId: session.id,
-            title: session.noteTitle,
-            mode: (_b = (_a = session.tokenUsage) == null ? void 0 : _a.countingMode) != null ? _b : "unavailable"
-          }),
-          6e3
-        );
-        await this.openReviewForSession(session.id);
+        new SessionPickerModal(
+          this.app,
+          result.sessions,
+          (_b = (_a = result.sessions[0]) == null ? void 0 : _a.noteTitle) != null ? _b : "",
+          result.notePath,
+          this.settings.language,
+          {
+            onContinue: async (sessionId) => {
+              await this.recoverAndOpenReview(sessionId);
+            },
+            onSaveDraft: async (sessionId) => {
+              await this.saveDraft(sessionId, "manual-draft-from-picker");
+            },
+            onManualCopy: async (sessionId) => {
+              await this.discardSession(sessionId);
+              new import_obsidian5.Notice("Session content shown for manual copy. Copy and close the modal.", 6e3);
+            },
+            onRegenerate: () => {
+            },
+            onDiscard: async (sessionId) => {
+              await this.discardSession(sessionId);
+              new import_obsidian5.Notice("Session discarded.", 4e3);
+            },
+            onCancel: () => {
+            }
+          }
+        ).open();
       }
     });
   }
@@ -2311,18 +2939,18 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
   }
   async saveProviderApiKey(secretRef, value) {
     if (!this.secretStore.isAvailable()) {
-      new import_obsidian4.Notice(t(this.settings.language, "notice.provider.secretBlocked"), 8e3);
+      new import_obsidian5.Notice(t(this.settings.language, "notice.provider.secretBlocked"), 8e3);
       return;
     }
     if (!secretRef.trim()) {
-      new import_obsidian4.Notice(t(this.settings.language, "notice.provider.missingSecretRef"), 8e3);
+      new import_obsidian5.Notice(t(this.settings.language, "notice.provider.missingSecretRef"), 8e3);
       return;
     }
     try {
       this.secretStore.setSecret(secretRef.trim(), value);
-      new import_obsidian4.Notice(t(this.settings.language, "notice.provider.secretSaved"), 4e3);
+      new import_obsidian5.Notice(t(this.settings.language, "notice.provider.secretSaved"), 4e3);
     } catch (error) {
-      new import_obsidian4.Notice(
+      new import_obsidian5.Notice(
         error instanceof Error && error.message.includes("Secret reference") ? t(this.settings.language, "notice.provider.secretInvalidRef") : t(this.settings.language, "notice.provider.secretBlocked"),
         8e3
       );
@@ -2350,19 +2978,45 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
     if (!session) {
       return;
     }
+    await this.sessionStore.updateSessionStatus(sessionId, "reviewing");
     const gate = new ObsidianReviewGate(this.app, this.settings.language, {
       onApplyNotice: async (decision) => {
+        await this.sessionStore.updateSessionDecision(sessionId, decision);
         await this.applySelectedChanges(sessionId, decision);
       },
       onSaveDraftNotice: async (decision) => {
+        await this.sessionStore.updateSessionDecision(sessionId, decision);
         await this.saveDraft(sessionId, void 0, decision);
       },
       onCancelNotice: () => {
-        new import_obsidian4.Notice(t(this.settings.language, "review.placeholder.cancel"), 4e3);
+        new import_obsidian5.Notice(t(this.settings.language, "review.placeholder.cancel"), 4e3);
       }
     });
     const requestReviewUseCase = new RequestReviewUseCase(gate);
     await requestReviewUseCase.execute(session);
+  }
+  async recoverAndOpenReview(sessionId) {
+    const noteRepository = new ObsidianNoteRepository(this.app);
+    const recoverUseCase = new RecoverProposalSessionUseCase(this.sessionStore, noteRepository);
+    const recovery = await recoverUseCase.execute(sessionId);
+    if (!recovery) {
+      new import_obsidian5.Notice("Session not found.", 6e3);
+      return;
+    }
+    if (recovery.kind === "fresh") {
+      await this.openReviewForSession(sessionId);
+      return;
+    }
+    new import_obsidian5.Notice(
+      t(this.settings.language, "sessionPicker.conflict", {
+        reason: recovery.reason
+      }),
+      8e3
+    );
+    await this.sessionStore.updateSessionStatus(sessionId, "conflicted");
+  }
+  async discardSession(sessionId) {
+    await this.sessionStore.updateSessionStatus(sessionId, "discarded");
   }
   async applySelectedChanges(sessionId, decision) {
     const noteRepository = new ObsidianNoteRepository(this.app);
@@ -2373,7 +3027,7 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
     );
     const planResult = await buildApplyPlanUseCase.execute(sessionId, decision);
     if (!planResult.ok) {
-      new import_obsidian4.Notice(`Refined Layer: apply plan failed (${planResult.code}) - ${planResult.message}`, 8e3);
+      new import_obsidian5.Notice(`Refined Layer: apply plan failed (${planResult.code}) - ${planResult.message}`, 8e3);
       return;
     }
     const applyDecisionUseCase = new ApplyDecisionUseCase(
@@ -2383,27 +3037,30 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
     );
     const applyResult = await applyDecisionUseCase.execute(planResult.plan);
     if (applyResult.kind === "applied") {
-      new import_obsidian4.Notice(`Refined Layer: applied selected changes to ${applyResult.notePath}.`, 6e3);
+      await this.sessionStore.updateSessionStatus(sessionId, "applied");
+      new import_obsidian5.Notice(`Refined Layer: applied selected changes to ${applyResult.notePath}.`, 6e3);
       return;
     }
     if (applyResult.kind === "conflict") {
-      new import_obsidian4.Notice(
+      await this.sessionStore.updateSessionStatus(sessionId, "conflicted");
+      new import_obsidian5.Notice(
         `Refined Layer: apply blocked by conflict (${applyResult.reason}). Options: ${applyResult.options.join(", ")}.`,
         8e3
       );
       return;
     }
-    new import_obsidian4.Notice(`Refined Layer: apply failed (${applyResult.code}) - ${applyResult.message}`, 8e3);
+    new import_obsidian5.Notice(`Refined Layer: apply failed (${applyResult.code}) - ${applyResult.message}`, 8e3);
   }
   async saveDraft(sessionId, conflictReason, decision) {
     const noteRepository = new ObsidianNoteRepository(this.app);
     const saveDraftUseCase = new SaveDraftUseCase(this.sessionStore, noteRepository, this.settings);
     const result = await saveDraftUseCase.execute(sessionId, conflictReason, decision == null ? void 0 : decision.editedRefinedSections);
     if (result.saved) {
-      new import_obsidian4.Notice(`Refined Layer: draft saved to ${result.draftPath}.`, 6e3);
+      await this.sessionStore.updateSessionStatus(sessionId, "saved_as_draft");
+      new import_obsidian5.Notice(`Refined Layer: draft saved to ${result.draftPath}.`, 6e3);
       return;
     }
-    new import_obsidian4.Notice(`Refined Layer: save draft failed - ${result.message}`, 8e3);
+    new import_obsidian5.Notice(`Refined Layer: save draft failed - ${result.message}`, 8e3);
   }
   selectLlmProvider() {
     var _a, _b, _c, _d, _e, _f;
@@ -2477,20 +3134,6 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian4.Plugin {
     };
   }
 };
-function activeNoteToEligibility(activeNote) {
-  if (activeNote.kind === "no-active-file") {
-    return {
-      hasActiveMarkdownNote: false,
-      reason: "no-active-file"
-    };
-  }
-  return {
-    hasActiveMarkdownNote: false,
-    reason: "non-markdown-file",
-    notePath: activeNote.path,
-    extension: activeNote.extension
-  };
-}
 function formatEligibilityMessage(result) {
   var _a, _b, _c, _d, _e;
   if (!result.hasActiveMarkdownNote) {

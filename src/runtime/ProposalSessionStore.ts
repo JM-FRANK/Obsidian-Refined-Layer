@@ -1,4 +1,5 @@
 import type { ProposalSession, ProposalSessionSummary } from "./ProposalSession";
+import type { SessionPersistenceStore } from "./SessionPersistenceStore";
 
 const DEFAULT_HISTORY_LIMIT = 5;
 
@@ -6,9 +7,11 @@ export class ProposalSessionStore {
   private historyLimit: number;
   private readonly sessionsById = new Map<string, ProposalSession>();
   private readonly sessionsByNotePath = new Map<string, ProposalSession[]>();
+  private readonly persistence?: SessionPersistenceStore;
 
-  constructor(historyLimit = DEFAULT_HISTORY_LIMIT) {
+  constructor(historyLimit = DEFAULT_HISTORY_LIMIT, persistence?: SessionPersistenceStore) {
     this.historyLimit = historyLimit;
+    this.persistence = persistence;
   }
 
   setHistoryLimit(historyLimit: number): void {
@@ -27,6 +30,8 @@ export class ProposalSessionStore {
         }
       }
     }
+
+    this.persistIfNeeded();
   }
 
   async save(session: ProposalSession): Promise<void> {
@@ -46,6 +51,8 @@ export class ProposalSessionStore {
         this.sessionsById.delete(previous.id);
       }
     }
+
+    await this.persistIfNeeded();
   }
 
   async get(sessionId: string): Promise<ProposalSession | null> {
@@ -67,5 +74,56 @@ export class ProposalSessionStore {
       status: session.status,
       updatedAt: session.updatedAt,
     }));
+  }
+
+  async restoreFromDisk(): Promise<void> {
+    if (!this.persistence) return;
+
+    const loaded = await this.persistence.loadAll();
+
+    this.sessionsById.clear();
+    this.sessionsByNotePath.clear();
+
+    for (const [notePath, sessions] of loaded.entries()) {
+      const trimmed = sessions
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        .slice(0, this.historyLimit);
+
+      this.sessionsByNotePath.set(notePath, trimmed);
+      for (const session of trimmed) {
+        this.sessionsById.set(session.id, session);
+      }
+    }
+  }
+
+  async updateSessionStatus(sessionId: string, status: ProposalSession["status"]): Promise<void> {
+    const session = this.sessionsById.get(sessionId);
+    if (!session) return;
+
+    session.status = status;
+    session.updatedAt = new Date().toISOString();
+
+    await this.persistIfNeeded();
+  }
+
+  async updateSessionDecision(sessionId: string, decision: ProposalSession["decision"]): Promise<void> {
+    const session = this.sessionsById.get(sessionId);
+    if (!session) return;
+
+    session.decision = decision;
+    session.status = "reviewing";
+    session.updatedAt = new Date().toISOString();
+
+    await this.persistIfNeeded();
+  }
+
+  private async persistIfNeeded(): Promise<void> {
+    if (!this.persistence) return;
+
+    try {
+      await this.persistence.saveAll(new Map(this.sessionsByNotePath));
+    } catch {
+      // Persistence failure should not break the runtime flow.
+    }
   }
 }

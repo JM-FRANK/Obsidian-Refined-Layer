@@ -431,11 +431,11 @@ v0.1.0 交付检查已完成。按架构书逐项核对了 MVP 流程 10 个步�
 [x] delivery-checklist.md 已生成
 ```
 
-## Dx 文档整理与修复任务规划
+## D28 文档整理与修复任务规划
 
 ### Current status
 
-已完成全仓文档整理：将 6 个散落在根目录的文档 (`AGENTS.md`、`dev-log.md`、架构书、日计划、Phase 5.5 回填任务、`TEST-MATRIX.md`) 统一移动到 `docs/` 目录，使根目录保持四类核心文件（README + 构建配置 + 源码 + 测试 vault）。同时检查并修正了所有 .md 文件之间的交叉路径引用，确保 `docs/` 内部文档使用相对路径、README 使用 `docs/` 前缀路径。此外新增 `fix-feature-tasks.md` 记录了 D9 日计划分解遗漏导致的 session 持久化缺失问题及其修复方案。
+已完成全仓文档整理：将 6 个散落在根目录的文档 (`dev-log.md`、架构书、日计划、Phase 5.5 回填任务、`TEST-MATRIX.md`) 统一移动到 `docs/` 目录，使根目录保持四类核心文件（README + 构建配置 + 源码 + 测试 vault）。同时检查并修正了所有 .md 文件之间的交叉路径引用，确保 `docs/` 内部文档使用相对路径、README 使用 `docs/` 前缀路径。此外新增 `fix-feature-tasks.md` 记录了 D9 日计划分解遗漏导致的 session 持久化缺失问题及其修复方案。
 
 ### Active summary
 - Date: 2026-05-04
@@ -443,4 +443,34 @@ v0.1.0 交付检查已完成。按架构书逐项核对了 MVP 流程 10 个步�
 - Reason: 根目录文档散落不便管理，agreed 统一到 docs/
 - Change: 移动 6 个文档到 `docs/`；修正 `dev-log.md`、`日计划`、`README.md`、`fix-feature-tasks.md` 中 5 处路径引用；新增 `fix-feature-tasks.md`
 - Verification: `npm run typecheck`、`npm test` (46/46)、`npm run build` 成功；grep 验证全量 .md 无残留错误引用
-- Next: 按 `fix-feature-tasks.md` 实现 ProposalSessionStore 磁盘持久化
+- 人类手动更新补充日志：将原本命名为Dx 文档整理与修复任务规划 的dev-log.md修正为D28,方便后续更新。迭代了生成了新的`fix-feature-tasks.md`，负责后续任务安排
+- 更新了`AGENTS.md`中关于任务路径的引用
+Next: 执行 D29：按 `docs/fix-feature-tasks.md` 实现 ProposalSessionStore 磁盘持久化。
+
+## D29 开发日志
+
+### Current status
+
+已实现 ProposalSessionStore 磁盘持久化全链路。新增 `SessionPersistenceStore` 接口 (`src/runtime/SessionPersistenceStore.ts`) 与 `ObsidianSessionStore` adapter (`src/adapters/obsidian/ObsidianSessionStore.ts`)，后者负责将 session 数据以白名单方式序列化到插件私有目录 `session-cache/sessions.v1.json`，包含 `version` 检查、无效 session 过滤、secret scan 阻止敏感字段落盘。`ProposalSessionStore` 现在支持构造函数注入 `SessionPersistenceStore`，并在 `save`、`updateSessionStatus`、`updateSessionDecision`、`setHistoryLimit` 后自动触发持久化；`restoreFromDisk()` 方法在 onload 中调用以恢复 session。`main.ts` 中已注入 `ObsidianSessionStore` 并调用恢复，同时 apply/conflict/draft 路径均会更新 session 状态并持久化。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D29 / `src/runtime/SessionPersistenceStore.ts`、`src/adapters/obsidian/ObsidianSessionStore.ts`、`src/runtime/ProposalSessionStore.ts`、`src/runtime/ProposalSession.ts`、`src/main.ts`
+- Reason: 补齐 D9 日计划分解遗漏的 session 磁盘持久化，使 session 在 Obsidian 重启后仍可恢复
+- Change: 新增 `PersistedProposalSession` 白名单类型、`SessionPersistenceStore` 接口、`ObsidianSessionStore` adapter（序列化/反序列化/version check/secret scan/无效 session 过滤）；改造 `ProposalSessionStore` 支持 persistence 注入与 auto-save；`main.ts` 注入 adapter 并在 onload 调用 `restoreFromDisk()`；apply/conflict/draft/setHistoryLimit 后均触发持久化
+- Verification: `npm run typecheck`、`npm test` (64/64)、`npm run build` 成功；新增 9 个 session 持久化集成测试 + 9 个 secret scan 单元测试
+- Next: 执行 D30：实现 SessionPickerModal 与 Reopen 命令改造
+
+## D30 开发日志
+
+### Current status
+
+已实现 session 恢复预览与冲突处理。新增 `ListRecoverableSessionsUseCase` 用于查询当前笔记的 recoverable sessions 并附带 freshness 状态（`fresh` / `stale-file` / `stale-region`）；新增 `RecoverProposalSessionUseCase` 用于恢复选中 session 并检查 freshness（文件变化时返回 `stale` 而非直接打开 ReviewGate）；新增 `SessionPickerModal` 作为最小 session 选择 UI，展示 session summary/currentConclusion/token usage/freshness 状态，提供 Continue review / Save as Draft / Manual copy / Regenerate / Discard 操作。`Reopen last proposal for current note` 命令已从直接打开 latest session 升级为打开 SessionPickerModal；`main.ts` 新增 `recoverAndOpenReview` 和 `discardSession` 辅助方法，废弃了旧的 `activeNoteToEligibility` 工具函数。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D30 / `src/application/ListRecoverableSessionsUseCase.ts`、`src/application/RecoverProposalSessionUseCase.ts`、`src/ui/review/SessionPickerModal.ts`、`src/main.ts`、`src/ui/i18n/*.ts`、`styles.css`
+- Reason: D29 解决了数据持久化，D30 补齐用户选择、恢复、冲突分流交互
+- Change: 新增两个 use case 处理 session 列表与恢复；新增 SessionPickerModal 含 freshness 状态展示与 5 种操作；Reopen 命令改为 SessionPicker；main.ts 中接入恢复流程并废弃旧函数；补充 i18n 13 个 key + CSS 7 个样式类
+- Verification: `npm run typecheck`、`npm test` (64/64)、`npm run build` 成功；产物已同步到测试 vault
+- Next: Phase 8 继续；下一步执行 D31：保护 H1 / 文件标题，修正 replace-refined-body 边界

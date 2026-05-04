@@ -96,3 +96,66 @@
   padding: 0.75rem;
   white-space: pre-wrap;
 }
+
+.obsidian-refined-layer-session-picker {
+  color: var(--text-normal);
+}
+
+.obsidian-refined-layer-session-item {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  margin-bottom: 1rem;
+  padding: 0.9rem 1rem;
+}
+
+.obsidian-refined-layer-session-header {
+  font-size: var(--font-ui-medium);
+  margin-bottom: 0.4rem;
+}
+
+.obsidian-refined-layer-session-meta {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  margin-bottom: 0.3rem;
+}
+
+.obsidian-refined-layer-session-freshness {
+  margin-bottom: 0.6rem;
+}
+
+.obsidian-refined-layer-freshness-fresh {
+  color: var(--text-success);
+  font-size: var(--font-ui-small);
+}
+
+.obsidian-refined-layer-freshness-stale-file,
+.obsidian-refined-layer-freshness-stale-region {
+  color: var(--text-warning);
+  font-size: var(--font-ui-small);
+}
+
+.obsidian-refined-layer-freshness-unknown {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.obsidian-refined-layer-session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.obsidian-refined-layer-conflict-msg {
+  color: var(--text-warning);
+  font-size: var(--font-ui-small);
+  width: 100%;
+  margin-bottom: 0.4rem;
+}
+
+.obsidian-refined-layer-empty {
+  color: var(--text-muted);
+  font-size: var(--font-ui-medium);
+  text-align: center;
+  padding: 1.5rem 0;
+}
