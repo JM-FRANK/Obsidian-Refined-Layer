@@ -1,110 +1,170 @@
 # AGENTS.md
 
-## Project
+## 1. Project
 
-This repository implements **Obsidian Refined Layer**, an Obsidian plugin for turning the currently opened raw Markdown note into a refined proposal, showing it to the user for review, and applying only the explicitly confirmed changes.
+**Obsidian Refined Layer** is a review-first Obsidian plugin. It turns the current raw Markdown note into a refined proposal, shows the proposal for human review, and applies only explicitly confirmed changes.
 
-The plugin is a **review-first Obsidian tool layer**, not an Agent.
+It is **not** an autonomous Agent and must not become a general workflow platform in v0.2.0.
 
-It must not implement global memory, search, tool routing, autonomous planning, MOC writing, relationship-link writing, batch vault maintenance, or external tool adapters in v0.1.0.
-
-## Source documents
-
-Use these project documents as the implementation source of truth:
+v0.2.0 upgrades the v0.1.0 fixed-section `raw-refined` flow into a configurable single-note workflow:
 
 ```text
-docs/Obsidian Refined Layer 插件架构书 v0.1.0 Codex执行版.md
-docs/Obsidian Refined Layer 插件开发日计划 v0.1.0.md
-docs/fix-feature-tasks.md
-docs/dev-log.md
+raw note → configurable A/B blocks → structured prompt → LLM → JSON → Zod → normalization → review → ApplyPlan → safe write / draft
 ```
 
-If the repository stores these files elsewhere, locate them by filename. Do not duplicate or fork them without instruction.
+## 2. Source documents
 
-## Context-window discipline
+Use these as the source of truth:
 
-This project must be developed with **windowed retrieval**. Do not repeatedly load the entire architecture document or the entire day plan when only one task window is needed.
+```text
+docs/obsidian-refined-layer-architecture-v0.2.0-agent.md
+docs/obsidian-refined-layer-v0.2.0-daily-plan.md
+docs/dev-log.md                  # active v0.2.0 log
+docs/achieve/dev-log-achieve.md  # archived D1-D35 log
+```
 
-Before starting a task:
+If paths differ, locate by filename. Do not duplicate, fork, or rewrite source docs unless asked.
 
-1. Read this `AGENTS.md`.
-2. Read only the current `Dn` block in the day plan.
-3. Read the enclosing Phase overview and that Phase's acceptance checklist.
-4. Read only the relevant architecture sections needed for the current `Dn`.
-5. Read the latest `Current status` and the most recent relevant `Active summary` from `docs/dev-log.md`.
+## 3. Sliding-window retrieval
 
-After a Phase is completed, do not reread that completed Phase unless debugging a regression or checking a decision already recorded there.
+Always use the smallest useful context window.
 
-Prefer targeted searches and bounded reads, for example:
+Before each task, read only:
+
+```text
+1. AGENTS.md
+2. current Dn block
+3. current Phase overview + acceptance checklist
+4. architecture sections directly needed by this Dn
+5. latest 3 Dn entries from docs/dev-log.md
+```
+
+Do **not** read full architecture, full day plan, or full dev-log by default.
+
+### Dev-log rule
+
+`docs/dev-log.md` is a sliding tail. Read only latest three entries unless an exact older item is needed.
+
+Example:
 
 ```bash
-rg -n "^## D7|^# Phase 3|^## Phase 3 验收" docs/Obsidian\ Refined\ Layer\ 插件开发日计划\ v0.1.0.md
-sed -n '120,220p' docs/Obsidian\ Refined\ Layer\ 插件开发日计划\ v0.1.0.md
-rg -n "ApplyPlan|ProtectedRegion|PolicyGuard" docs/Obsidian\ Refined\ Layer\ 插件架构书\ v0.1.0\ Codex执行版.md
+python - <<'PY'
+from pathlib import Path
+text = Path('docs/dev-log.md').read_text(encoding='utf-8')
+parts = text.split('\n## D')
+entries = ['## D' + p for p in parts[1:]]
+print('\n'.join(entries[-3:]))
+PY
 ```
 
-Avoid broad commands like `cat` over the full day plan or full architecture document unless the user explicitly asks for a full-document review.
+Search older context directly:
 
-## Test directory
+```bash
+rg -n "^## D35|Bearer test|SecretStorage" docs/achieve/dev-log-achieve.md
+rg -n "^## D42|tagNormalizationApplied|Zod" docs/dev-log.md
+```
 
-Keep automated tests under `tests/`.
-Use file names like `*.test.ts`.
-Prefer mirroring the `src/` area being validated; do not create ad hoc test roots.
+Never `cat docs/dev-log.md` or `cat docs/achieve/dev-log-achieve.md` unless the user requests a full-log audit.
 
-## v0.1.0 scope
+### Phase rule
 
-Implement only the single-note `raw-refined` MVP:
+Within a Phase, keep only:
 
 ```text
-current active Markdown note
-→ check raw-refined eligibility
-→ generate JSON proposal using mock-llm or plugin-llm
-→ validate proposal
-→ create ProposalSession
-→ show Obsidian review UI
-→ collect UserDecision
-→ build ApplyPlan
+current Phase overview
+current Dn
+Phase acceptance checklist
+latest 3 dev-log entries
+```
+
+After completing a Dn, slide forward. After completing a Phase, drop that Phase from active context. Do not reread completed phases unless debugging a regression.
+
+### Architecture/day-plan retrieval
+
+Use targeted search:
+
+```bash
+rg -n "^## D43|^# Phase 11|^## Phase 11 验收" docs/obsidian-refined-layer-v0.2.0-daily-plan.md
+rg -n "PromptBuilder|Zod|tagNormalizationApplied|ProposalNormalizer" docs/obsidian-refined-layer-architecture-v0.2.0-agent.md
+```
+
+Only read full documents for full-document review, cross-phase inconsistency analysis, or explicit full-scope verification.
+
+## 4. Current execution status
+
+v0.1.0 is delivered and archived. v0.2.0 starts from **D36**.
+
+Current phases:
+
+```text
+Phase 9   migration baseline and type skeleton
+Phase 10  Markdown heading and A/B block parsing
+Phase 11  PromptBuilder, Zod schema, tag normalization
+Phase 12  retry, session-cache, error-session-cache
+Phase 13  Review UI and cached-session recovery
+Phase 14  Settings UI and observability
+Phase 15  end-to-end migration, test matrix, delivery check
+```
+
+Do not continue into the next Dn unless the user explicitly asks.
+
+## 5. Scope
+
+### In scope for v0.2.0
+
+Single-note configurable `raw-refined` workflow:
+
+```text
+active Markdown note
+→ eligibility / A-B block / protect-H1 checks
+→ structured prompt from A block prompts + tag prompt
+→ mock or real provider
+→ JSON extraction
+→ Zod validation
+→ normalization and policy / partial validation
+→ successful ProposalSession to session-cache
+→ Review UI
+→ UserDecision
+→ ApplyPlan
 → freshness check
-→ safe write or Save as Draft
+→ safe apply or Save as Draft
 ```
 
-v0.1.0 implements only one built-in workflow profile:
+Allowed v0.2.0 additions:
 
 ```text
-raw-refined
+A/B block configuration UI
+tag whitelist UI
+tag prompt setting
+prompt observability panel
+model connection test
+session-cache viewer command
+error-session-cache switch and limit
+copyable SecretStorage diagnostics
 ```
 
-## Explicitly out of scope for v0.1.0
-
-Do not implement the following unless the user explicitly revises the plan:
+### Out of scope unless explicitly approved
 
 ```text
+multi-workflow platform
 multi-profile editor
-profile visual configuration UI
-external Tool API adapter
-MCP server
-HTTP server
-File Inbox adapter
-external proposal import
-external review channel
+general workflow visual editor
+external Tool API adapter / MCP / HTTP / File Inbox
+external proposal import / external review channel
 batch refine
-MOC write
-relationship-link write
-rename apply
-move apply
-move suggestion
-automatic archive or delete
+MOC write / relationship-link write
+rename / move / archive / delete
+tag remove
+tag case normalization
 tokenizer selection UI
 price estimate
-full prompt editor
-full workflow platform
+prompt marketplace
+complex prompt syntax highlighting or autocomplete
 ```
 
-## Architecture rules
+## 6. Architecture invariants
 
 ### Dependency direction
-
-Follow this direction:
 
 ```text
 UI → Application → Core
@@ -112,311 +172,528 @@ Adapters → Application/Core ports
 Runtime → Application/Core ports
 ```
 
-Core modules must not import:
+Core must not import:
 
 ```text
-Obsidian API
-UI components
-concrete LLM providers
-settings persistence
-transport adapters
+Obsidian API, UI components, concrete LLM providers, settings persistence, transport adapters
 ```
 
-`main.ts` should register commands and wire dependencies only. It must not contain workflow rules.
+`main.ts` is composition root only: commands, dependency wiring, lifecycle. It must not contain workflow, block parsing, prompt, tag, apply, or UI decision rules.
 
-### Suggested module boundaries
-
-Keep implementation close to this structure:
+Suggested module areas:
 
 ```text
-src/
-  core/
-    profile/
-    policy/
-    proposal/
-    apply/
-    protected-region/
-  application/
-  adapters/
-    obsidian/
-    llm/
-  runtime/
-  ui/
-    review/
-    settings/
-    i18n/
-  settings/
+src/core/{profile,block,markdown,prompt,proposal,policy,apply,tag,validation}
+src/application/
+src/adapters/{obsidian,llm}/
+src/runtime/{session-cache,error-session-cache}/
+src/ui/{review,settings,i18n}/
+src/settings/
 ```
 
-`PluginSettings.ts` may define settings types, but Obsidian-specific persistence belongs in:
+Obsidian persistence belongs in adapters, for example:
 
 ```text
 src/adapters/obsidian/ObsidianSettingsStore.ts
+src/adapters/obsidian/ObsidianSessionStore.ts
+src/adapters/obsidian/ObsidianErrorSessionCache.ts
 ```
 
-## Profile authority
-
-The `WorkflowProfile` is the only source of workflow rules.
-
-External tools, LLM output, UI state, prompt text, and one-off requests must not override profile policy.
-
-All requests entering the internal tool port must pass through `PolicyGuard`.
-
-`PolicyGuard` must read rules from the active profile and reject or ignore any request field that attempts to override:
+### Non-negotiable rules
 
 ```text
-YAML/frontmatter whitelist
-tag whitelist
-output section structure
-protected regions
-review policy
-apply capabilities
-link/MOC permissions
-rename/move permissions
-```
-
-## raw-refined profile constraints
-
-The default `raw-refined` profile must enforce:
-
-```text
-Markdown file only
-frontmatter required
-status must be raw
-required protected heading: ## 原始内容
-```
-
-Protected region behavior:
-
-```text
-## 原始内容 is protected.
-The protected region must be extracted from the current file during apply.
-Do not trust any protected-region text returned by the LLM.
-```
-
-YAML/frontmatter rules:
-
-```text
-created is readonly.
-status/source/context are confirm-required.
-Unknown fields are preserve-only and not modifiable.
-No YAML field may be added unless declared in the profile.
-```
-
-Tag rules:
-
-```text
-Tags use allow-list mode.
-A proposal must not add tags outside allowedTags.
-Unspecified tags are forbidden even if they are not explicitly blocked.
-#rel/* is not allowed in raw-refined.
-```
-
-Apply capabilities for v0.1.0:
-
-```text
-body: true
-frontmatter: true
-tags: true
-rename: false
-move: false
-links: false
-moc: false
-archive/delete: false
-```
-
-Partial apply should be allowed: the user may apply only part of a proposal.
-
-## LLM and proposal validation
-
 LLM output is untrusted.
-
-Do not let LLM output directly replace a note.
-
-Proposal validation must be layered:
-
-```text
-1. JSON parsing
-2. Schema validation
-3. Profile policy validation
-4. Content boundary validation
+LLM output never writes files directly.
+All writes go through ApplyPlan.
+Apply re-reads current file and runs freshness checks.
+B block / protected content is extracted from the current file, never trusted from proposal/session/cache.
+UI does not validate, normalize, extract blocks, generate ApplyPlan, or write files.
+Secrets never enter data.json, logs, dev logs, sessions, drafts, attempts, diagnostics, prompts, responses, or errors.
 ```
 
-If parsing or validation fails:
+## 7. A/B block model
+
+### A blocks
+
+A blocks are configurable refined output blocks generated/refined by LLM.
+
+Each A block supports:
 
 ```text
-Do not create a ProposalSession.
-Do not show the review UI as if the proposal were valid.
-Show a clear error.
-Record only a redacted failure summary if needed.
+id, heading text/name, heading level, prompt, order, enabled
 ```
 
-The validator must reject:
+Rules:
 
 ```text
-unknown YAML modifications
-blocked or unlisted tags
-missing required refined sections
-relationship-link operations
-MOC operations
-rename/move apply operations
-protected-region leakage or attempted modification
+count is user-configurable
+flat ordered list only
+no nesting
+content may be reviewed and applied independently
+prepare for future selected-region refine, but do not implement selected-region refine unless planned
 ```
 
-## ApplyPlan and safe write
+### B block
 
-All writes must go through `ApplyPlan`.
+B block is the single protected original-content block.
 
-`replace-refined-body` must follow this logic:
+Rules:
 
 ```text
-1. Re-read the current file.
-2. Extract the protected region from the current file.
-3. Build new body = refined content + current protected region.
-4. Verify byte-for-byte that the protected region in the new body matches the current file's protected region.
-5. Write only through the approved ApplyPlan operation.
+exactly one B block
+configurable heading text and level
+no prompt
+mechanically preserved
+may contain nested subheadings
+nested content preserved byte-for-byte
+not an LLM output target
 ```
 
-Apply must run a freshness check before writing.
-
-If the target file changed after proposal generation:
+Extraction:
 
 ```text
-Do not apply automatically.
-Enter conflict flow.
-Offer Save as Draft, regenerate, manual copy review, or discard.
+from configured B heading until next sibling-or-higher heading
 ```
 
-## Secret management
+### Protect H1
 
-API keys and provider secrets require strict privacy protection.
-
-Never store or write these in plugin data, logs, dev logs, proposal history, draft exports, errors, or Obsidian notes:
+Setting name:
 
 ```text
-API key
-token
-Authorization header
-Bearer token
-provider secret
-raw secret value
+保护一级标题
 ```
 
-Use Obsidian SecretStorage / SecretComponent when available.
-
-Settings may store only a secret reference, never the secret value.
-
-If secure secret storage is unavailable:
+Enabled:
 
 ```text
-Disable plugin-llm provider configuration.
-Show a warning in SettingsTab.
-Allow Refine current note to run only with mock-llm.
-Block all attempts to save an API key.
-Ensure data.json contains no key/apiKey/token/secret/authorization fields.
+first H1 is protected as note title / filename-level heading
+A/B minimum heading level = 2
+A/B blocks must not overwrite H1
 ```
 
-All errors and debug output must be redacted.
-
-## Token usage
-
-Every successful proposal generation must produce a `TokenUsageReport` or explicitly mark token usage as unavailable.
-
-Use this strategy:
+Disabled:
 
 ```text
-provider usage returned → actual
-provider usage unavailable → mature tokenizer estimate
+A/B minimum heading level can be 1
+H1 may be part of A/B block structure
+```
+
+This is a core parsing/apply rule, not a UI-only option.
+
+## 8. Prompt, Zod, retry, and tool boundary
+
+PromptBuilder belongs in Core/Application, not UI.
+
+It builds structured requests from:
+
+```text
+workflow settings
+A block list and prompts
+B block metadata / boundary info
+tag prompt
+tag whitelist
+input note metadata
+schema instructions
+```
+
+Observable debug snapshots must be available for:
+
+```text
+provider/model
+system/user or structured prompt
+tag prompt
+A block prompts
+allowed tags
+input note metadata
+raw LLM response
+parsed JSON
+Zod result
+normalization result
+policy / partial validation report
+```
+
+All snapshots must be redacted.
+
+Pipeline:
+
+```text
+Build request → provider/future tool → raw response → JSON extraction → Zod parse → normalization → policy/partial validation → ProposalSession or failed attempt
+```
+
+Max attempts:
+
+```text
+3
+```
+
+Future tools sit **before** Zod: the plugin sends request + schema contract, receives formatted response, then locally reruns JSON extraction, Zod, normalization, policy validation, and ApplyPlan. No external tool may bypass local validation or Core/Application boundaries.
+
+## 9. Tag model
+
+### Whitelist
+
+Tags are governed by a user-managed whitelist. Default includes:
+
+```text
+#ai/generated #ai/assisted #ai/reviewed #ai/suggested
+#todo/refine #todo/link #todo/review
+#flag/core #flag/sensitive
+```
+
+### LLM output shape
+
+```ts
+selectedTags: string[];
+newTagSuggestions: string[];
+tagNormalizationApplied: boolean;
+```
+
+`selectedTags`:
+
+```text
+from whitelist
+shown as checkable items in Review UI
+on apply, append to YAML tags
+never overwrite or delete existing tags
+```
+
+`newTagSuggestions`:
+
+```text
+not in whitelist
+displayed in UI
+selectable/copyable
+not editable in Review UI
+never directly applied to YAML tags
+```
+
+If LLM puts non-whitelisted tags in `selectedTags`, silently move them to `newTagSuggestions`, record locally, and do not fail the whole proposal if body blocks are valid.
+
+### Normalization
+
+Core normalizes tag fields using separators:
+
+```text
+, ， space newline 、
+```
+
+Normalization:
+
+```text
+split, trim, remove empty items, add # if missing, dedupe
+```
+
+Do not normalize case. v0.2.0 records only:
+
+```ts
+tagNormalizationApplied: boolean
+```
+
+This is local-only and must not be sent back to the LLM. v0.2.0 does not implement tag remove.
+
+## 10. Proposal validation and partial result
+
+Distinguish fatal structural errors from recoverable field issues.
+
+Fatal:
+
+```text
+cannot parse JSON
+Zod fails after retries
+missing required proposal shape
+invalid block output that prevents review
+```
+
+Recoverable/partial:
+
+```text
+selectedTags includes non-whitelisted tags
+tag fields required normalization
+newTagSuggestions exists
+field-level warnings that do not block review
+```
+
+Unknown selected tags must not discard valid body blocks. Apply remains strict: only user-checked whitelisted selectedTags may be appended; `newTagSuggestions` and `#rel/*` are never written.
+
+## 11. Cache model
+
+`session-cache` and `error-session-cache` are separate.
+
+### session-cache
+
+Stores successful `ProposalSession` records.
+
+```text
+loadable directly into Review UI
+usable for Save as Draft
+not a user-visible vault note
+no secrets or unredacted provider errors
+default limit = 5
+```
+
+### error-session-cache
+
+Stores failed attempts for debugging.
+
+```text
+not a ProposalSession
+not loadable as normal Review UI session
+not applicable
+preserve useful debugging data except sensitive information
+default enabled = true
+default limit = 30
+oldest records deleted first
+```
+
+Redacted failed attempt should preserve:
+
+```text
+attempt index, provider, model, timestamp, structured request/final prompt, raw response,
+JSON extraction result, Zod errors, normalization result if reached,
+policy report if reached, error summary, token usage if available
+```
+
+Must never preserve secrets, Authorization, bearer token, raw secret value, or unredacted provider error.
+
+### Attempt save rules
+
+```text
+attempt 1 success:
+  success → session-cache; no error-cache; no request-count notice
+
+attempt 1 fail, attempt 2 success:
+  failed attempt 1 → error-session-cache
+  success attempt 2 → session-cache
+  show request-count notice + error-cache-location notice
+
+attempt 1/2 fail, attempt 3 success:
+  failed attempts 1/2 → error-session-cache
+  success attempt 3 → session-cache
+  show request-count notice + error-cache-location notice
+
+all 3 fail:
+  failed attempts 1/2/3 → error-session-cache
+  no ProposalSession
+  show failure-count notice + error-cache-location notice
+```
+
+Never store successful attempts in error-session-cache. Never store failed attempts in session-cache.
+
+Notices must be two separate notices. If error-session-cache is disabled, the second notice must say failed sessions were not saved.
+
+## 12. Cached session review
+
+Add command:
+
+```text
+Open cached proposal session / 查看缓存记录
+```
+
+Behavior:
+
+```text
+open selection flow first
+show up to session-cache limit records, default 5
+open selected ProposalSession in the same Review UI shape
+allow viewing/checking content
+Apply selected changes disabled
+aSave as Draft enabled
+```
+
+Cached recovery is for review and draft export only. Do not apply cached sessions in v0.2.0.
+
+## 13. ApplyPlan and safe write
+
+Allowed v0.2.0 operations:
+
+```text
+replace-refined-blocks
+update-frontmatter
+append-tags
+```
+
+Do not implement rename/move/link/MOC/archive/delete/remove-tags.
+
+`replace-refined-blocks` must:
+
+```text
+re-read current file
+extract current B block from current file
+preserve B block byte-for-byte
+respect protect-H1 setting
+assemble A blocks from accepted proposal / edited review content
+verify B block preservation before writing
+write only through ApplyPlan
+```
+
+`append-tags` must:
+
+```text
+append only user-checked selectedTags
+write only whitelisted tags
+preserve existing tags
+dedupe
+never write newTagSuggestions
+never remove tags
+```
+
+Freshness check is required before writing. If file changed, block apply and offer Save as Draft, Regenerate, Manual copy review, or Discard. No force apply.
+
+## 14. Settings UI
+
+Settings UI must include:
+
+```text
+A/B block configuration
+tag whitelist management
+tag prompt setting
+prompt observability
+model connection test
+session-cache settings and viewer entry
+error-session-cache toggle and limit
+copyable SecretStorage diagnostics
+```
+
+### Model connection test
+
+Must:
+
+```text
+check provider config
+check SecretStorage/key readability if required
+send minimal request without real note content
+not create ProposalSession
+not write session-cache or notes
+redact errors
+```
+
+Distinguish SecretStorage unavailable, Key ID missing, key read failed, provider failed, invalid model response, and success.
+
+### Key ID wording
+
+User-facing label must be:
+
+```text
+Key ID / 密钥 ID
+```
+
+Do not show mixed labels such as Secret Reference, secretRef, key name, or 密钥引用. Internal code may still use `secretRef`.
+
+Explain: Key ID is saved in plugin settings and used to read the real API key from Obsidian SecretStorage. Real API key must never be written to `data.json`.
+
+### SecretStorage diagnostics
+
+Diagnostics must be copyable, non-editable, and redacted.
+
+Allowed fields:
+
+```text
+available, hasSecretStorage, getSecretType, setSecretType, reason,
+configured Key ID present/absent, can read configured key yes/no,
+read value equals Key ID yes/no, read value length, redacted prefix/suffix if needed
+```
+
+### Cache wording
+
+Use:
+
+```text
+缓存记录
+```
+
+not “历史记录”. Explain cache location and that cache is not long-term history, not a user-visible note, and contains no secrets.
+
+## 15. Secret management and redaction
+
+Never store or write:
+
+```text
+API key, token, Authorization header, Bearer token, provider secret, raw secret value
+```
+
+Forbidden locations include plugin data, logs, dev logs, session-cache, error-session-cache, draft exports, errors, diagnostics, prompts, responses, and Obsidian notes.
+
+Use Obsidian SecretStorage / SecretComponent when available. Settings may store only Key ID / secret reference.
+
+If secure storage is unavailable:
+
+```text
+disable real provider API key saving
+show clear warning
+allow mock/local providers that do not require API key
+block API-key saving attempts
+ensure data.json contains no key/apiKey/token/secret/authorization fields
+```
+
+D35 defense must remain:
+
+```text
+if getSecret(keyId) returns exactly keyId, treat as configuration error
+never send Authorization: Bearer <keyId>
+```
+
+All errors, diagnostics, cached attempts, provider responses, and logs must be redacted.
+
+## 16. Token usage
+
+Every successful proposal should produce token usage or explicitly mark it unavailable.
+
+```text
+provider usage → actual
+provider unavailable → estimate
 estimator unavailable → unavailable
 ```
 
-Do not implement tokenizer selection UI in v0.1.0.
+No tokenizer selection UI. No price/cost estimation. Review UI shows token usage or unavailable.
 
-Do not implement price/cost estimation in v0.1.0.
+## 17. UI rules
 
-The review UI should display token usage or `unavailable`.
+Review UI consumes `ReviewViewModel` and returns `UserDecision`.
 
-## ProposalSession and draft files
-
-`ProposalSession` is internal runtime state.
-
-It is not the same as a user-visible draft file saved to the vault.
-
-ProposalSessionStore must:
+UI must not:
 
 ```text
-store notePath
-support querying latest session by notePath
-support listing sessions by notePath
-respect historyLimit, default 5
-auto-save unapplied proposal sessions
-not store secrets or unredacted provider errors
-```
-
-`Save as Draft` creates a user-visible Markdown draft file. It must not alter the source note.
-
-## UI rules
-
-The review UI must consume `ReviewViewModel` and return `UserDecision`.
-
-The UI must not:
-
-```text
-perform policy validation
-assemble protected regions
+validate policy or Zod
+normalize tags
+extract B block
 generate ApplyPlan
 write files
 hardcode workflow rules
+call provider directly
+write caches directly
 ```
 
-`requestReview` must call `ReviewGate`. v0.1.0 may implement `ObsidianReviewGate` using Modal, but the internal tool port must not be directly coupled to Modal.
-
-UI text must use i18n keys. Prepare at least:
+UI may:
 
 ```text
-zh-CN
-en
+display/edit planned A block proposal content
+show selectedTags as checkable
+show newTagSuggestions as copyable non-editable text
+show tagNormalizationApplied warning
+show prompt/response/validation debug snapshots
+trigger model connection test through Application
+return UserDecision
 ```
 
-Use Obsidian CSS variables and native UI patterns. Do not hardcode primary colors.
+Use `ReviewGate`, i18n (`zh-CN`, `en`), Obsidian CSS variables, and native UI patterns.
 
-## Prompt override
+## 18. Development log
 
-Prompt templates belong to the active `WorkflowProfile`.
-
-Global settings may store only a profile-specific prompt override:
-
-```ts
-promptOverrides?: Record<string, {
-  enabled: boolean;
-  systemPrompt?: string;
-  userPrompt?: string;
-}>;
-```
-
-v0.1.0 must not implement a full prompt editor.
-
-Allowed minimal UI:
-
-```text
-textarea for overriding the current profile prompt
-static list of available variables
-clear label showing which profile is being overridden
-```
-
-Do not implement syntax highlighting, autocomplete, advanced validation, prompt marketplace, or profile editor.
-
-## Development log
-
-All development progress must be recorded in:
+Active v0.2.0 work goes to:
 
 ```text
 docs/dev-log.md
 ```
 
-Do not scatter day logs across separate files unless the user explicitly requests it.
+D1-D35 archive stays in:
 
-Every completed `Dn` must append or update a log entry with exactly these sections:
+```text
+docs/achieve/dev-log-achieve.md
+```
+
+Do not append new Dn entries to the archive unless repairing history.
+
+Every completed Dn entry must use:
 
 ```md
 ## Dn 开发日志
@@ -432,52 +709,55 @@ Every completed `Dn` must append or update a log entry with exactly these sectio
 - Next:
 ```
 
-`Current status` should describe the repository state after the task.
+`Active summary` must be self-contained enough for the next task to continue with only the latest three log entries.
 
-`Active summary` should be short and task-scoped:
+## 19. Daily execution protocol
+
+For each Dn:
 
 ```text
-Date: actual date
-Scope: current Dn / files touched
-Reason: why this work was done
-Change: what changed
-Verification: what was run or checked
-Next: next concrete task or known blocker
+1. Identify current Dn from user request or latest three dev-log entries.
+2. Read current Dn + enclosing Phase overview/checklist.
+3. Read only relevant architecture sections.
+4. Read latest three active dev-log entries.
+5. Search older context only by exact Dn/file/topic/error.
+6. Implement only the day's scope.
+7. Run minimal verification; broaden to tests/build when appropriate.
+8. Update docs/dev-log.md with self-contained Active summary.
+9. Stop and report changes, verification, and remaining work.
 ```
 
-Before starting a new `Dn`, read the latest `Current status` and most recent relevant `Active summary` from `docs/dev-log.md` instead of rereading old completed day-plan blocks.
+Do not continue into the next Dn without explicit instruction.
 
-## Daily execution protocol
-
-When working on a `Dn`:
-
-1. Identify the current `Dn` from the user's request or `docs/dev-log.md`.
-2. Read only the relevant `Dn` and enclosing Phase acceptance checklist.
-3. Read only relevant architecture sections.
-4. Implement only the day's scope.
-5. Build or run the smallest available verification.
-6. Update `docs/dev-log.md`.
-7. Stop and report what changed, what was verified, and what remains.
-
-Do not continue into the next `Dn` unless the user explicitly asks.
-
-## Completion standard
-
-A `Dn` is complete only when:
+Completion standard:
 
 ```text
-code builds or has no obvious TypeScript errors introduced
-the day's behavior has a minimal verification path
-no out-of-scope long-term feature was implemented
-docs/dev-log.md contains the day's entry
+no obvious TypeScript/build breakage
+minimal verification path exists
+no out-of-scope platform feature added
+docs/dev-log.md updated
 Next is clear
 ```
 
-A Phase is complete only when:
+Phase completion requires all Dn tasks, acceptance checklist, relevant logs, and no future-scope leakage.
+
+## 20. Regression anchors
+
+Preserve these unless v0.2.0 day plan explicitly replaces them:
 
 ```text
-all Dn tasks in the Phase are complete
-Phase acceptance checklist is satisfied
-relevant dev-log entries exist
-no future-scope adapter or platform feature leaked into implementation
+active note read
+eligibility failure reporting
+mock provider happy path
+real provider redaction
+SecretStorage no-secret leak rule
+D35 Bearer test pollution defense
+session-cache persistence
+ReviewGate abstraction
+ApplyPlan-only write path
+freshness conflict flow
+Save as Draft
+protected B/original region byte-for-byte preservation
 ```
+
+If v0.2.0 replaces old fixed-section behavior, migrate or delete old tests intentionally. Do not keep contradictory v0.1 fixed-section and v0.2 configurable-block requirements as active tests.
