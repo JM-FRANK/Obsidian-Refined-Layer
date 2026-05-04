@@ -84,7 +84,7 @@ export class ApplyDecisionUseCase {
     for (const operation of plan.operations) {
       switch (operation.type) {
         case "replace-refined-body":
-          nextContent = mergeBodyIntoMarkdown(nextContent, operation.body);
+          nextContent = mergeBodyIntoMarkdown(nextContent, operation.body, protectedRegion.region.text);
           break;
         case "update-frontmatter":
           nextContent = applyFrontmatterChanges(nextContent, operation.changes);
@@ -93,6 +93,25 @@ export class ApplyDecisionUseCase {
           nextContent = applyTagChanges(nextContent, operation.add, operation.remove, this.profile);
           break;
       }
+    }
+
+    const postApplyRegion = this.extractor.extract(
+      nextContent,
+      this.profile.protectedRegions.definitions[0],
+    );
+    if (!postApplyRegion.ok) {
+      return {
+        kind: "failed",
+        code: postApplyRegion.error.code,
+        message: `Apply aborted: ${postApplyRegion.error.message}`,
+      };
+    }
+    if (postApplyRegion.region.text !== protectedRegion.region.text) {
+      return {
+        kind: "failed",
+        code: "protected-region-corrupted",
+        message: "Apply aborted: protected region changed during assembly.",
+      };
     }
 
     await this.noteFilePort.writeNote(plan.notePath, nextContent);
@@ -117,19 +136,42 @@ export class ApplyDecisionUseCase {
   }
 }
 
-function mergeBodyIntoMarkdown(markdown: string, body: string): string {
+function mergeBodyIntoMarkdown(markdown: string, body: string, currentProtectedRegion: string): string {
   const normalized = markdown.replace(/\r\n/g, "\n");
-  const hasFrontmatter = normalized.startsWith("---\n") || normalized.startsWith("---\r\n");
 
-  if (!hasFrontmatter) {
-    return body;
+  let frontmatterBlock = "";
+  let afterFrontmatter = normalized;
+
+  if (normalized.startsWith("---\n") || normalized.startsWith("---\r\n")) {
+    const closingIndex = normalized.indexOf("\n---\n", 4);
+    if (closingIndex !== -1) {
+      frontmatterBlock = normalized.slice(0, closingIndex + 5);
+      afterFrontmatter = normalized.slice(closingIndex + 5).replace(/^\n+/, "");
+    }
   }
 
-  const closingMarkerIndex = normalized.indexOf("\n---\n", 4);
-  if (closingMarkerIndex === -1) {
-    return body;
+  let h1Line = "";
+  const h1Match = afterFrontmatter.match(/^#\s+[^\n]+/);
+  if (h1Match) {
+    h1Line = h1Match[0];
   }
 
-  const frontmatterBlock = normalized.slice(0, closingMarkerIndex + 5);
-  return `${frontmatterBlock}${body.startsWith("\n") ? "" : "\n"}${body}`;
+  const refinedBody = stripProtectedRegionFromBody(body);
+
+  const parts: string[] = [];
+  if (frontmatterBlock) parts.push(frontmatterBlock);
+  if (h1Line) parts.push(h1Line);
+  parts.push(refinedBody);
+  parts.push(currentProtectedRegion);
+
+  return parts.join("\n");
+}
+
+function stripProtectedRegionFromBody(body: string): string {
+  const normalized = body.replace(/\r\n/g, "\n");
+  const headingIndex = normalized.indexOf("\n## 原始内容");
+  if (headingIndex === -1) {
+    return normalized;
+  }
+  return normalized.slice(0, headingIndex);
 }

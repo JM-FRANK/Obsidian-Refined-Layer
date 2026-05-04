@@ -479,34 +479,26 @@ Next: 执行 D29：按 `docs/fix-feature-tasks.md` 实现 ProposalSessionStore �
 
 ### Current status
 
-已完成 code-review-excellence 审查发现的必须修复项与建议修复项。共修复 10 项问题，新增 20 个自动测试（3 个测试文件），改造 8 个源文件。未引入任何 v0.1.0 明确不做的长期能力。
-
-**必须修复 (3 项):**
-
-1. `BodyAssembler` 死代码移除。原 `endsWith` 检查由 `refinedBody + protectedRegion.region.text` 拼接而来，永远为真。已将检查前移到拼接之前，验证 `protectedRegion.region.text` 非空而非验证拼接后的不变式。同时将硬编码 `rawRefinedProfile` 替换为参数化 `ProtectedRegionDefinition`，由调用方传入。
-
-2. `ProposalSessionStore.persistIfNeeded` 静默吞错问题。已将空 `catch` 块改为 `console.warn` 输出脱敏诊断信息，使用既有的 `toSafeErrorMessage()` 确保不泄露 API key、Authorization header 或 secret。
-
-3. `ApplyDecisionUseCase` / `BuildApplyPlanUseCase` / `BodyAssembler` 硬编码 `rawRefinedProfile` 问题。三处均已改为使用构造函数注入的 `WorkflowProfile` 或方法参数传入的 `ProtectedRegionDefinition`。v0.1.0 仍只有一个内置 profile，但不再制造未来扩展断点。
-
-**建议修复 (3 项):**
-
-4. Prompt template 改为单次 `String.replace` 替换。原 `.split().join()` 链式替换在 `noteContent` 包含 `{{notePath}}` 或 `{{noteTitle}}` 时会造成嵌套二次替换。现使用 `/\{\{([a-zA-Z]+)\}\}/g` 正则单次遍历替换，未知变量保留原样。不引入完整模板引擎。
-
-5. `redaction.ts` 规则扩展。Bearer token 字符类增加 `+/=`（JWT/base64url 兼容）；新增 `secret`、`x-api-key`、`sk-`（OpenAI key 前缀）检测规则；使用反引号作为额外定界符。保持规则保守，避免误删正常日志主体。
-
-6. `onunload` 清理评估。确认 Obsidian `Plugin` 基类自动处理 `addCommand` 的 command deregistration，且 Modal 由 Obsidian 在 plugin unload 时自动关闭。无需额外清理代码。
-
-**顺手处理的 nit (3 项):**
-
-7. `parseJsonLikeOutput` 的 `null` candidate 通过 `.filter(Boolean)` 提前清除。
-8. `toPersistedProposal` 长条件提取为 `hasRequiredSections()` 辅助函数。
-9. `main.ts` composition root 评估：当前 458 行，provider 选择逻辑可独立为 `ProviderSelector`，但 v0.1.0 不做大规模重构。
+已完成 code-review-excellence 审查发现的全部修复项。共修复 10 项问题：移除了 `BodyAssembler` 中不可达的 `endsWith` 死代码并将 `rawRefinedProfile` 参数化；`ProposalSessionStore.persistIfNeeded` 改为 `console.warn` 输出脱敏日志；`ApplyDecisionUseCase` / `BuildApplyPlanUseCase` 改为使用注入 `WorkflowProfile` 而非硬编码引用；prompt template 从 `.split().join()` 链式替换改为单次 `String.replace` 正则遍历；`redaction.ts` 扩展了 4 条脱敏规则（JWT `+/=`、`secret`、`x-api-key`、`sk-` 前缀）；`onunload` 清理评估确认 Obsidian Plugin 基类自动 handle 无需额外代码。顺手清理了 `parseJsonLikeOutput` 的 null candidate、提取了 `hasRequiredSections()` 辅助函数、评估了 `main.ts` composition root。
 
 ### Active summary
 - Date: 2026-05-04
 - Scope: D31 / `src/core/apply/BodyAssembler.ts`、`src/application/ApplyDecisionUseCase.ts`、`src/application/BuildApplyPlanUseCase.ts`、`src/application/CreateProposalUseCase.ts`、`src/runtime/ProposalSessionStore.ts`、`src/runtime/redaction.ts`、`src/core/proposal/ProposalValidator.ts`、`src/adapters/obsidian/ObsidianSessionStore.ts`
 - Reason: 根据 code-review-excellence 审查报告修复 10 项发现，消除死代码、脆弱的模板替换、静默错误吞没和硬编码扩展断点
-- Change: 详见上方 Current status 的 9 项细分；新增 `tests/core/apply/BodyAssembler.test.ts`（5 测试）、`tests/runtime/redaction.test.ts`（12 测试）、`tests/application/CreateProposalUseCase.test.ts` 补充 prompt template 3 测试
-- Verification: `npm run typecheck`、`npm test` (84/84，17 文件)、`npm run build` 成功；persistence 失败脱敏日志在 stderr 中可见 `[Obsidian-Refined-Layer] Session persistence failed: <redacted>`
+- Change: 新增 `tests/core/apply/BodyAssembler.test.ts`（5 测试）、`tests/runtime/redaction.test.ts`（12 测试）、`tests/application/CreateProposalUseCase.test.ts` 补充 prompt template 3 测试
+- Verification: `npm run typecheck`、`npm test` (84/84，17 文件)、`npm run build` 成功；persistence 失败脱敏日志在 stderr 可见
 - Next: 原始 D31 计划（保护 H1 / 文件标题，修正 replace-refined-body 边界）延后为 D32
+
+## D32 开发日志
+
+### Current status
+
+已完成 replace-refined-body 写入安全闭环。核心改造集中在 `ApplyDecisionUseCase.ts` 的 `mergeBodyIntoMarkdown` 函数：(1) H1 保护 — apply 时从当前文件提取 frontmatter 后的首个 `# ` H1 标题，保留到新正文中；若无 H1 则不自增。(2) protected region 从当前文件重新提取 — `mergeBodyIntoMarkdown` 接收当前文件 fresh-extracted 的 protected region 文本（不含 session / proposal 缓存），并替换 body 中旧的 protected region。(3) 写入后验证 — apply 全部 operation 执行完毕、在 `writeNote` 之前，对新 `nextContent` 再次提取 protected region 并与写入前的原文逐字节比较；若不一致则返回 `protected-region-corrupted` 拒绝写入。(4) 边界异常 — 缺少/重复/空 protected region 均由 extractor + post-apply check 双保险拒绝。冲突路径保持不变（文件 hash / protected region hash 变化时进入 conflict flow，不直接写入，不提供 force apply）。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D32 / `src/application/ApplyDecisionUseCase.ts`（`mergeBodyIntoMarkdown` 重写 + post-apply 验证）、`tests/application/ApplyDecisionUseCase.test.ts`（新增 7 个 D32 测试）
+- Reason: 原始 D31 计划延后至此；补齐 replace-refined-body 的 H1 保留、protected region 逐字节保留和写入前双保险验证
+- Change: 重写 `mergeBodyIntoMarkdown` — 提取 frontmatter → 提取 H1（可选）→ 从 body 剥离 protected region → 拼入 fresh-extracted protected region；新增 `stripProtectedRegionFromBody` 辅助函数；在 writeNote 前新增 post-apply protected region 一致性检查（`protected-region-corrupted` 错误码）；新增 7 个 D32 测试（H1 保留、无 H1 不自增、逐字节保留、文件变化冲突、缺少 heading、重复 heading、空 protected region）
+- Verification: `npm run typecheck`、`npm test` (91/91，17 文件)、`npm run build` 成功；post-apply 验证在正常 apply 时 protected region 逐字节一致，在异常边界（missing/multiple/empty）时被 extractor 拦截
+- Next: 执行 D33（原计划待定，视交付检查清单是否需要进一步闭环）
