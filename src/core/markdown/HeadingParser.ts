@@ -64,7 +64,11 @@ export class HeadingParser {
     charStart: number,
     charEnd: number,
   ): HeadingInfo | null {
-    const match = line.match(/^(#{1,6})\s+(.+?)(?:\s+#+\s*)?$/);
+    // Strip trailing \r for CRLF compatibility. charStart/charEnd are based on
+    // original markdown positions (passed from parse()), so offsets are unaffected.
+    const normalizedLine = line.endsWith("\r") ? line.slice(0, -1) : line;
+
+    const match = normalizedLine.match(/^(#{1,6})\s+(.+?)(?:\s+#+\s*)?$/);
     if (!match) return null;
 
     const level = match[1].length as HeadingInfo["level"];

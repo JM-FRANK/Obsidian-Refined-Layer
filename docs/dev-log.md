@@ -90,3 +90,92 @@ HeadingParser 与 BlockConfigValidator 已实现。HeadingParser 可识别 H1-H6
   - 新增 `tests/core/profile/BlockConfigValidator.test.ts`（14 tests）：protectH1 true/false 下 A/B block level=1 行为、无效 level (0/7/-1/99)、重复 ID、空列表、多错误聚合
 - Verification: `npm run typecheck` 通过；`npm test` 19 files / 126 tests 全部通过（新增 29 tests）；`npm run build` 通过
 - Next: D40 — 实现 B 类分块提取器（BlockExtractor 或改造 ProtectedRegionExtractor）
+
+---
+
+## D40 开发日志
+
+### Current status
+
+BlockExtractor 已实现，替代旧 ProtectedRegionExtractor 的 `from-heading-to-end` 模型。B 类分块范围从配置 heading 到下一个同级或更高级 heading（sibling-or-higher），内部嵌套子标题逐字保留。CRLF 兼容性已验证通过。现有 v0.1.0 ProtectedRegionExtractor 保留不变，apply 写入逻辑未改动。
+
+### D40.1 CRLF heading 解析缺陷修复
+
+#### 报错现象
+
+```
+Direct regex on '# Title\r': NO MATCH
+Direct regex on '## 原始内容\r': NO MATCH
+CRLF headings: []
+```
+
+CRLF 换行的 Markdown 输入（`\r\n`），`HeadingParser` 返回 **0 个 heading**，进而导致 `BlockExtractor` 对 CRLF 文件返回 `missing-heading` 错误：
+
+```
+CRLF extraction failed: missing-heading - Required B block heading "原始内容" (level 2) was not found.
+```
+
+LF 换行（`\n`）的相同输入完全正常。
+
+#### 定位过程
+
+1. 通过在 `BlockExtractor` CRLF 测试中注入 `throw new Error(result.error.code + " - " + result.error.message)` 确认了 `missing-heading` 错误码
+2. 怀疑是 `BlockExtractor` 匹配逻辑对 CRLF 不兼容，在测试中直接调用 `HeadingParser.parse()` 发现返回 `headings: []`
+3. 进一步隔离到 `parseAtxHeading()` 内部的正则表达式，直接对单行字符串 `"# Title\r"` 执行 `/^(#{1,6})\s+(.+?)(?:\s+#+\s*)?$/` 返回 `null`
+4. 对比去掉 `\r` 后同一正则对 `"# Title"` 正常匹配，确认 `\r` 是唯一干扰因素
+
+#### 根因分析
+
+`HeadingParser.parse()` 按 `\n` 切分行：
+
+```ts
+const newlineIdx = markdown.indexOf("\n", pos);
+const lineEnd = newlineIdx === -1 ? len : newlineIdx;
+const line = markdown.slice(lineStart, lineEnd);
+```
+
+CRLF 文件中，`\n` 前必定有 `\r`，切出的行字符串末尾包含 `\r`。例如 `"## 原始内容\r\n"` → 行字符串 `"## 原始内容\r"`（`\r` 是 ASCII 13，属于 `\s` 空白字符类）。
+
+`parseAtxHeading` 的正则：
+
+```
+/^(#{1,6})\s+(.+?)(?:\s+#+\s*)?$/
+```
+
+JavaScript 中 `$` 无 `m` 标志时仅匹配字符串最末尾位置。非贪婪 `(.+?)` 的逻辑：
+
+```
+(.+?) 尝试最小匹配 "原"
+剩余 "始内容\r"，$ 无法匹配（不是末尾）
+(.+?) 回溯 "原始"
+剩余 "内容\r"，$ 无法匹配
+...
+(.+?) 回溯 "原始内容\r"
+剩余 ""，$ 匹配末尾 → 成功
+```
+
+**理论上** `(.+?)` 应能回溯到吞掉 `\r` 使 `$` 匹配。但 v8 引擎下正则实际返回 `null`，说明存在未文档化的边界行为——`\r` 作为行终止符可能与 `$` 存在特殊交互，或非贪婪量词的回溯策略在特定 Unicode + `\r` 组合下提前终止。
+
+#### 修复方案
+
+在 `parseAtxHeading()` 入口处规范化行尾：
+
+```ts
+const normalizedLine = line.endsWith("\r") ? line.slice(0, -1) : line;
+```
+
+只移除单个 `\r`，不 trim 整行，不改变 heading text 的既有 trim 行为。
+
+**charStart/charEnd 不受影响**：偏移量由 `parse()` 循环基于原始 Markdown 字符位置计算后作为参数传入，`parseAtxHeading` 不重新计算 offset，规范化只影响正则匹配对象，不改变返回的 `charStart`/`charEnd` 值。
+
+### Active summary
+- Date: 2026-05-05
+- Scope: 实现 BlockExtractor（B 类分块提取器）+ CRLF heading 解析修复
+- Reason: v0.2.0 B 类分块不再固定在文末，范围由 heading 位置和层级决定；CRLF 兼容性是 Windows 平台基本需求
+- Change:
+  - 新增 `src/core/markdown/BlockExtractor.ts`：按 BBlockConfig（heading + headingLevel）定位唯一 B heading；提取范围从 B heading 到下一个 level ≤ B.level 的 heading 或文末；保留嵌套子标题；返回结构化错误（missing-heading / heading-level-mismatch / multiple-heading / empty-b-block）；计算 baseBBlockHash（SHA256）
+  - `src/core/markdown/HeadingParser.ts` CRLF 修复：`parseAtxHeading()` 在正则匹配前规范化行尾 `\r`（`line.endsWith("\r") ? line.slice(0, -1) : line`）；charStart/charEnd 基于原始 Markdown 位置，不受影响
+  - `tests/core/markdown/HeadingParser.test.ts`（20 tests，+5 CRLF）：H1-H6 CRLF 解析、firstH1 after frontmatter CRLF、\r 不进入 heading text、offset 正确性、LF 不回归
+  - `tests/core/markdown/BlockExtractor.test.ts`（18 tests）：基本提取、文末提取、非文末提取、嵌套子标题保留、H1 结束 H2 B block、同级结束、missing/mismatch/multiple/empty 错误、确定性 hash、自定义 B heading、CRLF 查找与保留原始换行、LF 不回归、空白保留
+- Verification: `npm run typecheck` 通过；`npm test` 20 files / 149 tests 全部通过；`npm run build` 通过
+- Next: D41 — 将 eligibility 切到 A/B block config
