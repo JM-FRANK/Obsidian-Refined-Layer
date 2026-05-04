@@ -502,3 +502,110 @@ Next: 执行 D29：按 `docs/fix-feature-tasks.md` 实现 ProposalSessionStore �
 - Change: 重写 `mergeBodyIntoMarkdown` — 提取 frontmatter → 提取 H1（可选）→ 从 body 剥离 protected region → 拼入 fresh-extracted protected region；新增 `stripProtectedRegionFromBody` 辅助函数；在 writeNote 前新增 post-apply protected region 一致性检查（`protected-region-corrupted` 错误码）；新增 7 个 D32 测试（H1 保留、无 H1 不自增、逐字节保留、文件变化冲突、缺少 heading、重复 heading、空 protected region）
 - Verification: `npm run typecheck`、`npm test` (91/91，17 文件)、`npm run build` 成功；post-apply 验证在正常 apply 时 protected region 逐字节一致，在异常边界（missing/multiple/empty）时被 extractor 拦截
 - Next: 执行 D33（原计划待定，视交付检查清单是否需要进一步闭环）
+
+## D33 开发日志
+
+### Current status
+
+已完成 v0.1.0 Final Release Check。全量 scope freeze 检查通过：src/ 中不存在 MCP / HTTP / File Inbox / external review / batch refine / workflow editor / profile editor 实现；`ApplyOperation` 仅含 `replace-refined-body` / `update-frontmatter` / `update-tags` 三种类型；UI 无 writeNote / vault API 调用；`RequestReviewUseCase` 仅依赖 `ReviewGate` 接口。自动验证全通过：`tsc --noEmit` 零错误、91 个测试全部通过、`esbuild` 构建成功。安全边界全绿灯：missing frontmatter / 非 raw status / 缺少-重复-空 protected region / 非 JSON proposal / 非法 YAML 字段 / 非法 tag / `#rel/*` / 文件变化 conflict 均有自动测试覆盖；API key / token / Authorization header / provider secret 的脱敏规则覆盖 7 类模式（Bearer、Authorization、api_key、token、secret、x-api-key、sk-），persistence 写入前有 secret scan 拦截。README 覆盖安装、使用、provider 配置、API key 隐私、v0.1.0 范围说明全部要求项。GitHub 仓库未新建，无法完成 push。
+
+### Active summary
+- Date: 2026-05-04
+- Scope: D33 / 全仓 scope freeze grep + 自动验证 + 安全路径复查 + README 文档检查 + 交付清单
+- Reason: v0.1.0 最终交付前检查，确认最小闭环可运行、安全边界未破、文档完整
+- Change: 输出交付清单（见下方）；无新增功能代码
+- Verification: `npm run typecheck` 通过；`npm test` (91/91) 通过；`npm run build` 成功；scope freeze grep 全部零匹配或仅为合法 URL/i18n/tag remove 用途；README 覆盖 D33 要求的全部 11 项文档检查；security path 全部有测试覆盖
+- Next: 无；v0.1.0 开发阶段结束，进入手动测试与真实环境验收阶段（需用户在有 SecretStorage 的 Obsidian 中执行 TEST-MATRIX.md 用例）
+
+---
+
+### v0.1.0 Final Delivery Checklist
+
+#### v0.1.0 已完成
+
+| # | 能力 | 状态 |
+|---|------|------|
+| 1 | 单篇 raw Markdown 笔记 → refined proposal 生成 | ✅ |
+| 2 | `raw-refined` 内置 workflow profile | ✅ |
+| 3 | eligibility 检查（扩展名 .md / frontmatter 存在 / status=raw / ## 原始内容 存在） | ✅ |
+| 4 | 四层 proposal 校验（JSON 解析含 fenced block → Schema → Policy → Content） | ✅ |
+| 5 | Protected region（`## 原始内容`）提取、hash、逐字节保留 | ✅ |
+| 6 | Mock LLM provider（不依赖外部 API） | ✅ |
+| 7 | OpenAI-compatible / DeepSeek / custom / local 四种真实 provider | ✅ |
+| 8 | SecretStorage 加密存储 API key，不落 data.json | ✅ |
+| 9 | 错误/日志脱敏（Bearer、Authorization、api_key、token、secret、x-api-key、sk-） | ✅ |
+| 10 | Review UI（Obsidian Modal，section-level 可编辑正文、checkbox 选择 frontmatter/tag） | ✅ |
+| 11 | 部分 apply（用户可选 body / frontmatter / tag） | ✅ |
+| 12 | Apply 只修改 refined 区域，H1 标题保留 | ✅ |
+| 13 | Apply 前 freshness check（文件 hash + protected region hash） | ✅ |
+| 14 | Conflict flow（文件变化 → Save Draft / Regenerate / Manual Copy / Discard） | ✅ |
+| 15 | Apply 后 post-write protected region 一致性验证 | ✅ |
+| 16 | Save as Draft（草稿含 source path / workflow id / timestamp / token usage / conflict reason） | ✅ |
+| 17 | Session 磁盘持久化（白名单序列化 + secret scan + version check） | ✅ |
+| 18 | Session 恢复（SessionPickerModal + freshness 状态展示） | ✅ |
+| 19 | Prompt override（按 profile 存储，system/user 分别可编辑） | ✅ |
+| 20 | SettingsTab（language / historyLimit / draftFolder / provider 配置 / prompt override） | ✅ |
+| 21 | Token usage（actual / estimated / unavailable 三态） | ✅ |
+| 22 | i18n（zh-CN + en，t() 函数 + 变量替换） | ✅ |
+| 23 | Clean Architecture 依赖方向（Core 零 Obsidian 导入） | ✅ |
+| 24 | 自动测试 91 例，17 文件 | ✅ |
+| 25 | README（安装 / 使用 / provider 配置 / 隐私 / 范围） | ✅ |
+| 26 | 手动测试矩阵 50 用例 + 10 个测试笔记 | ✅ |
+| 27 | 交付检查清单（本文档） | ✅ |
+
+#### v0.1.0 暂缓 / 明确不做
+
+| # | 能力 | 状态 |
+|---|------|------|
+| 1 | MCP / HTTP / File Inbox / external review server | ❌ 明确不做 |
+| 2 | Batch refine（多笔记批量） | ❌ 明确不做 |
+| 3 | MOC 写入 / 关系链接写入 | ❌ 明确不做 |
+| 4 | rename / move / archive / delete 操作 | ❌ 明确不做 |
+| 5 | 多 profile 编辑器 / profile 选择器 | ❌ 明确不做 |
+| 6 | 完整 Prompt 编辑器（语法高亮、自动补全、模板管理） | ❌ 明确不做 |
+| 7 | 价格估算 / tokenizer 选择 UI | ❌ 明确不做 |
+| 8 | `between-headings` protected region mode | ❌ 类型层预留，未实现 |
+| 9 | 独立 draft 写入 adapter（当前复用 NoteFilePort.writeDraft） | ❌ 暂缓 |
+| 10 | `PolicyGuard` 当前为空壳透传 | ❌ 暂缓，入口形状已固定 |
+| 11 | `main.ts` composition root 拆分（458 行） | ❌ 暂缓 |
+| 12 | 真实 LLM provider happy path 手动验证 | ❌ 需真实 Obsidian + API key 环境 |
+
+#### v0.1.0 已知问题
+
+| # | 问题 | 影响 | 缓解 |
+|---|------|------|------|
+| 1 | `PolicyGuard` 为空壳透传，未在请求入口执行独立 policy 拦截 | 低 — `ProposalValidator` 已在 proposal 侧做了 4 层校验 | 入口形状已固定，后续填充 |
+| 2 | 真实 LLM provider happy path 未在真实 Obsidian vault 中手动端到端验证 | 中 — API key / SecretStorage / 真实网络请求路径未经人工确认 | TEST-MATRIX.md 已覆盖；需用户在真实环境中执行 |
+| 3 | `buildRefinedBodyPreview` 中 optional section key 遍历顺序依赖 `Object.keys()` | 低 — ES2015+ 规范保证字符串 key 按插入顺序 | 无明显风险 |
+| 4 | `ProposalSessionStore` 未限制单个 notePath 的并发 save | 低 — 当前 UI 为单线程 Modal 流 | 并发场景概率极低 |
+| 5 | `stripProtectedRegionFromBody` 依赖 `\n## 原始内容` 精确匹配 | 低 — 由 `BodyAssembler` 和 `buildRefinedBodyPreview` 保证输出格式 | 若 body 格式变化需同步 |
+
+#### v0.2.0 候选
+
+| # | 候选 | 优先级 |
+|---|------|--------|
+| 1 | `PolicyGuard` 实现独立 policy 拦截逻辑 | P1 |
+| 2 | 真实 LLM happy path 端到端手动验证 | P1 |
+| 3 | `main.ts` 提取 `ProviderSelector` 独立模块 | P2 |
+| 4 | 独立 draft adapter（解耦 NoteFilePort 的 draft 职责） | P2 |
+| 5 | `between-headings` protected region mode 实现 | P2 |
+| 6 | Profile 元数据编辑（非完整编辑器，仅 model/temperature 等） | P3 |
+| 7 | 批量 refine（multi-note batch） | P3 |
+| 8 | Token 用量统计仪表板 | P3 |
+| 9 | MOC 写入 / 关系链接写入 | 待评估 |
+| 10 | rename / move / archive / delete 操作 | 待评估 |
+
+### Phase 8 验收状态
+
+```text
+[x] replace-refined-body 写入安全闭环（H1 保护 + protected region 逐字节保留 + post-apply 验证）
+[x] code-review 审查修复（10 项，D31）
+[x] Scope freeze 检查通过（D33）
+[x] 自动验证全通过（91/91 tests）
+[x] 安全边界检查通过（7 类脱敏 + secret scan + 冲突 flow）
+[x] README 文档完整
+[x] 交付清单输出
+[x] D33 开发日志完成
+[ ] GitHub 仓库未新建（需手动创建后 push）
+[ ] 真实 Obsidian 环境 TEST-MATRIX 手动测试（需用户执行）
+```
