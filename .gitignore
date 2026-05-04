@@ -12,3 +12,6 @@ data.json
 
 # claude
 .claude
+
+# release bundles
+releases/
