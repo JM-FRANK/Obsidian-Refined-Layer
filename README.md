@@ -1,6 +1,8 @@
 # Obsidian Refined Layer
 
-将当前打开的 raw 笔记生成 refined proposal，用户审核后只应用被确认的修改。
+Obsidian Refined Layer 是一个面向 Obsidian 的安全型笔记整理插件，用于将 raw 笔记转换为经过审核的 refined 笔记。它通过 LLM 生成整理建议，但不会直接改写原文；所有修改都需要用户在 Review UI 中确认后，才会通过受控的 ApplyPlan 写入。
+
+插件重点保护 ## 原始内容 及其后文，确保原始记录被逐字保留。同时支持 session 恢复、草稿保存、token usage 展示、tag整理、API key 安全存储与日志脱敏，适合用于构建长期可追溯的 Obsidian 知识库。
 
 ## 安装
 
