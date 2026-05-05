@@ -313,3 +313,41 @@ Zod Proposal Schema v0.2 已引入。`rawRefinedProposalV2Schema` 校验 `workfl
   - 新增 `tests/core/proposal/ProposalSchema.test.ts`（21 tests）：合法提案（最小/全部可选字段/无 tagSuggestion/block 含 warnings）、blocks 缺失/空数组/缺 id/缺 content/空 id/空 content、workflowProfileId/schemaVersion 错误、tagSuggestion 类型错误（非数组、元素非字符串）、frontmatterSuggestion status/source 错误、warnings 非数组、zod 错误结构可 JSON 序列化（可存入 attempt）、非对象/null 输入
 - Verification: `npm run typecheck` 通过；`npm test` 23 files / 204 tests 全部通过（+21 tests；旧 ProposalValidator 9 tests 不受影响）；`npm run build` 通过
 - Next: D45 — 实现 TagNormalizer
+
+---
+
+## D45 开发日志
+
+### Current status
+
+TagNormalizer 已实现，支持英/中文逗号、空格、换行、顿号分割 tag，自动 trim、去空项、补 #、去重，不做大小写归一化。非白名单 selectedTags 自动移入 newTagSuggestions。`tagNormalizationApplied` 标记任何处理是否发生——该字段仅存在于本地 ProposalSession/validation report，不传给 LLM、不写入笔记。尚未接入 ProposalNormalizer（D46）。
+
+### Active summary
+- Date: 2026-05-05
+- Scope: 实现 TagNormalizer（Phase 11 第三任务）
+- Reason: v0.2.0 要求 LLM 输出的 tag 字段经过本地 normalization 后才进入 policy 和 Review UI，分割/补 #/去重/白名单过滤都是 normalization 的基本操作
+- Change:
+  - 新增 `src/core/proposal/TagNormalizer.ts`：`normalizeTagList(raw)` 按 `[，、,\s]+` 分割，trim、去空、补 #、去重；`normalizeProposalTags(input, whitelist)` 对 selectedTags/newTagSuggestions 分别做 normalizeTagList flatMap + 全局去重，非白名单 selectedTags 移入 newTagSuggestions，输出 `tagNormalizationApplied: boolean`
+  - 已知设计决策：`normalizeAndTrack` 比较 `tags[0] !== raw`（而非 `raw.trim()`）以确保 trim 也被计入 normalization；`dedupe` helper 在 flatMap 后做全局去重（normalizeTagList 只能去重单字符串内的重复）
+  - 新增 `tests/core/proposal/TagNormalizer.test.ts`（31 tests）：normalizeTagList（英/中文逗号/顿号/空格/换行/混合分隔符/补 #/trim/去空/去重/空输入/大小写保持/CRLF）、normalizeProposalTags（白名单保留/非白名单移动/多 tag 移动/newTagSuggestions 保留/合并/分割后移动/补 # 后移动/空输入/去重/大小写不归一化/trim 追踪/补 # 追踪/去空项追踪）
+- Verification: `npm run typecheck` 通过；`npm test` 24 files / 235 tests 全部通过（+31 tests）；`npm run build` 通过
+- Next: D46 — 实现 ProposalNormalizer 与 partial validation result
+
+---
+
+## D46 开发日志
+
+### Current status
+
+ProposalNormalizer 已实现。A 类分块按配置 order 排序，未知 block id 被标记为 rejectedField，缺失的启用分块产生 warning。TagNormalizer 已接入，tag 不规范时标记 tagNormalizationApplied 并添加 warning。非致命 tag 问题不再导致正文整体失败——body blocks 全部合法时 status=valid，tag 问题仅产生 warning。尚未接入 CreateProposalUseCase（D47）。
+
+### Active summary
+- Date: 2026-05-05
+- Scope: 实现 ProposalNormalizer 与 partial validation result（Phase 11 第四任务）
+- Reason: v0.2.0 需要在 zod 校验后对 proposal 做 normalization（排序、未知 id 清洗、tag 规范），输出 valid/partial/invalid 状态供上层决定是进入 Review UI 还是重试
+- Change:
+  - 新增 `src/core/proposal/ProposalNormalizer.ts`：`ProposalNormalizer.normalize(parsed, settings)` 实现 A block 按 enabled config order 排序、未知 id 记录 rejectedField、缺失启用分块产生 warning；接入 `normalizeProposalTags`；frontmatter pass-through；状态逻辑：无接受分块→invalid、存在拒绝/缺失分块→partial、全接受+无 warning→valid
+  - 关键策略变更：unknown tag 从 fatal error 降级为 normalization 问题——body blocks 全合法时 status=valid，仅产生 tag normalization warning；不影响 retry 决策
+  - 新增 `tests/core/proposal/ProposalNormalizer.test.ts`（18 tests）：A block 接受/拒绝/排序/缺失警告/禁用配置、status 判定（valid/partial/invalid/空）、tag normalization（分割/补 #/非白名单移动/warning/缺失 tagSuggestion/body 有效时仍 valid）、frontmatter passthrough、validation 结构（多 rejectedField + 多 warning 合并）
+- Verification: `npm run typecheck` 通过；`npm test` 25 files / 253 tests 全部通过（+18 tests）；`npm run build` 通过
+- Next: D47 — CreateProposalUseCase 接入 v0.2 prompt / zod / normalization
