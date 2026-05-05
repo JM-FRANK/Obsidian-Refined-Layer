@@ -232,3 +232,64 @@ D42 实现过程中出现 4 个测试侧问题，均已修正，`MarkdownAssembl
 4. 测试辅助函数使用 `content || defaultContent`，导致空字符串被错误回退为默认内容，已改为 `content ?? defaultContent`。
 
 这些问题均属于测试 fixture / assertion 问题，不改变 D42 的实现边界：旧 `BodyAssembler` 保留，`MarkdownAssembler` 尚未接入 `ApplyDecisionUseCase`。
+
+---
+
+## D43 开发日志
+
+### Current status
+
+PromptBuilder 已实现，负责将 A block prompts、tagPrompt、tagWhitelist、固化 schema instruction 组装为结构化 `LlmRequestV2`（含 messages 数组）。Provider 不再负责拼 prompt，只接收构建好的 LlmRequest。`PromptDebugSnapshot` 类型已定义，记录完整的 prompt 可观测信息，不含 API key / Authorization / secret。旧 v0.1 `LlmRequest` 接口保留不变。PromptBuilder 尚未接入 `CreateProposalUseCase`，仅 core 层实现。
+
+### Active summary
+- Date: 2026-05-05
+- Scope: 实现 PromptBuilder + PromptDebugSnapshot（Phase 11 首任务）
+- Reason: v0.2.0 要求 LLM 请求从固定 prompt 转为结构化请求，PromptBuilder 负责从 A block config + tag 设置构建 system/user messages，Provider 不再自己拼 prompt
+- Change:
+  - 新增 `src/core/prompt/PromptDebugSnapshot.ts`：`PromptDebugSnapshot` 接口（provider/model/messages/schemaName/schemaVersion/metadata，不包含 secrets）；`LlmRequestV2` 接口（provider/model/messages/schemaName/schemaVersion/metadata，替代旧 `LlmRequest` 的 `noteContent`/`systemPrompt`/`userPrompt` 直接字段）
+  - 新增 `src/core/prompt/PromptBuilder.ts`：`PromptBuilderInput` 接口（provider/model/notePath/noteTitle/noteContent/aBlocks/tagWhitelist/tagPrompt/requestId）；`BuiltPrompt` 输出（LlmRequestV2 + PromptDebugSnapshot）；`buildSystemPrompt()` 固化 schema instruction（JSON 结构、selectedTags/newTagSuggestions 分离规则、blocked tags 列表）；`buildUserPrompt()` 组装 note 元信息 + 每个 enabled A block 的 id/heading/prompt + tag prompt/whitelist + 原始 noteContent
+  - 新增 `tests/core/prompt/PromptBuilder.test.ts`（14 tests）：LlmRequest 结构、messages 数组二角色、enabled A blocks 全包含/disabled 不包含、tagWhitelist 完整输出、tagPrompt 可定制、schema instruction 包含 selectedTags/newTagSuggestions 分离规则、note content/metadata 完整传递、PromptDebugSnapshot 无 secret 字段、自定义/自动生成 requestId、provider/model 透传
+- Verification: `npm run typecheck` 通过；`npm test` 22 files / 183 tests 全部通过（+14 tests）；`npm run build` 通过
+- Next: D44 — 引入 Zod Proposal Schema v0.2
+
+---
+
+## Phase 10 验收
+
+### 验收日期
+2026-05-05
+
+### 验收清单
+
+| # | 检查项 | 状态 | 验证方式 |
+|---|--------|------|----------|
+| 1 | HeadingParser 可用 | ✓ | `HeadingParser.test.ts` 20 tests（H1-H6、firstH1、trim、CRLF、Setext拒绝、frontmatter跳过） |
+| 2 | protectH1 规则可验证 | ✓ | `BlockConfigValidator.test.ts` 14 tests（level=1拒绝/接受、无效level、重复ID、空列表） |
+| 3 | B 类分块可配置名称和层级 | ✓ | `BlockExtractor.test.ts` "works with custom B block heading text and level"、`BBlockConfig` 支持 heading/headingLevel |
+| 4 | B 类分块内部子标题逐字保留 | ✓ | `BlockExtractor.test.ts` "preserves nested sub-headings"（含 ### H3、#### H4） |
+| 5 | eligibility 使用 A/B block config | ✓ | `CheckEligibilityUseCase.test.ts` 11 tests（从 `RawRefinedWorkflowSettings` 读取，BlockExtractor+BlockConfigValidator） |
+| 6 | MarkdownAssembler v2 能组装 accepted A blocks + B block | ✓ | `MarkdownAssembler.test.ts` 14 tests（order排序、未接受排除、protectH1、B block逐字节） |
+
+### 回归锚点确认
+
+| 锚点 | 状态 |
+|------|------|
+| active note read | ✓ CheckEligibilityUseCase |
+| eligibility failure reporting | ✓ CheckEligibilityUseCase.test.ts |
+| mock provider happy path | ✓ CreateProposalUseCase.test.ts |
+| real provider redaction | ✓ redaction.test.ts |
+| SecretStorage no-secret leak | ✓ ObsidianSettingsStore.test.ts |
+| D35 Bearer test pollution defense | ✓ redaction.test.ts |
+| session-cache persistence | ✓ ProposalSessionStore.test.ts |
+| ReviewGate abstraction | ✓ src/ui/review/ |
+| ApplyPlan-only write path | ✓ BodyAssembler + ApplyDecisionUseCase |
+| freshness conflict flow | ✓ ApplyDecisionUseCase.test.ts |
+| Save as Draft | ✓ SaveDraftUseCase.test.ts |
+| protected B/original region byte-for-byte | ✓ ProtectedRegionExtractor.test.ts + BlockExtractor.test.ts |
+
+### 整体验证
+- `npm run typecheck` — 通过
+- `npm test` — 22 files / 183 tests 全部通过
+- `npm run build` — 通过
+- 旧 `ProtectedRegionExtractor` 保留，旧 `BodyAssembler` 保留，旧 `rawRefinedProfile` 保留
+- 无 Phase 11+ 范围泄露

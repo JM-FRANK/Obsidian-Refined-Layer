@@ -498,12 +498,12 @@ protectH1=false 时可不特殊保留 H1。
 ## Phase 10 验收任务
 
 ```text
-[ ] HeadingParser 可用。
-[ ] protectH1 规则可验证。
-[ ] B 类分块可配置名称和层级。
-[ ] B 类分块内部子标题逐字保留。
-[ ] eligibility 使用 A/B block config。
-[ ] MarkdownAssembler v2 能组装 accepted A blocks + B block。
+[x] HeadingParser 可用。
+[x] protectH1 规则可验证。
+[x] B 类分块可配置名称和层级。
+[x] B 类分块内部子标题逐字保留。
+[x] eligibility 使用 A/B block config。
+[x] MarkdownAssembler v2 能组装 accepted A blocks + B block。
 ```
 
 ---
