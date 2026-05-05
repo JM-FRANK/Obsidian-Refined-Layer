@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CreateProposalUseCase, renderPromptTemplate } from "../../src/application/CreateProposalUseCase";
 import type { ActiveNoteRepository } from "../../src/application/CheckEligibilityUseCase";
 import type { LlmProvider } from "../../src/adapters/llm/LlmProvider";
+import { MockLlmProvider } from "../../src/adapters/llm/MockLlmProvider";
 import { rawRefinedProfile } from "../../src/core/profile/rawRefinedProfile";
 import { ProposalSessionStore } from "../../src/runtime/ProposalSessionStore";
 import { DEFAULT_PLUGIN_SETTINGS } from "../../src/settings/PluginSettings";
@@ -172,6 +173,221 @@ describe("CreateProposalUseCase", () => {
       throw new Error("expected created result");
     }
     expect(result.session.tokenUsage?.countingMode).toBe("estimated");
+  });
+});
+
+// ── v0.2.0 pipeline (executeV2) ──
+
+/** Settings with only the 4 A blocks that MockLlmProvider returns. */
+const mockV2Settings = {
+  ...defaultSettings,
+  aBlocks: defaultSettings.aBlocks.filter((b) =>
+    ["summary", "coreQuestion", "currentConclusion", "reasoning"].includes(b.id),
+  ),
+};
+
+describe("CreateProposalUseCase v0.2 (executeV2)", () => {
+  const content = "---\nstatus: raw\n---\n# Title\n\n## 原始内容\nhello";
+
+  it("creates a v0.2 proposal session with mock provider", async () => {
+    const repository = createMarkdownRepository(content);
+    const provider = new MockLlmProvider();
+    const store = new ProposalSessionStore(5);
+    const useCase = new CreateProposalUseCase(
+      repository, rawRefinedProfile, provider, store, mockV2Settings,
+    );
+
+    const result = await useCase.executeV2();
+
+    expect(result.kind).toBe("created-v2");
+    if (result.kind !== "created-v2") return;
+
+    // Session structure
+    expect(result.session.schemaVersion).toBe("0.2");
+    expect(result.session.notePath).toBe("10_Raw/example.md");
+    expect(result.session.baseFileHash).toBeTruthy();
+    expect(result.session.baseBBlockHash).toBeTruthy();
+    expect(result.session.status).toBe("generated");
+
+    // Block config snapshot
+    expect(result.session.blockConfigSnapshot.protectH1).toBe(true);
+    expect(result.session.blockConfigSnapshot.aBlocks).toHaveLength(4);
+    expect(result.session.blockConfigSnapshot.bBlock.id).toBe("original-content");
+    expect(result.session.blockConfigSnapshot.tagWhitelist).toContain("#ai/generated");
+
+    // Proposal structure
+    expect(result.session.proposal.blocks).toHaveLength(4);
+    expect(result.session.proposal.blocks[0]).toHaveProperty("id");
+    expect(result.session.proposal.blocks[0]).toHaveProperty("content");
+
+    // Validation result — all 4 mock blocks match 4 enabled configs
+    expect(result.session.validation.status).toBe("valid");
+    expect(result.session.validation.acceptedFields).toHaveLength(4);
+    expect(result.session.validation.tagNormalizationApplied).toBe(false);
+
+    // Source
+    expect(result.session.source.provider).toBe("mock-llm");
+    expect(result.session.source.attemptsUsed).toBe(1);
+
+    // Token usage
+    expect(result.session.tokenUsage?.countingMode).toBe("actual");
+  });
+
+  it("includes tagNormalizationApplied and warnings when tags need normalization", async () => {
+    const repository = createMarkdownRepository(content);
+    const provider: LlmProvider = {
+      providerId: "mock-llm",
+      model: "mock-gpt",
+      generateProposal: vi.fn(),
+      async generateProposalV2() {
+        return {
+          rawText: JSON.stringify({
+            workflowProfileId: "raw-refined",
+            schemaVersion: "0.2",
+            blocks: [
+              { id: "summary", content: "Summary." },
+              { id: "coreQuestion", content: "Core question." },
+              { id: "currentConclusion", content: "Conclusion." },
+              { id: "reasoning", content: "Reasoning." },
+            ],
+            tagSuggestion: {
+              selectedTags: ["ai/generated, custom-tag"],
+              newTagSuggestions: [],
+            },
+          }),
+          usage: {
+            provider: "mock-llm", model: "mock-gpt",
+            totalTokens: 200, countingMode: "actual" as const,
+            generatedAt: new Date().toISOString(),
+          },
+        };
+      },
+    };
+    const store = new ProposalSessionStore(5);
+    const useCase = new CreateProposalUseCase(
+      repository, rawRefinedProfile, provider, store, mockV2Settings,
+    );
+
+    const result = await useCase.executeV2();
+
+    expect(result.kind).toBe("created-v2");
+    if (result.kind !== "created-v2") return;
+
+    expect(result.session.validation.tagNormalizationApplied).toBe(true);
+    expect(
+      result.session.validation.warnings.some((w) =>
+        w.includes("Tag normalization applied"),
+      ),
+    ).toBe(true);
+    expect(result.session.validation.status).toBe("valid"); // body blocks valid
+  });
+
+  it("returns provider-failed when provider does not support generateProposalV2", async () => {
+    const repository = createMarkdownRepository(content);
+    const provider: LlmProvider = {
+      providerId: "old-mock",
+      model: "old",
+      generateProposal: vi.fn(),
+      // No generateProposalV2
+    };
+    const store = new ProposalSessionStore(5);
+    const useCase = new CreateProposalUseCase(
+      repository, rawRefinedProfile, provider, store, defaultSettings,
+    );
+
+    const result = await useCase.executeV2();
+
+    expect(result.kind).toBe("provider-failed");
+  });
+
+  it("returns eligibility-failed for notes without frontmatter", async () => {
+    const repository = createMarkdownRepository("# Title\n\n## 原始内容\nhello");
+    const provider = new MockLlmProvider();
+    const store = new ProposalSessionStore(5);
+    const useCase = new CreateProposalUseCase(
+      repository, rawRefinedProfile, provider, store, defaultSettings,
+    );
+
+    const result = await useCase.executeV2();
+
+    expect(result.kind).toBe("eligibility-failed");
+  });
+
+  it("returns validation-failed when all blocks are rejected during normalization", async () => {
+    const repository = createMarkdownRepository(content);
+    const provider: LlmProvider = {
+      providerId: "mock-llm",
+      model: "mock-gpt",
+      generateProposal: vi.fn(),
+      async generateProposalV2() {
+        return {
+          rawText: JSON.stringify({
+            workflowProfileId: "raw-refined",
+            schemaVersion: "0.2",
+            blocks: [
+              { id: "nonexistent-block", content: "Not in config." },
+            ],
+          }),
+          usage: {
+            provider: "mock-llm", model: "mock-gpt",
+            totalTokens: 50, countingMode: "actual" as const,
+            generatedAt: new Date().toISOString(),
+          },
+        };
+      },
+    };
+    const store = new ProposalSessionStore(5);
+    const useCase = new CreateProposalUseCase(
+      repository, rawRefinedProfile, provider, store, defaultSettings,
+    );
+
+    const result = await useCase.executeV2();
+
+    expect(result.kind).toBe("validation-failed");
+    if (result.kind !== "validation-failed") return;
+    expect(result.errors[0].code).toBe("normalization-invalid");
+  });
+
+  it("returns partial status when some blocks are missing", async () => {
+    const repository = createMarkdownRepository(content);
+    const provider: LlmProvider = {
+      providerId: "mock-llm",
+      model: "mock-gpt",
+      generateProposal: vi.fn(),
+      async generateProposalV2() {
+        return {
+          rawText: JSON.stringify({
+            workflowProfileId: "raw-refined",
+            schemaVersion: "0.2",
+            blocks: [
+              { id: "summary", content: "Only summary." },
+              // coreQuestion is missing from enabled blocks
+            ],
+          }),
+          usage: {
+            provider: "mock-llm", model: "mock-gpt",
+            totalTokens: 100, countingMode: "actual" as const,
+            generatedAt: new Date().toISOString(),
+          },
+        };
+      },
+    };
+    const store = new ProposalSessionStore(5);
+    const useCase = new CreateProposalUseCase(
+      repository, rawRefinedProfile, provider, store, defaultSettings,
+    );
+
+    const result = await useCase.executeV2();
+
+    expect(result.kind).toBe("created-v2");
+    if (result.kind !== "created-v2") return;
+
+    expect(result.session.validation.status).toBe("partial");
+    expect(
+      result.session.validation.warnings.some((w) =>
+        w.includes("Missing enabled A block"),
+      ),
+    ).toBe(true);
   });
 });
 

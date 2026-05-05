@@ -64,6 +64,40 @@ var MockLlmProvider = class {
       }
     };
   }
+  async generateProposalV2(_request) {
+    const proposal = {
+      workflowProfileId: "raw-refined",
+      schemaVersion: "0.2",
+      blocks: [
+        { id: "summary", content: `\u8FD9\u662F mock v0.2 \u6458\u8981\u3002` },
+        { id: "coreQuestion", content: "Mock v0.2 \u6838\u5FC3\u95EE\u9898\u3002" },
+        { id: "currentConclusion", content: "Mock v0.2 \u5F53\u524D\u7ED3\u8BBA\u3002" },
+        { id: "reasoning", content: "Mock v0.2 \u4F9D\u636E\u4E0E\u63A8\u7406\u3002" }
+      ],
+      frontmatterSuggestion: {
+        status: "refined",
+        context: ["mock/v0.2"]
+      },
+      tagSuggestion: {
+        selectedTags: ["#ai/generated"],
+        newTagSuggestions: []
+      },
+      warnings: ["mock v0.2 proposal"]
+    };
+    return {
+      rawText: JSON.stringify(proposal, null, 2),
+      parsedJson: proposal,
+      usage: {
+        provider: this.providerId,
+        model: this.model,
+        inputTokens: 120,
+        outputTokens: 80,
+        totalTokens: 200,
+        countingMode: "actual",
+        generatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      }
+    };
+  }
 };
 
 // src/runtime/redaction.ts
@@ -16408,45 +16442,6 @@ var BuildApplyPlanUseCase = class {
   }
 };
 
-// src/runtime/TokenUsageReporter.ts
-var TokenUsageReporter = class {
-  resolveUsage(options) {
-    const { provider, model, inputText, outputText, providerUsage } = options;
-    if (providerUsage) {
-      return {
-        ...providerUsage,
-        provider: providerUsage.provider || provider,
-        model: providerUsage.model || model,
-        countingMode: "actual",
-        generatedAt: providerUsage.generatedAt || (/* @__PURE__ */ new Date()).toISOString()
-      };
-    }
-    try {
-      const inputTokens = estimateTokenCount(inputText);
-      const outputTokens = estimateTokenCount(outputText);
-      return {
-        provider,
-        model,
-        inputTokens,
-        outputTokens,
-        totalTokens: inputTokens + outputTokens,
-        countingMode: "estimated",
-        generatedAt: (/* @__PURE__ */ new Date()).toISOString()
-      };
-    } catch (e) {
-      return {
-        provider,
-        model,
-        countingMode: "unavailable",
-        generatedAt: (/* @__PURE__ */ new Date()).toISOString()
-      };
-    }
-  }
-};
-function estimateTokenCount(text) {
-  return Math.max(1, Math.ceil(text.length / 4));
-}
-
 // src/core/markdown/HeadingParser.ts
 var HeadingParser = class {
   parse(markdown) {
@@ -16563,6 +16558,268 @@ var BlockExtractor = class {
     };
   }
 };
+
+// src/core/prompt/PromptBuilder.ts
+var PromptBuilder = class {
+  build(input) {
+    var _a5;
+    const requestId = (_a5 = input.requestId) != null ? _a5 : `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const systemPrompt = this.buildSystemPrompt();
+    const userPrompt = this.buildUserPrompt(input);
+    const messages = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt }
+    ];
+    const metadata = {
+      workflowProfileId: "raw-refined",
+      requestId
+    };
+    const request = {
+      provider: input.provider,
+      model: input.model,
+      messages,
+      schemaName: "RawRefinedProposalV2",
+      schemaVersion: "0.2",
+      metadata
+    };
+    const debugSnapshot = {
+      provider: input.provider,
+      model: input.model,
+      messages,
+      schemaName: "RawRefinedProposalV2",
+      schemaVersion: "0.2",
+      metadata: {
+        ...metadata,
+        aBlockIds: input.aBlocks.map((b) => b.id),
+        tagWhitelist: input.tagWhitelist,
+        notePath: input.notePath,
+        noteTitle: input.noteTitle
+      }
+    };
+    return { request, debugSnapshot };
+  }
+  buildSystemPrompt() {
+    return [
+      "You are a structured refinement assistant for an Obsidian note.",
+      "You must return valid JSON only. Do not include any text outside the JSON.",
+      "Do not rewrite or include the B block (protected original content) in your output.",
+      "",
+      "The JSON must conform to this schema:",
+      "{",
+      '  "workflowProfileId": "raw-refined",',
+      '  "schemaVersion": "0.2",',
+      '  "blocks": [',
+      '    {"id": "string (matches A block id)", "content": "string (refined content)", "warnings": ["string"]}',
+      "  ],",
+      '  "frontmatterSuggestion": {',
+      '    "status": "refined",',
+      '    "source": ["self" | "external" | "practice"],',
+      '    "context": ["string"]',
+      "  },",
+      '  "tagSuggestion": {',
+      '    "selectedTags": ["string (must be from tagWhitelist only)"],',
+      '    "newTagSuggestions": ["string (new tag suggestions not in whitelist)"]',
+      "  },",
+      '  "warnings": ["string"]',
+      "}",
+      "",
+      "Rules:",
+      "- blocks: one entry per A block. Use the provided block ids exactly.",
+      "- tagSuggestion.selectedTags: ONLY use tags from the supplied tagWhitelist.",
+      "- tagSuggestion.newTagSuggestions: use for tags NOT in the whitelist.",
+      "- selectedTags and newTagSuggestions must be strictly separate.",
+      "- Never include tags from the blocked tags list (#raw, #refined, #self, #external, #practice, #rel/*)."
+    ].join("\n");
+  }
+  buildUserPrompt(input) {
+    const parts = [];
+    parts.push(`Note path: ${input.notePath}`);
+    parts.push(`Note title: ${input.noteTitle}`);
+    parts.push("");
+    parts.push("## A Block Prompts");
+    parts.push("");
+    parts.push("For each A block below, generate refined content and return it with the matching block id.");
+    parts.push("");
+    for (const block of input.aBlocks) {
+      parts.push(`### Block: "${block.id}"`);
+      parts.push(`- Heading: ${"#".repeat(block.headingLevel)} ${block.heading}`);
+      parts.push(`- Prompt: ${block.prompt}`);
+      parts.push("");
+    }
+    parts.push("## Tag Selection");
+    parts.push("");
+    parts.push(`Tag prompt: ${input.tagPrompt}`);
+    parts.push("");
+    parts.push("Tag whitelist:");
+    parts.push(input.tagWhitelist.join("\n"));
+    parts.push("");
+    parts.push("## Note Content");
+    parts.push("");
+    parts.push(input.noteContent);
+    return parts.join("\n");
+  }
+};
+
+// src/core/proposal/TagNormalizer.ts
+var TAG_SEPARATORS = /[，、,\s]+/;
+function normalizeTagList(raw) {
+  return raw.split(TAG_SEPARATORS).map((t2) => t2.trim()).filter((t2) => t2.length > 0).map((t2) => t2.startsWith("#") ? t2 : "#" + t2).filter((t2, i, arr) => arr.indexOf(t2) === i);
+}
+function dedupe(arr) {
+  return arr.filter((t2, i) => arr.indexOf(t2) === i);
+}
+function normalizeProposalTags(input, whitelist) {
+  let applied = false;
+  const normalizeAndTrack = (raw) => {
+    const tags = normalizeTagList(raw);
+    if (tags.length !== 1 || tags[0] !== raw) {
+      applied = true;
+    }
+    return tags;
+  };
+  const allSelected = dedupe(input.selectedTags.flatMap(normalizeAndTrack));
+  const allNew = dedupe(input.newTagSuggestions.flatMap(normalizeAndTrack));
+  const whitelistedSelected = [];
+  const movedToNew = [];
+  for (const tag of allSelected) {
+    if (whitelist.includes(tag)) {
+      whitelistedSelected.push(tag);
+    } else {
+      movedToNew.push(tag);
+      applied = true;
+    }
+  }
+  const combinedNew = [...allNew, ...movedToNew];
+  return {
+    selectedTags: whitelistedSelected,
+    newTagSuggestions: combinedNew,
+    tagNormalizationApplied: applied
+  };
+}
+
+// src/core/proposal/ProposalNormalizer.ts
+var ProposalNormalizer = class {
+  /**
+   * Normalize a zod-parsed v0.2 proposal:
+   *
+   *  - Accept only blocks whose id matches an enabled A block config.
+   *  - Reject unknown block ids (recorded in rejectedFields).
+   *  - Warn about missing enabled A blocks.
+   *  - Sort accepted blocks by config order.
+   *  - Normalize tags (split, trim, #-prefix, dedupe, whitelist filtering).
+   *
+   * The returned validation result determines whether the proposal can proceed
+   * to Review UI (valid / partial) or must be retried (invalid).
+   */
+  normalize(parsed, settings) {
+    var _a5, _b, _c, _d;
+    const warnings = [];
+    const rejectedFields = [];
+    const enabledConfigMap = new Map(
+      settings.aBlocks.filter((c) => c.enabled).map((c) => [c.id, c])
+    );
+    const acceptedBlocks = [];
+    const acceptedBlockIds = [];
+    for (const block of parsed.blocks) {
+      const config2 = enabledConfigMap.get(block.id);
+      if (!config2) {
+        rejectedFields.push({
+          field: `block:${block.id}`,
+          reason: "unknown-block-id",
+          value: block.id
+        });
+        continue;
+      }
+      acceptedBlocks.push(block);
+      acceptedBlockIds.push(block.id);
+    }
+    for (const [id, config2] of enabledConfigMap) {
+      if (!acceptedBlockIds.includes(id)) {
+        warnings.push(`Missing enabled A block: ${id} (${config2.name})`);
+      }
+    }
+    acceptedBlocks.sort((a, b) => {
+      var _a6, _b2, _c2, _d2;
+      const orderA = (_b2 = (_a6 = enabledConfigMap.get(a.id)) == null ? void 0 : _a6.order) != null ? _b2 : 0;
+      const orderB = (_d2 = (_c2 = enabledConfigMap.get(b.id)) == null ? void 0 : _c2.order) != null ? _d2 : 0;
+      return orderA - orderB;
+    });
+    const hasRejectedBlocks = rejectedFields.length > 0;
+    const hasMissingEnabled = warnings.some(
+      (w) => w.startsWith("Missing enabled A block")
+    );
+    const tagInput = {
+      selectedTags: (_b = (_a5 = parsed.tagSuggestion) == null ? void 0 : _a5.selectedTags) != null ? _b : [],
+      newTagSuggestions: (_d = (_c = parsed.tagSuggestion) == null ? void 0 : _c.newTagSuggestions) != null ? _d : []
+    };
+    const tagResult = normalizeProposalTags(tagInput, settings.tagWhitelist);
+    if (tagResult.tagNormalizationApplied) {
+      warnings.push("Tag normalization applied: some tags were split, trimmed, prefixed with #, deduplicated, or moved from selectedTags to newTagSuggestions.");
+    }
+    let status;
+    if (acceptedBlocks.length === 0) {
+      status = "invalid";
+    } else if (hasRejectedBlocks || hasMissingEnabled) {
+      status = "partial";
+    } else {
+      status = "valid";
+    }
+    return {
+      blocks: acceptedBlocks,
+      tagSuggestion: {
+        selectedTags: tagResult.selectedTags,
+        newTagSuggestions: tagResult.newTagSuggestions
+      },
+      frontmatterSuggestion: parsed.frontmatterSuggestion,
+      validation: {
+        status,
+        acceptedFields: acceptedBlockIds,
+        rejectedFields,
+        warnings,
+        tagNormalizationApplied: tagResult.tagNormalizationApplied
+      }
+    };
+  }
+};
+
+// src/runtime/TokenUsageReporter.ts
+var TokenUsageReporter = class {
+  resolveUsage(options) {
+    const { provider, model, inputText, outputText, providerUsage } = options;
+    if (providerUsage) {
+      return {
+        ...providerUsage,
+        provider: providerUsage.provider || provider,
+        model: providerUsage.model || model,
+        countingMode: "actual",
+        generatedAt: providerUsage.generatedAt || (/* @__PURE__ */ new Date()).toISOString()
+      };
+    }
+    try {
+      const inputTokens = estimateTokenCount(inputText);
+      const outputTokens = estimateTokenCount(outputText);
+      return {
+        provider,
+        model,
+        inputTokens,
+        outputTokens,
+        totalTokens: inputTokens + outputTokens,
+        countingMode: "estimated",
+        generatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+    } catch (e) {
+      return {
+        provider,
+        model,
+        countingMode: "unavailable",
+        generatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+    }
+  }
+};
+function estimateTokenCount(text) {
+  return Math.max(1, Math.ceil(text.length / 4));
+}
 
 // src/core/profile/BlockConfigValidator.ts
 var BlockConfigValidator = class {
@@ -16702,12 +16959,15 @@ var CreateProposalUseCase = class {
     this.profile = profile;
     this.llmProvider = llmProvider;
     this.sessionStore = sessionStore;
+    this.settings = settings;
     this.promptOverride = promptOverride;
     this.tokenUsageReporter = new TokenUsageReporter();
+    this.blockExtractor = new BlockExtractor();
     this.eligibilityUseCase = new CheckEligibilityUseCase(noteRepository, profile, settings);
     this.proposalValidator = new ProposalValidator(profile);
     this.protectedRegionExtractor = new ProtectedRegionExtractor();
   }
+  // ── v0.1.0 compat path ──
   async execute() {
     var _a5, _b;
     const activeNote = await this.eligibilityUseCase.execute();
@@ -16812,6 +17072,110 @@ ${userPrompt}`,
       kind: "created",
       session
     };
+  }
+  // ── v0.2.0 pipeline ──
+  async executeV2() {
+    const activeNote = await this.eligibilityUseCase.execute();
+    if (!activeNote.hasActiveMarkdownNote || !activeNote.eligible) {
+      return { kind: "eligibility-failed", eligibility: activeNote };
+    }
+    const lookup = await this.noteRepository.getActiveNote();
+    if (lookup.kind !== "markdown") {
+      return { kind: "eligibility-failed", eligibility: activeNote };
+    }
+    const bBlockExtract = this.blockExtractor.extract(
+      lookup.note.content,
+      this.settings.bBlock
+    );
+    if (!bBlockExtract.ok) {
+      return {
+        kind: "validation-failed",
+        errors: [{
+          layer: "content",
+          code: bBlockExtract.error.code,
+          message: bBlockExtract.error.message
+        }]
+      };
+    }
+    const promptBuilder = new PromptBuilder();
+    const { request, debugSnapshot: _debug } = promptBuilder.build({
+      provider: this.llmProvider.providerId,
+      model: this.llmProvider.model,
+      notePath: lookup.note.path,
+      noteTitle: lookup.note.title,
+      noteContent: lookup.note.content,
+      aBlocks: this.settings.aBlocks.filter((b) => b.enabled),
+      tagWhitelist: this.settings.tagWhitelist,
+      tagPrompt: this.settings.tagPrompt
+    });
+    void _debug;
+    if (!this.llmProvider.generateProposalV2) {
+      return { kind: "provider-failed", message: "Provider does not support v0.2 proposal generation." };
+    }
+    let llmResponse;
+    try {
+      llmResponse = await this.llmProvider.generateProposalV2(request);
+    } catch (error51) {
+      return { kind: "provider-failed", message: toSafeErrorMessage(error51) };
+    }
+    const zodValidation = this.proposalValidator.validateV2Output(llmResponse.rawText);
+    if (!zodValidation.ok) {
+      return { kind: "validation-failed", errors: zodValidation.errors };
+    }
+    const normalizer = new ProposalNormalizer();
+    const normalized = normalizer.normalize(zodValidation.proposal, this.settings);
+    if (normalized.validation.status === "invalid") {
+      return {
+        kind: "validation-failed",
+        errors: [{
+          layer: "schema",
+          code: "normalization-invalid",
+          message: "Proposal normalization resulted in invalid status: no acceptable blocks."
+        }]
+      };
+    }
+    const parsedFrontmatter = parseFrontmatter(lookup.note.content);
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const session = {
+      id: createSessionId(),
+      workflowProfileId: "raw-refined",
+      schemaVersion: "0.2",
+      createdAt: now,
+      updatedAt: now,
+      notePath: lookup.note.path,
+      noteTitle: lookup.note.title,
+      baseFileHash: hashText(lookup.note.content),
+      ...parsedFrontmatter.hasFrontmatter ? { baseFrontmatterHash: hashText(JSON.stringify(parsedFrontmatter.frontmatter)) } : {},
+      baseBBlockHash: bBlockExtract.block.hash,
+      blockConfigSnapshot: {
+        protectH1: this.settings.protectH1,
+        aBlocks: this.settings.aBlocks,
+        bBlock: this.settings.bBlock,
+        tagWhitelist: this.settings.tagWhitelist
+      },
+      proposal: {
+        workflowProfileId: "raw-refined",
+        schemaVersion: "0.2",
+        blocks: normalized.blocks,
+        tagSuggestion: normalized.tagSuggestion.selectedTags.length > 0 || normalized.tagSuggestion.newTagSuggestions.length > 0 ? normalized.tagSuggestion : void 0,
+        frontmatterSuggestion: normalized.frontmatterSuggestion
+      },
+      validation: normalized.validation,
+      tokenUsage: this.tokenUsageReporter.resolveUsage({
+        provider: this.llmProvider.providerId,
+        model: this.llmProvider.model,
+        inputText: request.messages.map((m) => m.content).join("\n"),
+        outputText: llmResponse.rawText,
+        providerUsage: llmResponse.usage
+      }),
+      status: "generated",
+      source: {
+        provider: this.llmProvider.providerId,
+        model: this.llmProvider.model,
+        attemptsUsed: 1
+      }
+    };
+    return { kind: "created-v2", session };
   }
 };
 function createSessionId() {

@@ -1,5 +1,6 @@
 import type { RawRefinedProposal } from "../../core/proposal/Proposal";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./LlmProvider";
+import type { LlmRequestV2 } from "../../core/prompt/PromptDebugSnapshot";
 
 export class MockLlmProvider implements LlmProvider {
   readonly providerId = "mock-llm";
@@ -23,6 +24,42 @@ export class MockLlmProvider implements LlmProvider {
         add: ["#ai/generated"],
       },
       warnings: ["mock proposal"],
+    };
+
+    return {
+      rawText: JSON.stringify(proposal, null, 2),
+      parsedJson: proposal,
+      usage: {
+        provider: this.providerId,
+        model: this.model,
+        inputTokens: 120,
+        outputTokens: 80,
+        totalTokens: 200,
+        countingMode: "actual",
+        generatedAt: new Date().toISOString(),
+      },
+    };
+  }
+
+  async generateProposalV2(_request: LlmRequestV2): Promise<LlmResponse> {
+    const proposal = {
+      workflowProfileId: "raw-refined" as const,
+      schemaVersion: "0.2" as const,
+      blocks: [
+        { id: "summary", content: `这是 mock v0.2 摘要。` },
+        { id: "coreQuestion", content: "Mock v0.2 核心问题。" },
+        { id: "currentConclusion", content: "Mock v0.2 当前结论。" },
+        { id: "reasoning", content: "Mock v0.2 依据与推理。" },
+      ],
+      frontmatterSuggestion: {
+        status: "refined" as const,
+        context: ["mock/v0.2"],
+      },
+      tagSuggestion: {
+        selectedTags: ["#ai/generated"],
+        newTagSuggestions: [],
+      },
+      warnings: ["mock v0.2 proposal"],
     };
 
     return {

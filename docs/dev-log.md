@@ -351,3 +351,66 @@ ProposalNormalizer 已实现。A 类分块按配置 order 排序，未知 block 
   - 新增 `tests/core/proposal/ProposalNormalizer.test.ts`（18 tests）：A block 接受/拒绝/排序/缺失警告/禁用配置、status 判定（valid/partial/invalid/空）、tag normalization（分割/补 #/非白名单移动/warning/缺失 tagSuggestion/body 有效时仍 valid）、frontmatter passthrough、validation 结构（多 rejectedField + 多 warning 合并）
 - Verification: `npm run typecheck` 通过；`npm test` 25 files / 253 tests 全部通过（+18 tests）；`npm run build` 通过
 - Next: D47 — CreateProposalUseCase 接入 v0.2 prompt / zod / normalization
+
+---
+
+## D47 开发日志
+
+### Current status
+
+CreateProposalUseCase 的 v0.2 管道已实现：`executeV2()` 方法完整走通 PromptBuilder → provider.generateProposalV2 → zod validation → ProposalNormalizer → ProposalSessionV2。MockLlmProvider 新增 `generateProposalV2` 支持。旧 `execute()` 方法保留不变，旧 5 个 v0.1 测试继续通过。session-cache 存储留待 Phase 12。v0.2 现为开发主路径。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: CreateProposalUseCase 接入 v0.2 prompt / zod / normalization（Phase 11 第五任务）
+- Reason: v0.2.0 需要端到端管道：PromptBuilder → provider → zod → normalization → ProposalSessionV2。第一阶段只接 mock provider，不实现 retry/error-session-cache
+- Change:
+  - `src/adapters/llm/LlmProvider.ts`：接口新增可选 `generateProposalV2(request: LlmRequestV2): Promise<LlmResponse>`
+  - `src/adapters/llm/MockLlmProvider.ts`：实现 `generateProposalV2`，返回 4 个 A block 的 v0.2 JSON（summary/coreQuestion/currentConclusion/reasoning + tagSuggestion + frontmatterSuggestion）
+  - `src/application/CreateProposalUseCase.ts`：新增 `executeV2()` 方法 — 复用 EligibilityUseCase；BlockExtractor 提取 B block 并计算 baseBBlockHash；PromptBuilder 构建 LlmRequestV2；provider.generateProposalV2 调用；validateV2Output → ProposalNormalizer.normalize；创建 ProposalSessionV2（含 blockConfigSnapshot、validation、tokenUsage、source）；暂不保存到 session store（Phase 12 接入 session-cache）；`CreateProposalV2Result` 类型
+  - 新增 `tests/application/CreateProposalUseCase.test.ts` v0.2 tests（6 tests）：happy path 创建 ProposalSessionV2、tag normalization warning、provider 不支持 v0.2、eligibility 失败、normalization-invalid、partial status
+- Verification: `npm run typecheck` 通过；`npm test` 25 files / 259 tests 全部通过（v0.1 8 tests + v0.2 6 tests = 14 tests）；`npm run build` 通过
+- Next: Phase 11 验收
+
+---
+
+## Phase 11 验收
+
+### 验收日期
+2026-05-06
+
+### 验收清单
+
+| # | 检查项 | 状态 | 验证方式 |
+|---|--------|------|----------|
+| 1 | PromptBuilder 生成结构化 LlmRequest | ✓ | `PromptBuilder.test.ts` 14 tests（messages 数组、A blocks、tagWhitelist、schema instruction、debug snapshot 无 secret） |
+| 2 | Zod schema 可校验 RawRefinedProposalV2 | ✓ | `ProposalSchema.test.ts` 21 tests（合法/缺失/类型错误/序列化/非对象） |
+| 3 | TagNormalizer 可处理分隔符和补 # | ✓ | `TagNormalizer.test.ts` 31 tests（中英文逗号/顿号/空格/换行/混合/补 #/trim/去空/去重/大小写保持/白名单过滤/移动） |
+| 4 | selectedTags / newTagSuggestions 分离 | ✓ | `TagNormalizer.test.ts` + `ProposalNormalizer.test.ts`：非白名单 tag 移入 newTagSuggestions，body blocks 不受影响 |
+| 5 | unknown tag 不导致正文整体失败 | ✓ | `ProposalNormalizer.test.ts` "body is valid even when tags need normalization"、`CreateProposalUseCase.test.ts` v0.2 tag normalization 测试 status=valid |
+| 6 | CreateProposalUseCase 可创建 ProposalSessionV2 | ✓ | `CreateProposalUseCase.test.ts` v0.2 happy path（含 blockConfigSnapshot、validation、tagNormalizationApplied、source） |
+
+### 回归锚点确认
+
+| 锚点 | 状态 |
+|------|------|
+| active note read | ✓ CheckEligibilityUseCase |
+| eligibility failure reporting | ✓ executeV2 复用相同 eligibility |
+| mock provider happy path | ✓ v0.1 + v0.2 两条路径 |
+| real provider redaction | ✓ 未改动 OpenAICompatibleProvider |
+| SecretStorage no-secret leak | ✓ 未改动 |
+| D35 Bearer test pollution defense | ✓ 未改动 |
+| session-cache persistence | ✓ 暂未接入 v0.2 session-cache（Phase 12） |
+| ReviewGate abstraction | ✓ 未改动 |
+| ApplyPlan-only write path | ✓ 未改动 |
+| freshness conflict flow | ✓ 未改动 |
+| Save as Draft | ✓ 未改动 |
+| protected B/original region byte-for-byte | ✓ 未改动 |
+
+### 整体验证
+- `npm run typecheck` — 通过
+- `npm test` — 25 files / 259 tests 全部通过
+- `npm run build` — 通过
+- 旧 `execute()` 方法保留，旧 5 个 v0.1 CreateProposalUseCase 测试继续通过
+- MockLlmProvider 向后兼容
+- 无 Phase 12+ 范围泄露

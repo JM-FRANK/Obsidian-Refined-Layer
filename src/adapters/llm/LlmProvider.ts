@@ -1,4 +1,5 @@
 import type { TokenUsageReport } from "../../core/proposal/TokenUsageReport";
+import type { LlmRequestV2 } from "../../core/prompt/PromptDebugSnapshot";
 
 export interface LlmRequest {
   workflowProfileId: "raw-refined";
@@ -24,4 +25,5 @@ export interface LlmProvider {
   readonly providerId: string;
   readonly model: string;
   generateProposal(request: LlmRequest): Promise<LlmResponse>;
+  generateProposalV2?(request: LlmRequestV2): Promise<LlmResponse>;
 }
