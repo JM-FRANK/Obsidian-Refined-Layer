@@ -293,3 +293,23 @@ PromptBuilder 已实现，负责将 A block prompts、tagPrompt、tagWhitelist�
 - `npm run build` — 通过
 - 旧 `ProtectedRegionExtractor` 保留，旧 `BodyAssembler` 保留，旧 `rawRefinedProfile` 保留
 - 无 Phase 11+ 范围泄露
+
+---
+
+## D44 开发日志
+
+### Current status
+
+Zod Proposal Schema v0.2 已引入。`rawRefinedProposalV2Schema` 校验 `workflowProfileId`（literal "raw-refined"）、`schemaVersion`（literal "0.2"）、`blocks`（非空数组，每项含 id/content/warnings?）、`frontmatterSuggestion`?、`tagSuggestion`?、`warnings`?。`ProposalValidator.validateV2Output()` 新增 v0.2 入口方法，返回结构化结果含可序列化 zodError。旧 `validateModelOutput`（v0.1）保留不变，旧 9 个 ProposalValidator 测试全部通过。
+
+### Active summary
+- Date: 2026-05-05
+- Scope: 引入 Zod 对 RawRefinedProposalV2 做结构校验（Phase 11 第二任务）
+- Reason: v0.2.0 要求 LLM 输出通过 zod 本地校验后才进入 normalization/policy，zod 只做结构校验，不做 policy/tag whitelist/normalization
+- Change:
+  - `npm install zod` 新增依赖
+  - 新增 `src/core/proposal/ProposalSchema.ts`：`rawRefinedProposalV2Schema`（z.object）校验 literal workflowProfileId/schemaVersion、`blocks.min(1)` 非空数组、每项 `aBlockProposalSchema`（id: z.string().min(1)、content: z.string().min(1)、warnings?: z.string().array()）、`frontmatterSuggestion?`（status?: literal "refined"、source?: enum("self"|"external"|"practice")、context?: string[]）、`tagSuggestion?`（selectedTags?: string[]、newTagSuggestions?: string[]）、`warnings?`（string[]）；`RawRefinedProposalV2Parsed` 类型导出
+  - `src/core/proposal/ProposalValidator.ts`：新增 `validateV2Output(output: string): V2ValidationResult` 方法，流程为 JSON.extract → zod.safeParse → 成功返回 `{ ok, proposal }`，失败返回 `{ ok: false, errors, zodError }`；`V2ValidationResult` 类型支持携带 `zodError?: ZodError` 供上层存入 FailedAttemptRecord；旧 `validateModelOutput`/`validateEditedRefinedSections` 保留不变
+  - 新增 `tests/core/proposal/ProposalSchema.test.ts`（21 tests）：合法提案（最小/全部可选字段/无 tagSuggestion/block 含 warnings）、blocks 缺失/空数组/缺 id/缺 content/空 id/空 content、workflowProfileId/schemaVersion 错误、tagSuggestion 类型错误（非数组、元素非字符串）、frontmatterSuggestion status/source 错误、warnings 非数组、zod 错误结构可 JSON 序列化（可存入 attempt）、非对象/null 输入
+- Verification: `npm run typecheck` 通过；`npm test` 23 files / 204 tests 全部通过（+21 tests；旧 ProposalValidator 9 tests 不受影响）；`npm run build` 通过
+- Next: D45 — 实现 TagNormalizer

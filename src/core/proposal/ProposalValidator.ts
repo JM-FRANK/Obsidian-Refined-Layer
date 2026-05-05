@@ -1,5 +1,7 @@
 import type { WorkflowProfile } from "../profile/WorkflowProfile";
 import type { RawRefinedProposal, RefinedSections } from "./Proposal";
+import { rawRefinedProposalV2Schema } from "./ProposalSchema";
+import type { RawRefinedProposalV2Parsed } from "./ProposalSchema";
 
 export type ProposalValidationLayer = "json" | "schema" | "policy" | "content";
 
@@ -22,6 +24,19 @@ export type ProposalValidationResult =
 export interface ProposalValidationContext {
   protectedRegionText?: string;
 }
+
+// ── v0.2.0 zod validation ──
+
+export type V2ValidationResult =
+  | {
+      ok: true;
+      proposal: RawRefinedProposalV2Parsed;
+    }
+  | {
+      ok: false;
+      errors: ProposalValidationError[];
+      zodError?: import("zod").ZodError;
+    };
 
 export class ProposalValidator {
   constructor(private readonly profile: WorkflowProfile) {}
@@ -50,6 +65,39 @@ export class ProposalValidator {
     return {
       ok: true,
       proposal: schema.proposal,
+    };
+  }
+
+  /**
+   * Validate v0.2.0 proposal output using zod.
+   * This is a structural check only — no policy, no tag whitelist,
+   * no normalization. Zod errors are returned in a format that can be
+   * saved to FailedAttemptRecord.validationSnapshot.zodError.
+   */
+  validateV2Output(output: string): V2ValidationResult {
+    const parsed = this.parseJsonLikeOutput(output);
+    if (!parsed.ok) {
+      return parsed;
+    }
+
+    const zodResult = rawRefinedProposalV2Schema.safeParse(parsed.value);
+    if (!zodResult.success) {
+      return {
+        ok: false,
+        errors: [
+          {
+            layer: "schema",
+            code: "zod-validation-failed",
+            message: "Proposal does not match v0.2 schema.",
+          },
+        ],
+        zodError: zodResult.error,
+      };
+    }
+
+    return {
+      ok: true,
+      proposal: zodResult.data,
     };
   }
 
