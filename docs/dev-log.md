@@ -414,3 +414,41 @@ CreateProposalUseCase 的 v0.2 管道已实现：`executeV2()` 方法完整走�
 - 旧 `execute()` 方法保留，旧 5 个 v0.1 CreateProposalUseCase 测试继续通过
 - MockLlmProvider 向后兼容
 - 无 Phase 12+ 范围泄露
+
+---
+
+## D48 开发日志
+
+### Current status
+
+RetryAttemptRunner 已实现，负责最多 3 次 LLM 请求重试编排。第 1 次成功直接返回成功 session（attemptsUsed=1，无 failed attempts）。第 2/3 次成功返回成功 session + 之前失败 attempts 的完整记录。3 次全部失败返回 exhausted + 3 份 FailedAttemptRecord。Runner 不写磁盘，由 application 层决定缓存。尚未接入 CreateProposalUseCase（D50）。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: 实现 RetryAttemptRunner 重试控制逻辑（Phase 12 首任务）
+- Reason: v0.2.0 要求 LLM 失败时最多重试 3 次，每次 attempt 需完整记录 requestSnapshot/responseSnapshot/validationSnapshot/errorSummary 供调试
+- Change:
+  - 新增 `src/application/RetryAttemptRunner.ts`：`RetryAttemptRunner.run(runAttempt)` 循环最多 3 次调用 `runAttempt(attemptIndex: 1|2|3)`；成功在第 n 次返回 `{ status: "success", session, attemptsUsed: n, failedAttempts }`；3 次失败返回 `{ status: "exhausted", failedAttempts }`；支持自定义 `maxAttempts` 构造函数参数；`MAX_ATTEMPTS = 3` 常量导出
+  - 类型：`SingleAttemptResult`（union success/false）、`RetryRunnerResult`（union success/exhausted）、`AttemptIndex`（1|2|3）
+  - 新增 `tests/application/RetryAttemptRunner.test.ts`（6 tests）：第 1 次成功、第 2 次成功（含 1 个失败 attempt）、第 3 次成功（含 2 个失败 attempt）、3 次全失败 exhausted、成功即停、自定义 maxAttempts=1
+- Verification: `npm run typecheck` 通过；`npm test` 26 files / 265 tests 全部通过（+6 tests）；`npm run build` 通过
+- Next: D49 — 实现 ErrorSessionCache adapter 与 30 条上限
+
+---
+
+## D49 开发日志
+
+### Current status
+
+ErrorSessionCache 适配器已实现。`ErrorSessionCacheStore` 接口定义 save/loadAll/getCount。`ObsidianErrorSessionCacheStore` 保存到插件目录 `error-session-cache`，默认上限 30，超过自动删除最旧记录。保存前执行 secret pattern 扫描，阻断含 API key / Authorization / secret 的 payload。异常 corrupt 数据读入时自动跳过。尚未接入 CreateProposalUseCase（D50）。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: 实现 ErrorSessionCache adapter 与 30 条上限（Phase 12 第二任务）
+- Reason: v0.2.0 要求失败 attempt 保存到 error-session-cache 供调试，不可恢复为 Review UI，必须防止 secret 泄露，超过上限自动清理最旧记录
+- Change:
+  - 新增 `src/runtime/ErrorSessionCacheStore.ts`：`ErrorSessionCacheStore` 接口（save/loadAll/getCount）
+  - 新增 `src/adapters/obsidian/ObsidianErrorSessionCacheStore.ts`：实现 `ErrorSessionCacheStore`，路径 `.obsidian/plugins/obsidian-refined-layer/error-session-cache/attempts.v1.json`；保存前 secret 扫描（复用与 ObsidianSessionStore 相同的关键词集合，独立实现避免循环依赖）；limit 默认 30，超过后按 createdAt 保留最近 30 条；`loadAll()` 对 corrupt/非数组 JSON 容错返回 `[]`；`PersistedFailedAttemptRecord` 与 `FailedAttemptRecord` 互转
+  - 新增 `tests/adapters/obsidian/ObsidianErrorSessionCacheStore.test.ts`（10 tests）：InMemory 适配器（save/load 单条/完整 snapshot 保留/limit=3 自动 trim/多 errorSessionId 并存/空存储）；`containsSecretPattern` scan（apiKey/auth/server/嵌套 responseSnapshot 阻断/safe payload 放行/token counting 白名单 key 放行）
+- Verification: `npm run typecheck` 通过；`npm test` 27 files / 275 tests 全部通过（+10 tests）；`npm run build` 通过
+- Next: D50 — CreateProposalUseCase 接入 retry + session/error cache
