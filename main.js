@@ -1655,11 +1655,187 @@ function estimateTokenCount(text) {
   return Math.max(1, Math.ceil(text.length / 4));
 }
 
+// src/core/markdown/HeadingParser.ts
+var HeadingParser = class {
+  parse(markdown) {
+    const headings = [];
+    let firstH1;
+    const frontmatterEnd = this.findFrontmatterEnd(markdown);
+    let pos = 0;
+    let lineIndex = 0;
+    const len = markdown.length;
+    while (pos < len) {
+      const lineStart = pos;
+      const newlineIdx = markdown.indexOf("\n", pos);
+      const lineEnd = newlineIdx === -1 ? len : newlineIdx;
+      const line = markdown.slice(lineStart, lineEnd);
+      const heading = this.parseAtxHeading(line, lineIndex, lineStart, lineEnd);
+      if (heading) {
+        headings.push(heading);
+        if (!firstH1 && heading.level === 1 && lineStart >= frontmatterEnd) {
+          firstH1 = heading;
+        }
+      }
+      pos = lineEnd + (newlineIdx === -1 ? 0 : 1);
+      lineIndex++;
+    }
+    return { headings, firstH1 };
+  }
+  findFrontmatterEnd(markdown) {
+    if (!markdown.startsWith("---")) return 0;
+    const closingIdx = markdown.indexOf("\n---", 3);
+    if (closingIdx === -1) return 0;
+    const nextNewline = markdown.indexOf("\n", closingIdx + 4);
+    return nextNewline === -1 ? markdown.length : nextNewline + 1;
+  }
+  parseAtxHeading(line, lineIndex, charStart, charEnd) {
+    const normalizedLine = line.endsWith("\r") ? line.slice(0, -1) : line;
+    const match = normalizedLine.match(/^(#{1,6})\s+(.+?)(?:\s+#+\s*)?$/);
+    if (!match) return null;
+    const level = match[1].length;
+    const text = match[2].trim();
+    if (text.length === 0) return null;
+    return { level, text, lineIndex, charStart, charEnd };
+  }
+};
+
+// src/core/markdown/BlockExtractor.ts
+var BlockExtractor = class {
+  constructor() {
+    this.headingParser = new HeadingParser();
+  }
+  extract(markdown, config) {
+    const { headings } = this.headingParser.parse(markdown);
+    const matches = headings.filter(
+      (h) => h.text === config.heading && h.level === config.headingLevel
+    );
+    if (matches.length === 0) {
+      const sameTextDiffLevel = headings.find((h) => h.text === config.heading);
+      if (sameTextDiffLevel) {
+        return {
+          ok: false,
+          error: {
+            code: "heading-level-mismatch",
+            message: `Heading "${config.heading}" found at level ${sameTextDiffLevel.level}, but config expects level ${config.headingLevel}.`
+          }
+        };
+      }
+      return {
+        ok: false,
+        error: {
+          code: "missing-heading",
+          message: `Required B block heading "${config.heading}" (level ${config.headingLevel}) was not found.`
+        }
+      };
+    }
+    if (matches.length > 1) {
+      return {
+        ok: false,
+        error: {
+          code: "multiple-heading",
+          message: `B block heading "${config.heading}" (level ${config.headingLevel}) appears ${matches.length} times.`
+        }
+      };
+    }
+    const bHeading = matches[0];
+    return this.extractRange(markdown, bHeading, config);
+  }
+  extractRange(markdown, bHeading, config) {
+    const { headings } = this.headingParser.parse(markdown);
+    const nextBoundaryHeading = headings.find(
+      (h) => h.lineIndex > bHeading.lineIndex && h.level <= config.headingLevel
+    );
+    const blockEnd = nextBoundaryHeading ? nextBoundaryHeading.charStart : markdown.length;
+    const text = markdown.slice(bHeading.charStart, blockEnd);
+    const trimmedText = text.replace(/[\s\r\n]+$/, "");
+    const headingLine = `${"#".repeat(config.headingLevel)} ${config.heading}`;
+    if (trimmedText.trim() === headingLine) {
+      return {
+        ok: false,
+        error: {
+          code: "empty-b-block",
+          message: `B block heading "${config.heading}" has no content after it.`
+        }
+      };
+    }
+    return {
+      ok: true,
+      block: {
+        heading: config.heading,
+        headingLevel: config.headingLevel,
+        text: trimmedText,
+        charStart: bHeading.charStart,
+        charEnd: blockEnd,
+        hash: hashText(trimmedText)
+      }
+    };
+  }
+};
+
+// src/core/profile/BlockConfigValidator.ts
+var BlockConfigValidator = class {
+  validate(aBlocks, bBlock, protectH1) {
+    const errors = [];
+    const minLevel = protectH1 ? 2 : 1;
+    const seenIds = /* @__PURE__ */ new Set();
+    for (const block of aBlocks) {
+      if (seenIds.has(block.id)) {
+        errors.push({
+          code: "duplicate-a-block-id",
+          blockId: block.id,
+          message: `Duplicate A block id: ${block.id}`
+        });
+      }
+      seenIds.add(block.id);
+      if (block.headingLevel < 1 || block.headingLevel > 6) {
+        errors.push({
+          code: "invalid-heading-level",
+          blockId: block.id,
+          message: `A block "${block.name}" (${block.id}) has invalid headingLevel=${block.headingLevel}.`
+        });
+      } else if (block.headingLevel < minLevel) {
+        errors.push({
+          code: "a-block-heading-level-too-low",
+          blockId: block.id,
+          message: `A block "${block.name}" (${block.id}) headingLevel=${block.headingLevel} is below minimum ${minLevel} (protectH1=${protectH1}).`
+        });
+      }
+    }
+    if (aBlocks.length === 0) {
+      errors.push({
+        code: "no-a-blocks",
+        blockId: "(workflow)",
+        message: "At least one A block is required."
+      });
+    }
+    if (bBlock.headingLevel < 1 || bBlock.headingLevel > 6) {
+      errors.push({
+        code: "invalid-heading-level",
+        blockId: bBlock.id,
+        message: `B block "${bBlock.name}" has invalid headingLevel=${bBlock.headingLevel}.`
+      });
+    } else if (bBlock.headingLevel < minLevel) {
+      errors.push({
+        code: "b-block-heading-level-too-low",
+        blockId: bBlock.id,
+        message: `B block "${bBlock.name}" headingLevel=${bBlock.headingLevel} is below minimum ${minLevel} (protectH1=${protectH1}).`
+      });
+    }
+    return {
+      ok: errors.length === 0,
+      errors
+    };
+  }
+};
+
 // src/application/CheckEligibilityUseCase.ts
 var CheckEligibilityUseCase = class {
-  constructor(noteRepository, profile) {
+  constructor(noteRepository, profile, settings) {
     this.noteRepository = noteRepository;
     this.profile = profile;
+    this.settings = settings;
+    this.blockExtractor = new BlockExtractor();
+    this.blockConfigValidator = new BlockConfigValidator();
   }
   async execute() {
     const activeNote = await this.noteRepository.getActiveNote();
@@ -1686,9 +1862,34 @@ var CheckEligibilityUseCase = class {
     if (statusValue !== this.profile.eligibility.requiredStatus) {
       failureReasons.push("invalidStatus");
     }
-    const headingPattern = new RegExp(`^${escapeRegExp2(this.profile.eligibility.requiredHeading)}\\s*$`, "m");
-    if (!headingPattern.test(activeNote.note.content)) {
-      failureReasons.push("missingOriginalContentHeading");
+    const bBlockResult = this.blockExtractor.extract(
+      activeNote.note.content,
+      this.settings.bBlock
+    );
+    if (!bBlockResult.ok) {
+      switch (bBlockResult.error.code) {
+        case "missing-heading":
+          failureReasons.push("missingBBlock");
+          break;
+        case "multiple-heading":
+          failureReasons.push("multipleBBlock");
+          break;
+        case "heading-level-mismatch":
+          failureReasons.push("bBlockLevelMismatch");
+          break;
+        case "empty-b-block":
+          failureReasons.push("emptyBBlock");
+          break;
+      }
+    }
+    const enabledABlocks = this.settings.aBlocks.filter((b) => b.enabled);
+    const configValidation = this.blockConfigValidator.validate(
+      enabledABlocks,
+      this.settings.bBlock,
+      this.settings.protectH1
+    );
+    if (!configValidation.ok) {
+      failureReasons.push("invalidABlockConfig");
     }
     return {
       hasActiveMarkdownNote: true,
@@ -1701,20 +1902,17 @@ var CheckEligibilityUseCase = class {
     };
   }
 };
-function escapeRegExp2(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 // src/application/CreateProposalUseCase.ts
 var CreateProposalUseCase = class {
-  constructor(noteRepository, profile, llmProvider, sessionStore, promptOverride) {
+  constructor(noteRepository, profile, llmProvider, sessionStore, settings, promptOverride) {
     this.noteRepository = noteRepository;
     this.profile = profile;
     this.llmProvider = llmProvider;
     this.sessionStore = sessionStore;
     this.promptOverride = promptOverride;
     this.tokenUsageReporter = new TokenUsageReporter();
-    this.eligibilityUseCase = new CheckEligibilityUseCase(noteRepository, profile);
+    this.eligibilityUseCase = new CheckEligibilityUseCase(noteRepository, profile, settings);
     this.proposalValidator = new ProposalValidator(profile);
     this.protectedRegionExtractor = new ProtectedRegionExtractor();
   }
@@ -2330,7 +2528,12 @@ var enStrings = {
   "sessionPicker.button.cancel": "Cancel",
   "sessionPicker.empty": "No recoverable proposal sessions for this note.",
   "sessionPicker.sessionMeta": "{createdAt} \xB7 {status} \xB7 token {mode}",
-  "sessionPicker.conflict": "File has changed: {reason}. Cannot apply directly."
+  "sessionPicker.conflict": "File has changed: {reason}. Cannot apply directly.",
+  "eligibility.missingBBlock": "Missing B block heading",
+  "eligibility.multipleBBlock": "B block heading appears multiple times",
+  "eligibility.bBlockLevelMismatch": "B block heading level mismatch",
+  "eligibility.emptyBBlock": "B block content is empty",
+  "eligibility.invalidABlockConfig": "Invalid A block configuration"
 };
 
 // src/ui/i18n/zh-CN.ts
@@ -2428,7 +2631,12 @@ var zhCNStrings = {
   "sessionPicker.button.cancel": "\u53D6\u6D88",
   "sessionPicker.empty": "\u5F53\u524D\u7B14\u8BB0\u6CA1\u6709\u53EF\u6062\u590D\u7684 proposal session\u3002",
   "sessionPicker.sessionMeta": "{createdAt} \xB7 {status} \xB7 token {mode}",
-  "sessionPicker.conflict": "\u6587\u4EF6\u5DF2\u53D8\u5316\uFF1A{reason}\u3002\u65E0\u6CD5\u76F4\u63A5 apply\u3002"
+  "sessionPicker.conflict": "\u6587\u4EF6\u5DF2\u53D8\u5316\uFF1A{reason}\u3002\u65E0\u6CD5\u76F4\u63A5 apply\u3002",
+  "eligibility.missingBBlock": "\u7F3A\u5C11 B \u7C7B\u5206\u5757 heading",
+  "eligibility.multipleBBlock": "B \u7C7B\u5206\u5757 heading \u51FA\u73B0\u591A\u6B21",
+  "eligibility.bBlockLevelMismatch": "B \u7C7B\u5206\u5757 heading \u5C42\u7EA7\u4E0D\u5339\u914D",
+  "eligibility.emptyBBlock": "B \u7C7B\u5206\u5757\u5185\u5BB9\u4E3A\u7A7A",
+  "eligibility.invalidABlockConfig": "A \u7C7B\u5206\u5757\u914D\u7F6E\u4E0D\u5408\u6CD5"
 };
 
 // src/ui/i18n/index.ts
@@ -3026,6 +3234,7 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
           rawRefinedProfile,
           providerSelection.provider,
           this.sessionStore,
+          this.settings.rawRefined,
           (_a = this.settings.promptOverrides) == null ? void 0 : _a["raw-refined"]
         );
         const result = await createProposalUseCase.execute();

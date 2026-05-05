@@ -93,4 +93,9 @@ export const enStrings = {
   "sessionPicker.empty": "No recoverable proposal sessions for this note.",
   "sessionPicker.sessionMeta": "{createdAt} · {status} · token {mode}",
   "sessionPicker.conflict": "File has changed: {reason}. Cannot apply directly.",
+  "eligibility.missingBBlock": "Missing B block heading",
+  "eligibility.multipleBBlock": "B block heading appears multiple times",
+  "eligibility.bBlockLevelMismatch": "B block heading level mismatch",
+  "eligibility.emptyBBlock": "B block content is empty",
+  "eligibility.invalidABlockConfig": "Invalid A block configuration",
 } as const;

@@ -1,5 +1,10 @@
 import type { WorkflowProfile } from "./WorkflowProfile";
 
+/**
+ * v0.1.0 hardcoded raw-refined profile.
+ * v0.2.0: eligibility checks are migrating to RawRefinedWorkflowSettings;
+ * this profile is retained for prompt, review, apply, and capabilities policies.
+ */
 export const rawRefinedProfile: WorkflowProfile = {
   id: "raw-refined",
   name: "Raw Refined",

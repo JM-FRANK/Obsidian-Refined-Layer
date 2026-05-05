@@ -64,6 +64,7 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
           rawRefinedProfile,
           providerSelection.provider,
           this.sessionStore,
+          this.settings.rawRefined,
           this.settings.promptOverrides?.["raw-refined"],
         );
         const result = await createProposalUseCase.execute();

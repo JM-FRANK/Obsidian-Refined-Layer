@@ -8,6 +8,7 @@ import type { ProposalSession } from "../runtime/ProposalSession";
 import { ProposalSessionStore } from "../runtime/ProposalSessionStore";
 import { toSafeErrorMessage } from "../runtime/redaction";
 import { TokenUsageReporter } from "../runtime/TokenUsageReporter";
+import type { RawRefinedWorkflowSettings } from "../settings/PluginSettings";
 import type { ActiveNoteRepository } from "./CheckEligibilityUseCase";
 import { CheckEligibilityUseCase, type CheckEligibilityResult } from "./CheckEligibilityUseCase";
 
@@ -50,9 +51,10 @@ export class CreateProposalUseCase {
     private readonly profile: WorkflowProfile,
     private readonly llmProvider: LlmProvider,
     private readonly sessionStore: ProposalSessionStore,
+    settings: RawRefinedWorkflowSettings,
     private readonly promptOverride?: PromptOverride,
   ) {
-    this.eligibilityUseCase = new CheckEligibilityUseCase(noteRepository, profile);
+    this.eligibilityUseCase = new CheckEligibilityUseCase(noteRepository, profile, settings);
     this.proposalValidator = new ProposalValidator(profile);
     this.protectedRegionExtractor = new ProtectedRegionExtractor();
   }

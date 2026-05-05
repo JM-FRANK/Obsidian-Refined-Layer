@@ -5,6 +5,9 @@ import type { ActiveNoteRepository } from "../../src/application/CheckEligibilit
 import type { LlmProvider } from "../../src/adapters/llm/LlmProvider";
 import { rawRefinedProfile } from "../../src/core/profile/rawRefinedProfile";
 import { ProposalSessionStore } from "../../src/runtime/ProposalSessionStore";
+import { DEFAULT_PLUGIN_SETTINGS } from "../../src/settings/PluginSettings";
+
+const defaultSettings = DEFAULT_PLUGIN_SETTINGS.rawRefined;
 
 function createMarkdownRepository(content: string, path = "10_Raw/example.md"): ActiveNoteRepository {
   return {
@@ -47,7 +50,7 @@ describe("CreateProposalUseCase", () => {
       })),
     };
     const store = new ProposalSessionStore(5);
-    const useCase = new CreateProposalUseCase(repository, rawRefinedProfile, provider, store);
+    const useCase = new CreateProposalUseCase(repository, rawRefinedProfile, provider, store, defaultSettings);
 
     const result = await useCase.execute();
 
@@ -78,6 +81,7 @@ describe("CreateProposalUseCase", () => {
       rawRefinedProfile,
       provider,
       new ProposalSessionStore(5),
+      defaultSettings,
     );
 
     const result = await useCase.execute();
@@ -103,7 +107,7 @@ describe("CreateProposalUseCase", () => {
       })),
     };
     const store = new ProposalSessionStore(5);
-    const useCase = new CreateProposalUseCase(repository, rawRefinedProfile, provider, store);
+    const useCase = new CreateProposalUseCase(repository, rawRefinedProfile, provider, store, defaultSettings);
 
     const result = await useCase.execute();
 
@@ -130,7 +134,7 @@ describe("CreateProposalUseCase", () => {
       }),
     };
     const store = new ProposalSessionStore(5);
-    const useCase = new CreateProposalUseCase(repository, rawRefinedProfile, provider, store);
+    const useCase = new CreateProposalUseCase(repository, rawRefinedProfile, provider, store, defaultSettings);
 
     const result = await useCase.execute();
 
@@ -159,7 +163,7 @@ describe("CreateProposalUseCase", () => {
       })),
     };
     const store = new ProposalSessionStore(5);
-    const useCase = new CreateProposalUseCase(repository, rawRefinedProfile, provider, store);
+    const useCase = new CreateProposalUseCase(repository, rawRefinedProfile, provider, store, defaultSettings);
 
     const result = await useCase.execute();
 

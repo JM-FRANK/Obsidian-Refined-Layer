@@ -97,7 +97,7 @@ HeadingParser 与 BlockConfigValidator 已实现。HeadingParser 可识别 H1-H6
 
 ### Current status
 
-BlockExtractor 已实现，替代旧 ProtectedRegionExtractor 的 `from-heading-to-end` 模型。B 类分块范围从配置 heading 到下一个同级或更高级 heading（sibling-or-higher），内部嵌套子标题逐字保留。CRLF 兼容性已验证通过。现有 v0.1.0 ProtectedRegionExtractor 保留不变，apply 写入逻辑未改动。
+BlockExtractor 已实现，作为 v0.2.0 B 类分块提取器，用于替代旧 `from-heading-to-end` protected region 模型的后续迁移基础。B 类分块范围从配置 heading 到下一个同级或更高级 heading（sibling-or-higher），内部嵌套子标题逐字保留。CRLF 兼容性已验证通过。现有 v0.1.0 ProtectedRegionExtractor 保留不变，BlockExtractor 尚未接入 apply 写入路径，apply 写入逻辑未改动。
 
 ### D40.1 CRLF heading 解析缺陷修复
 
@@ -154,7 +154,7 @@ JavaScript 中 `$` 无 `m` 标志时仅匹配字符串最末尾位置。非贪�
 剩余 ""，$ 匹配末尾 → 成功
 ```
 
-**理论上** `(.+?)` 应能回溯到吞掉 `\r` 使 `$` 匹配。但 v8 引擎下正则实际返回 `null`，说明存在未文档化的边界行为——`\r` 作为行终止符可能与 `$` 存在特殊交互，或非贪婪量词的回溯策略在特定 Unicode + `\r` 组合下提前终止。
+实际测试确认，当前正则无法稳定匹配带行尾 `\r` 的 heading 行。无论具体正则回溯原因如何，HeadingParser 的输入行不应携带 CRLF 中残留的 `\r` 进入 ATX heading 匹配。因此在 `parseAtxHeading()` 入口统一移除单个行尾 `\r`，作为 CRLF 兼容层。
 
 #### 修复方案
 
@@ -179,3 +179,56 @@ const normalizedLine = line.endsWith("\r") ? line.slice(0, -1) : line;
   - `tests/core/markdown/BlockExtractor.test.ts`（18 tests）：基本提取、文末提取、非文末提取、嵌套子标题保留、H1 结束 H2 B block、同级结束、missing/mismatch/multiple/empty 错误、确定性 hash、自定义 B heading、CRLF 查找与保留原始换行、LF 不回归、空白保留
 - Verification: `npm run typecheck` 通过；`npm test` 20 files / 149 tests 全部通过；`npm run build` 通过
 - Next: D41 — 将 eligibility 切到 A/B block config
+
+---
+
+## D41 开发日志
+
+### Current status
+
+CheckEligibilityUseCase 已从硬编码 `WorkflowProfile.requiredHeading` 切换到可配置 `RawRefinedWorkflowSettings`。B 类分块存在/唯一/层级/非空通过 `BlockExtractor` 检查，A 类分块配置合法性通过 `BlockConfigValidator` 检查（含 protectH1 规则）。v0.1.0 的 .md / frontmatter / status=raw 检查保留不变。i18n 新增 5 个 eligibility 错误原因 key。旧 `rawRefinedProfile` 标记为 v0.1 兼容层保留，apply 写入逻辑未改动。
+
+### Active summary
+- Date: 2026-05-05
+- Scope: 将 eligibility 从硬编码 WorkflowProfile 切换到可配置 RawRefinedWorkflowSettings
+- Reason: v0.2.0 要求 B 类分块 heading 可配置，eligibility 必须能检查任意 heading+level 的 B 类分块，而非仅检查固定 `## 原始内容`
+- Change:
+  - `src/application/CheckEligibilityUseCase.ts`：构造函数新增 `settings: RawRefinedWorkflowSettings` 参数；B 类分块检查改为通过 `BlockExtractor.extract(note.content, settings.bBlock)` 执行，映射 missing-heading→missingBBlock、multiple-heading→multipleBBlock、heading-level-mismatch→bBlockLevelMismatch、empty-b-block→emptyBBlock；A 类分块检查通过 `BlockConfigValidator.validate(enabledABlocks, bBlock, protectH1)` 执行，不合法时返回 invalidABlockConfig；`EligibilityFailureReason` 类型扩展为包含 5 个 v0.2 新错误码；移除旧 `escapeRegExp`/`requiredHeading` 正则逻辑
+  - `src/application/CreateProposalUseCase.ts`：构造函数新增 `settings: RawRefinedWorkflowSettings` 参数（非属性），透传至 `CheckEligibilityUseCase`
+  - `src/main.ts`：`CreateProposalUseCase` 构造时传入 `this.settings.rawRefined`
+  - `src/core/profile/rawRefinedProfile.ts`：添加 JSDoc 标记为 v0.1.0 兼容层
+  - `src/ui/i18n/zh-CN.ts` / `en.ts`：新增 `eligibility.missingBBlock`、`eligibility.multipleBBlock`、`eligibility.bBlockLevelMismatch`、`eligibility.emptyBBlock`、`eligibility.invalidABlockConfig`
+  - `tests/application/CheckEligibilityUseCase.test.ts`（11 tests，+6）：v0.1 兼容（no-active-file、non-markdown、missingFrontmatter、eligible）、B block 缺失/层级不匹配/重复/空、A block 重复 ID、protectH1=true 拒绝 level=1、protectH1=false 接受 level=1
+  - `tests/application/CreateProposalUseCase.test.ts`：所有用例的 `CreateProposalUseCase` 构造增加 `defaultSettings` 参数（8 tests 不受影响）
+- Verification: `npm run typecheck` 通过；`npm test` 20 files / 155 tests 全部通过（+6 tests）；`npm run build` 通过
+- Next: D42 — 实现 MarkdownAssembler v2 的内存组装
+
+---
+
+## D42 开发日志
+
+### Current status
+
+MarkdownAssembler v2 已实现，用于将用户接受的 A 类分块 + fresh-extracted B 类分块 + protectH1 状态组装为新的 Markdown body。旧 `BodyAssembler`（基于 `from-heading-to-end` + `RefinedSections`）保留不变，作为 v0.1.0 兼容层。MarkdownAssembler 尚未接入 `ApplyDecisionUseCase`，仅 core 层实现。
+
+### Active summary
+- Date: 2026-05-05
+- Scope: 实现 MarkdownAssembler v2（A/B block 内存组装），不接入 apply 路径
+- Reason: v0.2.0 需要将 A block proposals + B block 组装为完整 Markdown body，替代旧 `BodyAssembler` 的 `refinedSections + from-heading-to-end` 固定模式
+- Change:
+  - 新增 `src/core/markdown/MarkdownAssembler.ts`：`MarkdownAssemblyInput` 接口（acceptedABlocks: AcceptedABlock[]、bBlockText: string、firstH1Text?: string、protectH1: boolean）；`MarkdownAssembler.assemble()` 按 order 排列 A blocks 并渲染 heading + content；protectH1=true 且 firstH1Text 存在时前置 `# {text}`；B block 逐字节原样追加；各部分以 `\n\n` 分隔，末尾补 `\n`；A block content 做 `trimEnd()` 处理避免多余空白行
+  - 旧 `src/core/apply/BodyAssembler.ts` 保留不变（v0.1 兼容层）
+  - 新增 `tests/core/markdown/MarkdownAssembler.test.ts`（14 tests）：按 order 排序输出、未接受 block 不输出、全部接受、零接受、protectH1 前置/关闭/无 H1、B block 逐字节保留（含 CRLF）/嵌套子标题、H1-H6 heading 渲染、内容空白 trim、空内容、与 BlockExtractor 输出集成
+- Verification: `npm run typecheck` 通过；`npm test` 21 files / 169 tests 全部通过；`npm run build` 通过。测试过程中修复了 4 个测试侧问题，未改动 `MarkdownAssembler` 源码。
+- Next: Phase 10 验收 或 D43（Phase 11：PromptBuilder、Zod Schema 与 Tag Normalization）
+
+### D42 Verification notes
+
+D42 实现过程中出现 4 个测试侧问题，均已修正，`MarkdownAssembler` 源码未因此改动：
+
+1. `DEFAULT_B_BLOCK` 在 `MarkdownAssembler.test.ts` 中导入但未使用，触发 TS6133，已删除未使用导入。
+2. `acceptedBlock({ id: "reasoning" })` 未同步覆盖 `heading`，导致测试中两个 A block 都渲染为默认 `## 摘要`，已在测试 fixture 中显式传入 `heading: "依据与推理"`。
+3. `expect(result).not.toContain("# ")` 会误命中 `## 摘要` 中的第二个 `#` + 空格，已移除该不精确断言，改以 `result.startsWith("## 摘要")` 判断未输出 H1。
+4. 测试辅助函数使用 `content || defaultContent`，导致空字符串被错误回退为默认内容，已改为 `content ?? defaultContent`。
+
+这些问题均属于测试 fixture / assertion 问题，不改变 D42 的实现边界：旧 `BodyAssembler` 保留，`MarkdownAssembler` 尚未接入 `ApplyDecisionUseCase`。

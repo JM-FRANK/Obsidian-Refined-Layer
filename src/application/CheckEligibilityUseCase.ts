@@ -1,5 +1,8 @@
+import { BlockExtractor } from "../core/markdown/BlockExtractor";
+import { BlockConfigValidator } from "../core/profile/BlockConfigValidator";
 import { parseFrontmatter } from "../core/profile/FrontmatterParser";
 import type { WorkflowProfile } from "../core/profile/WorkflowProfile";
+import type { RawRefinedWorkflowSettings } from "../settings/PluginSettings";
 
 export interface ActiveMarkdownNote {
   path: string;
@@ -25,11 +28,24 @@ export interface ActiveNoteRepository {
   getActiveNote(): Promise<ActiveNoteLookupResult>;
 }
 
+export type EligibilityFailureReason =
+  // v0.1.0
+  | "missingFrontmatter"
+  | "invalidStatus"
+  | "missingOriginalContentHeading"
+  // v0.2.0 B block
+  | "missingBBlock"
+  | "multipleBBlock"
+  | "bBlockLevelMismatch"
+  | "emptyBBlock"
+  // v0.2.0 A block config
+  | "invalidABlockConfig";
+
 export interface CheckEligibilityResult {
   hasActiveMarkdownNote: boolean;
   eligible?: boolean;
   reason?: "no-active-file" | "non-markdown-file";
-  failureReasons?: Array<"missingFrontmatter" | "invalidStatus" | "missingOriginalContentHeading">;
+  failureReasons?: EligibilityFailureReason[];
   notePath?: string;
   noteTitle?: string;
   rawContentLength?: number;
@@ -38,9 +54,13 @@ export interface CheckEligibilityResult {
 }
 
 export class CheckEligibilityUseCase {
+  private readonly blockExtractor = new BlockExtractor();
+  private readonly blockConfigValidator = new BlockConfigValidator();
+
   constructor(
     private readonly noteRepository: ActiveNoteRepository,
     private readonly profile: WorkflowProfile,
+    private readonly settings: RawRefinedWorkflowSettings,
   ) {}
 
   async execute(): Promise<CheckEligibilityResult> {
@@ -63,9 +83,10 @@ export class CheckEligibilityUseCase {
     }
 
     const parsed = parseFrontmatter(activeNote.note.content);
-    const failureReasons: Array<"missingFrontmatter" | "invalidStatus" | "missingOriginalContentHeading"> = [];
+    const failureReasons: EligibilityFailureReason[] = [];
     const statusValue = typeof parsed.frontmatter.status === "string" ? parsed.frontmatter.status : undefined;
 
+    // v0.1.0 checks (retained)
     if (this.profile.eligibility.requireFrontmatter && !parsed.hasFrontmatter) {
       failureReasons.push("missingFrontmatter");
     }
@@ -74,9 +95,39 @@ export class CheckEligibilityUseCase {
       failureReasons.push("invalidStatus");
     }
 
-    const headingPattern = new RegExp(`^${escapeRegExp(this.profile.eligibility.requiredHeading)}\\s*$`, "m");
-    if (!headingPattern.test(activeNote.note.content)) {
-      failureReasons.push("missingOriginalContentHeading");
+    // v0.2.0 B block check — use BlockExtractor with configurable heading
+    const bBlockResult = this.blockExtractor.extract(
+      activeNote.note.content,
+      this.settings.bBlock,
+    );
+
+    if (!bBlockResult.ok) {
+      switch (bBlockResult.error.code) {
+        case "missing-heading":
+          failureReasons.push("missingBBlock");
+          break;
+        case "multiple-heading":
+          failureReasons.push("multipleBBlock");
+          break;
+        case "heading-level-mismatch":
+          failureReasons.push("bBlockLevelMismatch");
+          break;
+        case "empty-b-block":
+          failureReasons.push("emptyBBlock");
+          break;
+      }
+    }
+
+    // v0.2.0 A block config validation
+    const enabledABlocks = this.settings.aBlocks.filter((b) => b.enabled);
+    const configValidation = this.blockConfigValidator.validate(
+      enabledABlocks,
+      this.settings.bBlock,
+      this.settings.protectH1,
+    );
+
+    if (!configValidation.ok) {
+      failureReasons.push("invalidABlockConfig");
     }
 
     return {
@@ -89,8 +140,4 @@ export class CheckEligibilityUseCase {
       ...(statusValue ? { status: statusValue } : {}),
     };
   }
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

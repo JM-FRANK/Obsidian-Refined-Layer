@@ -93,4 +93,9 @@ export const zhCNStrings = {
   "sessionPicker.empty": "当前笔记没有可恢复的 proposal session。",
   "sessionPicker.sessionMeta": "{createdAt} · {status} · token {mode}",
   "sessionPicker.conflict": "文件已变化：{reason}。无法直接 apply。",
+  "eligibility.missingBBlock": "缺少 B 类分块 heading",
+  "eligibility.multipleBBlock": "B 类分块 heading 出现多次",
+  "eligibility.bBlockLevelMismatch": "B 类分块 heading 层级不匹配",
+  "eligibility.emptyBBlock": "B 类分块内容为空",
+  "eligibility.invalidABlockConfig": "A 类分块配置不合法",
 } as const;
