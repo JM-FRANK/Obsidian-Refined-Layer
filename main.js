@@ -150,6 +150,21 @@ var OpenAICompatibleProvider = class {
     this.requiresApiKey = (_c = options.requiresApiKey) != null ? _c : true;
   }
   async generateProposal(request) {
+    return this.sendChatCompletion([
+      {
+        role: "system",
+        content: request.systemPrompt
+      },
+      {
+        role: "user",
+        content: request.userPrompt
+      }
+    ]);
+  }
+  async generateProposalV2(request) {
+    return this.sendChatCompletion(request.messages);
+  }
+  async sendChatCompletion(messages) {
     var _a5, _b, _c, _d, _e, _f;
     const apiKey = this.options.secretRef ? this.options.secretStore.getSecret(this.options.secretRef) : null;
     if (this.requiresApiKey && !apiKey) {
@@ -169,16 +184,7 @@ var OpenAICompatibleProvider = class {
       body: JSON.stringify({
         model: this.model,
         temperature: 0.2,
-        messages: [
-          {
-            role: "system",
-            content: request.systemPrompt
-          },
-          {
-            role: "user",
-            content: request.userPrompt
-          }
-        ]
+        messages
       })
     }).catch((error51) => {
       throw new Error(toSafeErrorMessage(error51));

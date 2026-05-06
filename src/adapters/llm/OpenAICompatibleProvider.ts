@@ -1,6 +1,7 @@
 import type { SecretStore } from "../obsidian/ObsidianSecretStore";
 import type { TokenUsageReport } from "../../core/proposal/TokenUsageReport";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./LlmProvider";
+import type { LlmRequestV2 } from "../../core/prompt/PromptDebugSnapshot";
 import { toSafeErrorMessage } from "../../runtime/redaction";
 
 interface OpenAICompatibleProviderOptions {
@@ -26,6 +27,23 @@ export class OpenAICompatibleProvider implements LlmProvider {
   }
 
   async generateProposal(request: LlmRequest): Promise<LlmResponse> {
+    return this.sendChatCompletion([
+      {
+        role: "system",
+        content: request.systemPrompt,
+      },
+      {
+        role: "user",
+        content: request.userPrompt,
+      },
+    ]);
+  }
+
+  async generateProposalV2(request: LlmRequestV2): Promise<LlmResponse> {
+    return this.sendChatCompletion(request.messages);
+  }
+
+  private async sendChatCompletion(messages: Array<{ role: "system" | "user"; content: string }>): Promise<LlmResponse> {
     const apiKey = this.options.secretRef
       ? this.options.secretStore.getSecret(this.options.secretRef)
       : null;
@@ -50,16 +68,7 @@ export class OpenAICompatibleProvider implements LlmProvider {
       body: JSON.stringify({
         model: this.model,
         temperature: 0.2,
-        messages: [
-          {
-            role: "system",
-            content: request.systemPrompt,
-          },
-          {
-            role: "user",
-            content: request.userPrompt,
-          },
-        ],
+        messages,
       }),
     }).catch((error) => {
       throw new Error(toSafeErrorMessage(error));

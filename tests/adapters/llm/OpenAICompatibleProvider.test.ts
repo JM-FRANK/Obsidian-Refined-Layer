@@ -61,6 +61,69 @@ describe("OpenAICompatibleProvider", () => {
     });
   });
 
+  it("supports v0.2 structured requests through generateProposalV2", async () => {
+    const fetchSpy = vi.fn(async () => ({
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: "{\"workflowProfileId\":\"raw-refined\",\"schemaVersion\":\"0.2\",\"blocks\":[{\"id\":\"summary\",\"content\":\"ok\"}]}",
+              },
+            },
+          ],
+          usage: {
+            prompt_tokens: 5,
+            completion_tokens: 7,
+            total_tokens: 12,
+          },
+        };
+      },
+    }));
+    globalThis.fetch = fetchSpy as any;
+
+    const provider = new OpenAICompatibleProvider({
+      secretStore: {
+        isAvailable: () => true,
+        getSecret: () => "sk-test",
+        setSecret: () => undefined,
+      },
+      secretRef: "obsidian-refined-layer-openai",
+      model: "gpt-test",
+    });
+
+    const response = await provider.generateProposalV2({
+      provider: "openai-compatible",
+      model: "gpt-test",
+      messages: [
+        { role: "system", content: "v2 system" },
+        { role: "user", content: "v2 user" },
+      ],
+      schemaName: "RawRefinedProposalV2",
+      schemaVersion: "0.2",
+      metadata: {
+        workflowProfileId: "raw-refined",
+        requestId: "req-1",
+      },
+    });
+
+    expect(response.usage?.totalTokens).toBe(12);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://api.openai.com/v1/chat/completions",
+      expect.objectContaining({
+        body: JSON.stringify({
+          model: "gpt-test",
+          temperature: 0.2,
+          messages: [
+            { role: "system", content: "v2 system" },
+            { role: "user", content: "v2 user" },
+          ],
+        }),
+      }),
+    );
+  });
+
   it("redacts provider error messages", async () => {
     globalThis.fetch = vi.fn(async () => ({
       ok: false,
