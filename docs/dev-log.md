@@ -729,3 +729,134 @@ Settings UI 文案迁移与缓存记录设置已实现。用户可见的 session
   - `tests/ui/i18n/i18n.test.ts`：新增回归测试，确认 Settings session-cache 文案使用“缓存记录”而非“历史记录”
 - Verification: `npm run typecheck` 通过；focused tests 通过（3 files / 22 tests）；`npm test` 全量通过（31 files / 313 tests）；`npm run build` 通过
 - Next: D60 — Settings UI：密钥 ID 文案与 SecretStorage 诊断复制
+
+---
+
+## D60 开发日志
+
+### Current status
+
+Settings UI 的密钥文案与 SecretStorage 诊断已迁移。用户可见文案统一使用 `Key ID / 密钥 ID`，不再使用 Secret Reference / secret reference / key name 这类混用称呼。SecretStorage diagnostics 从 `<pre>` 改为只读 textarea，可选中复制但不可编辑；诊断内容显示 SecretStorage 可用性、当前密钥 ID 是否配置、是否能读到值、读取值是否等于密钥 ID、读取值长度，以及脱敏前后缀，不输出真实 API key。D35 污染场景（读取值等于密钥 ID）已由测试覆盖。尚未执行 D61 A/B 分块配置 UI。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: Settings UI：密钥 ID 文案与 SecretStorage 诊断复制（Phase 14 第二任务）
+- Reason: 用户需要理解 settings 中保存的是密钥 ID，而真实 API key 只在 Obsidian SecretStorage 中；诊断必须能定位 D35 污染值问题，同时不泄露真实 key
+- Change:
+  - `src/ui/i18n/zh-CN.ts`、`src/ui/i18n/en.ts`：Settings、provider notice、provider help 文案统一为 `密钥 ID / Key ID`
+  - `src/adapters/obsidian/ObsidianSecretStore.ts`：`getDiagnostics(configuredKeyId?)` 增加 configured key 可读性字段、value equals key id、value length、脱敏前后缀；错误文案改为 Key ID
+  - `src/ui/settings/SettingsTab.ts`：SecretStorage diagnostics 改为只读 textarea，输出新增诊断字段，可复制不可编辑
+  - `src/adapters/llm/OpenAICompatibleProvider.ts`：缺 key / 污染 key 错误文案改为 Key ID 语义，D35 防御保持不变
+  - `styles.css`：诊断 textarea 增加稳定尺寸、可调整高度和全宽样式
+  - `tests/adapters/obsidian/ObsidianSecretStore.test.ts`：新增诊断测试，覆盖真实 key 不泄露和读取值等于 Key ID 的污染场景
+  - `tests/ui/i18n/i18n.test.ts`、`tests/adapters/llm/OpenAICompatibleProvider.test.ts`：更新 Key ID 文案回归
+- Verification: `npm run typecheck` 通过；`npm test -- tests/adapters/llm/OpenAICompatibleProvider.test.ts tests/adapters/obsidian/ObsidianSecretStore.test.ts tests/ui/i18n/i18n.test.ts` 通过（3 files / 12 tests）；source search 确认 `src/ui`、`src/main.ts`、`src/adapters`、`src/application` 无旧 Secret Reference / secret reference / key name / 密钥引用 文案残留
+- Next: D61 — Settings UI：A/B 分块配置
+
+---
+
+## D61 开发日志
+
+### Current status
+
+Settings UI 的 A/B 分块配置入口已实现。设置页现在可切换 `保护一级标题`，显示并编辑 A 类分块列表（名称、标题层级、prompt、启用状态、排序），支持新增/删除 A 类分块，并可编辑唯一 B 类分块名称和标题层级。保存配置统一通过 `BlockConfigValidator`，Settings UI 只展示表单和 core 返回的错误，不自行实现嵌套/层级规则；protectH1=true 时 level=1 的 A/B 配置会被 core validator 拒绝且不会写入 settings。尚未执行 D62 tagWhitelist 与 tag prompt UI。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: Settings UI：A/B 分块配置（Phase 14 第三任务）
+- Reason: v0.2.0 的 raw-refined workflow 需要用户可配置 A/B 分块，但配置合法性必须由 core validator 判定，不能把 workflow 规则硬编码在 UI 中
+- Change:
+  - `src/ui/settings/SettingsTab.ts`：新增 A/B 分块设置区块；支持 protectH1 toggle、A 类分块 name/headingLevel/prompt/enabled/order 编辑、新增/删除 A 类分块、B 类分块 name/headingLevel 编辑
+  - `src/main.ts`：新增 `updateRawRefinedSettings()`，合并 rawRefined 配置后调用 `BlockConfigValidator.validate()`；验证失败返回错误且不保存
+  - `src/ui/i18n/zh-CN.ts`、`src/ui/i18n/en.ts`：新增 A/B 分块配置、保护一级标题、A/B 字段、新增/删除按钮文案
+  - `styles.css`：新增 Settings 分块配置列表和单个分块配置块样式
+- Verification: `npm run typecheck` 通过；`npm test -- tests/core/profile/BlockConfigValidator.test.ts tests/ui/i18n/i18n.test.ts` 通过（2 files / 18 tests）
+- Next: D62 — Settings UI：Tag 白名单与 tag prompt
+
+---
+
+## D62 开发日志
+
+### Current status
+
+Settings UI 的 tagWhitelist 与 tag prompt 配置入口已实现。设置页现在展示 tag 白名单，支持逐项删除、新增 tag、批量文本编辑白名单，并提供 tagPrompt textarea。白名单保存时复用 `normalizeTagList()`：支持英文逗号、中文逗号、空格、换行、顿号分隔，自动补 `#`、去重，并保留大小写。Settings 文案明确 selectedTags 只有在白名单中才可应用，newTagSuggestions 只展示和复制，永远不会直接写入。尚未执行 D63 模型连接性测试。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: Settings UI：Tag 白名单与 tag prompt（Phase 14 第四任务）
+- Reason: v0.2.0 tag 模型要求 selectedTags 受用户白名单约束，newTagSuggestions 不可直接应用；Settings 需要让用户维护白名单和模型 tag prompt，同时复用 core normalization 规则
+- Change:
+  - `src/ui/settings/SettingsTab.ts`：新增 tag 配置区块；展示 tagWhitelist，支持删除、新增和批量文本编辑；新增 tagPrompt textarea；保存白名单时调用 `normalizeTagList()`
+  - `src/ui/i18n/zh-CN.ts`、`src/ui/i18n/en.ts`：新增 tag 配置、白名单、新增/删除、批量编辑、tag prompt，以及 selectedTags/newTagSuggestions 边界说明
+  - tag 保存行为：补 `#`、按多种分隔符拆分、去重、不做大小写归一化；配置保存仍经 `updateRawRefinedSettings()`，避免绕过 rawRefined 配置验证
+- Verification: `npm run typecheck` 通过；`npm test -- tests/core/proposal/TagNormalizer.test.ts tests/ui/i18n/i18n.test.ts` 通过（2 files / 35 tests）
+- Next: D63 — 模型连接性测试
+
+---
+
+## D63 开发日志
+
+### Current status
+
+模型连接性测试已实现。新增 `TestModelConnectionUseCase`，在不进入 proposal pipeline、不创建 ProposalSession、不写 session-cache/error-session-cache 的前提下，检查 provider 配置、密钥 ID、SecretStorage 可用性与 key 可读性，然后发送不包含真实 note 内容的最小连接请求。Settings UI 增加“测试模型连接”按钮，结果通过 Notice 显示。D35 防御保留：如果 SecretStorage 读到的值等于密钥 ID，则连接测试直接返回 `key-value-polluted`，不会向 provider 发送请求。尚未执行 D64 Prompt 可观测面板。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: 模型连接性测试（Phase 14 第五任务）
+- Reason: 用户需要在生成 proposal 前确认 provider / model / Key ID / SecretStorage 是否可用；连接测试必须与 refined proposal 分离，不能读取真实 note、不能创建 session 或写缓存
+- Change:
+  - 新增 `src/application/TestModelConnectionUseCase.ts`：区分 `secret-storage-unavailable`、`key-id-missing`、`key-read-failed`、`key-value-polluted`、`model-missing`、`base-url-missing`、`provider-failed`、`invalid-model-response`、`success`
+  - `src/main.ts`：新增 `testModelConnection()`，为 Settings UI 组装 mock 或 OpenAI-compatible provider，并调用 use case
+  - `src/ui/settings/SettingsTab.ts`：provider 设置区新增“测试模型连接”按钮
+  - `src/ui/i18n/zh-CN.ts`、`src/ui/i18n/en.ts`：新增模型连接测试按钮、说明和成功/失败 Notice 文案
+  - 新增 `tests/application/TestModelConnectionUseCase.test.ts`：覆盖 mock 成功、最小请求不含真实 note content、SecretStorage 不可用、密钥 ID 缺失、D35 污染值、防 provider error 泄密
+- Verification: `npm run typecheck` 通过；`npm test -- tests/application/TestModelConnectionUseCase.test.ts tests/ui/i18n/i18n.test.ts tests/adapters/llm/OpenAICompatibleProvider.test.ts` 通过（3 files / 15 tests）
+- Next: D64 — Prompt 可观测面板 / Debug Snapshot 查看
+
+---
+
+## D64 开发日志
+
+### Current status
+
+Prompt 可观测面板 / Debug Snapshot 查看已实现。新增内存型 `PromptObservationStore`，保存最近一次 v0.2 prompt debug snapshot，保存前会递归脱敏；默认不写入磁盘。Settings UI 增加 `Prompt 可观测` 开关和最近一次 snapshot 的只读 textarea，可复制查看 request prompts、tag whitelist、response、parsed JSON、Zod result 与 normalization report。`CreateProposalUseCase.executeV2()` 在 `promptObservationEnabled=true` 且注入 store 时记录 provider failure、Zod failure、normalization invalid 和 success 的最近 snapshot；`promptObservationEnabled=false` 时不记录成功请求全文。Phase 14 尚待整体验收。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: Prompt 可观测面板 / Debug Snapshot 查看（Phase 14 第六任务）
+- Reason: v0.2.0 需要用户/开发者能检查最终 prompt、响应、解析和验证结果，但正常成功请求默认不能落盘完整 prompt/response，所有可观测内容必须脱敏
+- Change:
+  - 新增 `src/runtime/PromptObservationStore.ts`：`InMemoryPromptObservationStore` 仅保留最近一次 snapshot，保存前调用递归 redaction
+  - `src/application/CreateProposalUseCase.ts`：v2 pipeline 在开启 `promptObservationEnabled` 且注入 store 时记录 request/response/validation/normalization snapshot；不开启则不记录
+  - `src/main.ts`：新增内存 prompt observation store 和 `getLatestPromptObservation()` 供 Settings UI 读取
+  - `src/ui/settings/SettingsTab.ts`：新增 Prompt 可观测开关和最近一次 Debug Snapshot 只读可复制 textarea
+  - `src/ui/i18n/zh-CN.ts`、`src/ui/i18n/en.ts`：新增 prompt observation 设置、空状态和隐私边界说明
+  - 新增 `tests/runtime/PromptObservationStore.test.ts`：覆盖 snapshot 保存前 redaction，确保 API key / Authorization / Bearer 形态内容不保留
+- Verification: `npm run typecheck` 通过；`npm test -- tests/runtime/PromptObservationStore.test.ts tests/core/prompt/PromptBuilder.test.ts tests/ui/i18n/i18n.test.ts` 通过（3 files / 19 tests）
+- Next: Phase 14 验收任务；通过后进入 Phase 15 / D65（需用户显式要求）
+
+### Phase 14 Verification notes
+
+Phase 14（Settings UI 与可观测性）验收通过：
+
+```text
+[x] Settings UI 支持缓存记录文案与位置说明。
+[x] 密钥 ID 文案统一。
+[x] SecretStorage 诊断可复制不可编辑。
+[x] A/B 分块配置 UI 可用。
+[x] tagWhitelist / tagPrompt UI 可用。
+[x] 模型连接性测试可用。
+[x] Prompt debug snapshot 可查看/复制。
+```
+
+Verification:
+
+```text
+npm run typecheck
+npm test
+npm run build
+```
+
+结果：typecheck 通过；全量 Vitest 34 files / 322 tests 通过；production build 通过。`ProposalSessionStore` persistence failure 测试仍会输出预期 stderr：`disk full`，不代表失败。
+
+Next: D65 — v0.1 → v0.2 自动测试迁移与旧测试清理（Phase 15，需用户显式要求后再继续）

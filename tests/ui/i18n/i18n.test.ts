@@ -22,4 +22,11 @@ describe("i18n", () => {
     expect(t("zh-CN", "settings.title.sessionCache")).not.toContain("历史记录");
     expect(zhCNStrings["settings.title.historyLimit"]).toBe("缓存记录数量上限");
   });
+
+  it("uses Key ID wording for user-facing secret settings", () => {
+    expect(t("zh-CN", "settings.title.secretRef")).toBe("密钥 ID");
+    expect(t("zh-CN", "notice.provider.missingSecretRef", { provider: "openai-compatible" })).toContain("密钥 ID");
+    expect(t("en", "settings.title.secretRef")).toBe("Key ID");
+    expect(t("en", "notice.provider.missingSecretRef", { provider: "openai-compatible" })).toContain("Key ID");
+  });
 });

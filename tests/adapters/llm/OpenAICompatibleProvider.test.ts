@@ -227,7 +227,7 @@ describe("OpenAICompatibleProvider", () => {
       systemPrompt: "system",
       userPrompt: "user",
       promptVariables: { notePath: "note.md", noteTitle: "note", noteContent: "content" },
-    })).rejects.toThrow(/reference name itself/);
+    })).rejects.toThrow(/Key ID itself/);
 
     expect(fetchSpy).not.toHaveBeenCalled();
   });

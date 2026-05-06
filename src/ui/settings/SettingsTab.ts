@@ -1,6 +1,8 @@
-import { PluginSettingTab, SecretComponent, Setting, TextAreaComponent, type App } from "obsidian";
+import { Notice, PluginSettingTab, SecretComponent, Setting, TextAreaComponent, type App } from "obsidian";
 
 import type ObsidianRefinedLayerPlugin from "../../main";
+import type { ABlockConfig, BBlockConfig } from "../../core/profile/BlockConfig";
+import { normalizeTagList } from "../../core/proposal/TagNormalizer";
 import { getProviderPreset, type ProviderType } from "../../settings/ProviderConfig";
 import type { PluginSettings } from "../../settings/PluginSettings";
 import { t } from "../i18n";
@@ -106,6 +108,10 @@ export class SettingsTab extends PluginSettingTab {
       text: t(settings.language, "settings.desc.cachePrivacy"),
     });
 
+    this.addBlockConfigSettings(containerEl, settings);
+    this.addTagConfigSettings(containerEl, settings);
+    this.addPromptObservationSettings(containerEl, settings);
+
     new Setting(containerEl)
       .setName(t(settings.language, "settings.title.draftFolder"))
       .setDesc(t(settings.language, "settings.desc.draftFolder"))
@@ -142,6 +148,17 @@ export class SettingsTab extends PluginSettingTab {
       cls: "obsidian-refined-layer-settings-note",
       text: t(settings.language, `settings.help.provider.${providerType}` as never),
     });
+
+    new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.modelConnectionTest"))
+      .setDesc(t(settings.language, "settings.desc.modelConnectionTest"))
+      .addButton((button) => {
+        button
+          .setButtonText(t(settings.language, "settings.button.modelConnectionTest"))
+          .onClick(async () => {
+            await this.plugin.testModelConnection();
+          });
+      });
 
     if (providerType !== "mock") {
       const modelSetting = new Setting(containerEl)
@@ -221,19 +238,27 @@ export class SettingsTab extends PluginSettingTab {
       cls: "obsidian-refined-layer-settings-note",
       text: t(settings.language, "settings.desc.secretDiagnostics"),
     });
-    diagnosticsContainer.createEl("pre", {
+    const diagnosticsEl = diagnosticsContainer.createEl("textarea", {
       cls: "obsidian-refined-layer-settings-diagnostics",
-      text: [
-        `available: ${String(secretDiagnostics.available)}`,
-        `hasSecretStorage: ${String(secretDiagnostics.hasSecretStorage)}`,
-        `secretStorageType: ${secretDiagnostics.secretStorageType}`,
-        `secretStorageConstructorName: ${secretDiagnostics.secretStorageConstructorName}`,
-        `getSecretType: ${secretDiagnostics.getSecretType}`,
-        `setSecretType: ${secretDiagnostics.setSecretType}`,
-        `ownKeys: ${secretDiagnostics.ownKeys.length > 0 ? secretDiagnostics.ownKeys.join(", ") : "(none)"}`,
-        `reason: ${secretDiagnostics.reason}`,
-      ].join("\n"),
     });
+    diagnosticsEl.readOnly = true;
+    diagnosticsEl.rows = 12;
+    diagnosticsEl.value = [
+      `available: ${String(secretDiagnostics.available)}`,
+      `hasSecretStorage: ${String(secretDiagnostics.hasSecretStorage)}`,
+      `secretStorageType: ${secretDiagnostics.secretStorageType}`,
+      `secretStorageConstructorName: ${secretDiagnostics.secretStorageConstructorName}`,
+      `getSecretType: ${secretDiagnostics.getSecretType}`,
+      `setSecretType: ${secretDiagnostics.setSecretType}`,
+      `ownKeys: ${secretDiagnostics.ownKeys.length > 0 ? secretDiagnostics.ownKeys.join(", ") : "(none)"}`,
+      `configuredKeyIdPresent: ${String(secretDiagnostics.configuredKeyIdPresent)}`,
+      `canReadConfiguredKey: ${String(secretDiagnostics.canReadConfiguredKey)}`,
+      `readValueEqualsKeyId: ${String(secretDiagnostics.readValueEqualsKeyId)}`,
+      `readValueLength: ${secretDiagnostics.readValueLength ?? "(unavailable)"}`,
+      `readValuePrefix: ${secretDiagnostics.readValuePrefix}`,
+      `readValueSuffix: ${secretDiagnostics.readValueSuffix}`,
+      `reason: ${secretDiagnostics.reason}`,
+    ].join("\n");
 
     new Setting(containerEl)
       .setName(t(settings.language, "settings.title.promptProfile"))
@@ -281,4 +306,325 @@ export class SettingsTab extends PluginSettingTab {
       await this.plugin.updatePromptOverride(field, value);
     });
   }
+
+  private addBlockConfigSettings(containerEl: HTMLElement, settings: PluginSettings): void {
+    new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.blockConfig"))
+      .setDesc(t(settings.language, "settings.desc.blockConfig"));
+
+    new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.protectH1"))
+      .setDesc(t(settings.language, "settings.desc.protectH1"))
+      .addToggle((toggle) => {
+        toggle
+          .setValue(settings.rawRefined.protectH1)
+          .onChange(async (protectH1) => {
+            const result = await this.plugin.updateRawRefinedSettings({ protectH1 });
+            this.handleBlockConfigResult(result);
+          });
+      });
+
+    const aBlocksContainer = containerEl.createDiv({ cls: "obsidian-refined-layer-settings-block-list" });
+    aBlocksContainer.createEl("h3", {
+      text: t(settings.language, "settings.title.aBlocks"),
+    });
+
+    for (const block of settings.rawRefined.aBlocks.slice().sort((a, b) => a.order - b.order)) {
+      this.addABlockSettings(aBlocksContainer, settings, block);
+    }
+
+    new Setting(aBlocksContainer)
+      .setName(t(settings.language, "settings.title.addABlock"))
+      .setDesc(t(settings.language, "settings.desc.addABlock"))
+      .addButton((button) => {
+        button
+          .setButtonText(t(settings.language, "settings.button.addABlock"))
+          .onClick(async () => {
+            const current = this.plugin.getSettings().rawRefined;
+            const order = current.aBlocks.reduce((max, item) => Math.max(max, item.order), 0) + 1;
+            const nextBlock: ABlockConfig = {
+              id: `custom-${Date.now().toString(36)}`,
+              name: t(settings.language, "settings.default.aBlockName"),
+              heading: t(settings.language, "settings.default.aBlockName"),
+              headingLevel: current.protectH1 ? 2 : 1,
+              prompt: "",
+              order,
+              enabled: true,
+            };
+            const result = await this.plugin.updateRawRefinedSettings({
+              aBlocks: [...current.aBlocks, nextBlock],
+            });
+            this.handleBlockConfigResult(result, true);
+          });
+      });
+
+    const bBlockContainer = containerEl.createDiv({ cls: "obsidian-refined-layer-settings-block-list" });
+    bBlockContainer.createEl("h3", {
+      text: t(settings.language, "settings.title.bBlock"),
+    });
+    this.addBBlockSettings(bBlockContainer, settings, settings.rawRefined.bBlock);
+  }
+
+  private addTagConfigSettings(containerEl: HTMLElement, settings: PluginSettings): void {
+    new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.tagConfig"))
+      .setDesc(t(settings.language, "settings.desc.tagConfig"));
+
+    const tagContainer = containerEl.createDiv({ cls: "obsidian-refined-layer-settings-block-list" });
+    tagContainer.createEl("h3", {
+      text: t(settings.language, "settings.title.tagWhitelist"),
+    });
+
+    for (const tag of settings.rawRefined.tagWhitelist) {
+      new Setting(tagContainer)
+        .setName(tag)
+        .addButton((button) => {
+          button
+            .setButtonText(t(settings.language, "settings.button.deleteTag"))
+            .onClick(async () => {
+              const current = this.plugin.getSettings().rawRefined;
+              const result = await this.plugin.updateRawRefinedSettings({
+                tagWhitelist: current.tagWhitelist.filter((item) => item !== tag),
+              });
+              this.handleBlockConfigResult(result, true);
+            });
+        });
+    }
+
+    let pendingTag = "";
+    new Setting(tagContainer)
+      .setName(t(settings.language, "settings.title.addTag"))
+      .setDesc(t(settings.language, "settings.desc.addTag"))
+      .addText((text) => {
+        text
+          .setPlaceholder("#ai/generated")
+          .onChange((value) => {
+            pendingTag = value;
+          });
+      })
+      .addButton((button) => {
+        button
+          .setButtonText(t(settings.language, "settings.button.addTag"))
+          .onClick(async () => {
+            const normalized = normalizeTagList(pendingTag);
+            if (normalized.length === 0) return;
+            const current = this.plugin.getSettings().rawRefined;
+            const result = await this.plugin.updateRawRefinedSettings({
+              tagWhitelist: mergeTags(current.tagWhitelist, normalized),
+            });
+            this.handleBlockConfigResult(result, true);
+          });
+      });
+
+    const whitelistSetting = new Setting(tagContainer)
+      .setName(t(settings.language, "settings.title.tagWhitelistBulk"))
+      .setDesc(t(settings.language, "settings.desc.tagWhitelistBulk"));
+    whitelistSetting.controlEl.createDiv();
+    const whitelistArea = new TextAreaComponent(whitelistSetting.controlEl);
+    whitelistArea.inputEl.rows = 5;
+    whitelistArea.inputEl.cols = 40;
+    whitelistArea.setValue(settings.rawRefined.tagWhitelist.join("\n"));
+    whitelistArea.onChange(async (value) => {
+      const result = await this.plugin.updateRawRefinedSettings({
+        tagWhitelist: normalizeTagList(value),
+      });
+      this.handleBlockConfigResult(result);
+    });
+
+    const tagPromptSetting = new Setting(tagContainer)
+      .setName(t(settings.language, "settings.title.tagPrompt"))
+      .setDesc(t(settings.language, "settings.desc.tagPrompt"));
+    tagPromptSetting.controlEl.createDiv();
+    const tagPromptArea = new TextAreaComponent(tagPromptSetting.controlEl);
+    tagPromptArea.inputEl.rows = 4;
+    tagPromptArea.inputEl.cols = 40;
+    tagPromptArea.setValue(settings.rawRefined.tagPrompt);
+    tagPromptArea.onChange(async (value) => {
+      const result = await this.plugin.updateRawRefinedSettings({
+        tagPrompt: value,
+      });
+      this.handleBlockConfigResult(result);
+    });
+  }
+
+  private addPromptObservationSettings(containerEl: HTMLElement, settings: PluginSettings): void {
+    new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.promptObservation"))
+      .setDesc(t(settings.language, "settings.desc.promptObservation"))
+      .addToggle((toggle) => {
+        toggle
+          .setValue(settings.rawRefined.promptObservationEnabled)
+          .onChange(async (promptObservationEnabled) => {
+            const result = await this.plugin.updateRawRefinedSettings({ promptObservationEnabled });
+            this.handleBlockConfigResult(result);
+          });
+      });
+
+    const snapshot = this.plugin.getLatestPromptObservation();
+    const snapshotSetting = new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.promptObservationSnapshot"))
+      .setDesc(t(settings.language, "settings.desc.promptObservationSnapshot"));
+    snapshotSetting.controlEl.createDiv();
+    const snapshotArea = new TextAreaComponent(snapshotSetting.controlEl);
+    snapshotArea.inputEl.rows = 12;
+    snapshotArea.inputEl.cols = 60;
+    snapshotArea.inputEl.readOnly = true;
+    snapshotArea.inputEl.addClass("obsidian-refined-layer-settings-diagnostics");
+    snapshotArea.setValue(snapshot
+      ? JSON.stringify(snapshot, null, 2)
+      : t(settings.language, "settings.placeholder.promptObservationEmpty"));
+  }
+
+
+  private addABlockSettings(containerEl: HTMLElement, settings: PluginSettings, block: ABlockConfig): void {
+    const blockEl = containerEl.createDiv({ cls: "obsidian-refined-layer-settings-block" });
+    blockEl.createEl("h4", {
+      text: `${block.order}. ${block.name}`,
+    });
+
+    new Setting(blockEl)
+      .setName(t(settings.language, "settings.title.aBlockEnabled"))
+      .addToggle((toggle) => {
+        toggle
+          .setValue(block.enabled)
+          .onChange(async (enabled) => {
+            await this.updateABlock(block.id, { enabled });
+          });
+      });
+
+    new Setting(blockEl)
+      .setName(t(settings.language, "settings.title.aBlockName"))
+      .addText((text) => {
+        text
+          .setValue(block.name)
+          .onChange(async (value) => {
+            const name = value.trim() || block.name;
+            await this.updateABlock(block.id, { name, heading: name });
+          });
+      });
+
+    new Setting(blockEl)
+      .setName(t(settings.language, "settings.title.aBlockHeadingLevel"))
+      .addText((text) => {
+        text
+          .setPlaceholder("2")
+          .setValue(String(block.headingLevel))
+          .onChange(async (value) => {
+            await this.updateABlock(block.id, {
+              headingLevel: parseHeadingLevel(value, block.headingLevel),
+            });
+          });
+      });
+
+    new Setting(blockEl)
+      .setName(t(settings.language, "settings.title.aBlockOrder"))
+      .addText((text) => {
+        text
+          .setPlaceholder(String(block.order))
+          .setValue(String(block.order))
+          .onChange(async (value) => {
+            const parsed = Number.parseInt(value, 10);
+            await this.updateABlock(block.id, {
+              order: Number.isFinite(parsed) ? parsed : block.order,
+            });
+          });
+      });
+
+    const promptSetting = new Setting(blockEl)
+      .setName(t(settings.language, "settings.title.aBlockPrompt"));
+    promptSetting.controlEl.createDiv();
+    const promptArea = new TextAreaComponent(promptSetting.controlEl);
+    promptArea.inputEl.rows = 4;
+    promptArea.inputEl.cols = 40;
+    promptArea.setValue(block.prompt);
+    promptArea.onChange(async (value) => {
+      await this.updateABlock(block.id, { prompt: value });
+    });
+
+    new Setting(blockEl)
+      .setName(t(settings.language, "settings.title.deleteABlock"))
+      .setDesc(t(settings.language, "settings.desc.deleteABlock"))
+      .addButton((button) => {
+        button
+          .setButtonText(t(settings.language, "settings.button.deleteABlock"))
+          .onClick(async () => {
+            const current = this.plugin.getSettings().rawRefined;
+            const result = await this.plugin.updateRawRefinedSettings({
+              aBlocks: current.aBlocks.filter((item) => item.id !== block.id),
+            });
+            this.handleBlockConfigResult(result, true);
+          });
+      });
+  }
+
+  private addBBlockSettings(containerEl: HTMLElement, settings: PluginSettings, block: BBlockConfig): void {
+    new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.bBlockName"))
+      .addText((text) => {
+        text
+          .setValue(block.name)
+          .onChange(async (value) => {
+            const name = value.trim() || block.name;
+            await this.updateBBlock({ name, heading: name });
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.bBlockHeadingLevel"))
+      .addText((text) => {
+        text
+          .setPlaceholder("2")
+          .setValue(String(block.headingLevel))
+          .onChange(async (value) => {
+            await this.updateBBlock({
+              headingLevel: parseHeadingLevel(value, block.headingLevel),
+            });
+          });
+      });
+  }
+
+  private async updateABlock(id: string, partial: Partial<ABlockConfig>): Promise<void> {
+    const current = this.plugin.getSettings().rawRefined;
+    const result = await this.plugin.updateRawRefinedSettings({
+      aBlocks: current.aBlocks.map((block) => block.id === id ? { ...block, ...partial } : block),
+    });
+    this.handleBlockConfigResult(result);
+  }
+
+  private async updateBBlock(partial: Partial<BBlockConfig>): Promise<void> {
+    const current = this.plugin.getSettings().rawRefined;
+    const result = await this.plugin.updateRawRefinedSettings({
+      bBlock: {
+        ...current.bBlock,
+        ...partial,
+      },
+    });
+    this.handleBlockConfigResult(result);
+  }
+
+  private handleBlockConfigResult(
+    result: { ok: true } | { ok: false; errors: { message: string }[] },
+    redisplay = false,
+  ): void {
+    if (!result.ok) {
+      new Notice(result.errors.map((error) => error.message).join("\n"), 8000);
+      return;
+    }
+
+    if (redisplay) {
+      this.display();
+    }
+  }
+}
+
+function parseHeadingLevel(value: string, fallback: ABlockConfig["headingLevel"]): ABlockConfig["headingLevel"] {
+  const parsed = Number.parseInt(value, 10);
+  if (parsed >= 1 && parsed <= 6) {
+    return parsed as ABlockConfig["headingLevel"];
+  }
+  return fallback;
+}
+
+function mergeTags(existing: string[], incoming: string[]): string[] {
+  return [...existing, ...incoming].filter((tag, index, all) => all.indexOf(tag) === index);
 }

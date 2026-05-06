@@ -22,11 +22,15 @@ import { OpenCachedSessionUseCase } from "./application/OpenCachedSessionUseCase
 import { RecoverProposalSessionUseCase } from "./application/RecoverProposalSessionUseCase";
 import { RequestReviewUseCase } from "./application/RequestReviewUseCase";
 import { SaveDraftUseCase } from "./application/SaveDraftUseCase";
+import { TestModelConnectionUseCase } from "./application/TestModelConnectionUseCase";
+import type { ABlockConfig, BBlockConfig } from "./core/profile/BlockConfig";
+import { BlockConfigValidator, type BlockConfigValidationError } from "./core/profile/BlockConfigValidator";
 import { rawRefinedProfile } from "./core/profile/rawRefinedProfile";
 import type { UserDecision, UserDecisionV2 } from "./core/review/UserDecision";
 import { ProposalSessionStore } from "./runtime/ProposalSessionStore";
 import type { ErrorSessionCacheSettings } from "./runtime/ProposalSession";
 import type { SessionCacheV2Store } from "./runtime/SessionCacheV2Store";
+import { InMemoryPromptObservationStore } from "./runtime/PromptObservationStore";
 import { toSafeErrorMessage } from "./runtime/redaction";
 import { getDefaultProviderSettings, getProviderPreset, type ProviderType } from "./settings/ProviderConfig";
 import type { PluginSettings } from "./settings/PluginSettings";
@@ -48,6 +52,7 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
   private settingsStore = new ObsidianSettingsStore(this);
   private sessionStore = new ProposalSessionStore(DEFAULT_PLUGIN_SETTINGS.historyLimit, new ObsidianSessionStore(this));
   private sessionCacheV2: SessionCacheV2Store = new ObsidianSessionCacheV2Store(this);
+  private promptObservationStore = new InMemoryPromptObservationStore();
   private secretStore = new ObsidianSecretStore(this.app);
 
   async onload(): Promise<void> {
@@ -160,7 +165,7 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
   }
 
   getSecretStorageDiagnostics(): SecretStorageDiagnostics {
-    return this.secretStore.getDiagnostics();
+    return this.secretStore.getDiagnostics(this.settings.provider?.secretRef);
   }
 
   getSessionCacheInfo() {
@@ -180,6 +185,10 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
       limit: this.settings.errorSessionCache.limit,
       defaultLimit: DEFAULT_ERROR_SESSION_CACHE_LIMIT,
     };
+  }
+
+  getLatestPromptObservation() {
+    return this.promptObservationStore.getLatest();
   }
 
   async updateSettings(partial: Partial<PluginSettings>): Promise<void> {
@@ -221,6 +230,58 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
         limit,
       },
     });
+  }
+
+  async updateRawRefinedSettings(
+    partial: Partial<PluginSettings["rawRefined"]>,
+  ): Promise<{ ok: true } | { ok: false; errors: BlockConfigValidationError[] }> {
+    const nextRawRefined = {
+      ...this.settings.rawRefined,
+      ...partial,
+      aBlocks: partial.aBlocks ?? this.settings.rawRefined.aBlocks,
+      bBlock: partial.bBlock ?? this.settings.rawRefined.bBlock,
+    };
+
+    const validation = new BlockConfigValidator().validate(
+      nextRawRefined.aBlocks as ABlockConfig[],
+      nextRawRefined.bBlock as BBlockConfig,
+      nextRawRefined.protectH1,
+    );
+
+    if (!validation.ok) {
+      return { ok: false, errors: validation.errors };
+    }
+
+    await this.updateSettings({
+      rawRefined: nextRawRefined,
+    });
+
+    return { ok: true };
+  }
+
+  async testModelConnection(): Promise<void> {
+    const providerConfig = this.settings.provider ?? DEFAULT_PLUGIN_SETTINGS.provider!;
+    const providerPreset = getProviderPreset(providerConfig.type);
+    const provider = providerConfig.type === "mock"
+      ? new MockLlmProvider()
+      : new OpenAICompatibleProvider({
+        providerId: providerConfig.type,
+        secretStore: this.secretStore,
+        ...(providerConfig.secretRef?.trim() ? { secretRef: providerConfig.secretRef.trim() } : {}),
+        model: providerConfig.model?.trim() ?? "",
+        ...(providerConfig.baseUrl?.trim() ? { baseUrl: providerConfig.baseUrl.trim() } : {}),
+        requiresApiKey: providerPreset.requiresSecret,
+      });
+
+    const result = await new TestModelConnectionUseCase(provider, this.secretStore).execute(
+      providerConfig,
+      providerPreset,
+    );
+
+    new Notice(t(this.settings.language, result.ok ? "notice.modelConnection.success" : "notice.modelConnection.failure", {
+      code: result.code,
+      message: result.message,
+    }), result.ok ? 5000 : 8000);
   }
 
   async updateProviderSettings(partial: Partial<NonNullable<PluginSettings["provider"]>>): Promise<void> {
@@ -276,7 +337,7 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
       new Notice(t(this.settings.language, "notice.provider.secretSaved"), 4000);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes("Secret reference")) {
+      if (message.includes("Key ID")) {
         new Notice(t(this.settings.language, "notice.provider.secretInvalidRef"), 8000);
       } else {
         new Notice(

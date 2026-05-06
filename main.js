@@ -153,11 +153,11 @@ var OpenAICompatibleProvider = class {
     var _a5, _b, _c, _d, _e, _f;
     const apiKey = this.options.secretRef ? this.options.secretStore.getSecret(this.options.secretRef) : null;
     if (this.requiresApiKey && !apiKey) {
-      throw new Error("API key is missing for the configured secret reference.");
+      throw new Error("API key is missing for the configured Key ID.");
     }
     if (apiKey && this.options.secretRef && apiKey.trim() === this.options.secretRef.trim()) {
       throw new Error(
-        `The stored value for secret reference "${this.options.secretRef}" appears to be the reference name itself. Please re-enter your real API key in Settings \u2192 API Key.`
+        `The stored value for Key ID "${this.options.secretRef}" appears to be the Key ID itself. Please re-enter your real API key in Settings \u2192 API Key.`
       );
     }
     const response = await fetch(this.endpoint, {
@@ -311,22 +311,54 @@ var ObsidianSecretStore = class {
   isAvailable() {
     return this.getDiagnostics().available;
   }
-  getDiagnostics() {
-    var _a5, _b;
+  getDiagnostics(configuredKeyId) {
+    var _a5, _b, _c;
     const maybeSecretStorage = this.app.secretStorage;
     const hasSecretStorage = maybeSecretStorage !== void 0 && maybeSecretStorage !== null;
     const getSecretType = typeof (maybeSecretStorage == null ? void 0 : maybeSecretStorage.getSecret);
     const setSecretType = typeof (maybeSecretStorage == null ? void 0 : maybeSecretStorage.setSecret);
     const available = getSecretType === "function" && setSecretType === "function";
+    const keyId = (_a5 = configuredKeyId == null ? void 0 : configuredKeyId.trim()) != null ? _a5 : "";
+    const configuredKeyIdPresent = keyId.length > 0;
+    let canReadConfiguredKey = false;
+    let readValueEqualsKeyId = false;
+    let readValueLength = null;
+    let readValuePrefix = "(unavailable)";
+    let readValueSuffix = "(unavailable)";
+    if (available && configuredKeyIdPresent) {
+      try {
+        this.ensureValidSecretRef(keyId);
+        const value = maybeSecretStorage.getSecret(keyId);
+        if (value !== null && value !== void 0) {
+          canReadConfiguredKey = true;
+          readValueEqualsKeyId = value.trim() === keyId;
+          readValueLength = value.length;
+          readValuePrefix = redactFragment(value.slice(0, 4));
+          readValueSuffix = redactFragment(value.slice(-4));
+        } else {
+          readValuePrefix = "(empty)";
+          readValueSuffix = "(empty)";
+        }
+      } catch (e) {
+        readValuePrefix = "(read failed)";
+        readValueSuffix = "(read failed)";
+      }
+    }
     return {
       available,
       hasSecretStorage,
       secretStorageType: maybeSecretStorage === null ? "null" : typeof maybeSecretStorage,
-      secretStorageConstructorName: hasSecretStorage ? (_b = (_a5 = maybeSecretStorage.constructor) == null ? void 0 : _a5.name) != null ? _b : "unknown" : "n/a",
+      secretStorageConstructorName: hasSecretStorage ? (_c = (_b = maybeSecretStorage.constructor) == null ? void 0 : _b.name) != null ? _c : "unknown" : "n/a",
       getSecretType,
       setSecretType,
       ownKeys: hasSecretStorage ? Object.keys(maybeSecretStorage) : [],
-      reason: available ? "secretStorage.getSecret/setSecret are both available." : "secretStorage is missing, or getSecret/setSecret is not exposed as functions."
+      reason: available ? "secretStorage.getSecret/setSecret are both available." : "secretStorage is missing, or getSecret/setSecret is not exposed as functions.",
+      configuredKeyIdPresent,
+      canReadConfiguredKey,
+      readValueEqualsKeyId,
+      readValueLength,
+      readValuePrefix,
+      readValueSuffix
     };
   }
   setSecret(secretRef, value) {
@@ -349,10 +381,15 @@ var ObsidianSecretStore = class {
   }
   ensureValidSecretRef(secretRef) {
     if (!SECRET_ID_PATTERN.test(secretRef)) {
-      throw new Error("Secret reference must use lowercase letters, numbers, and dashes only.");
+      throw new Error("Key ID must use lowercase letters, numbers, and dashes only.");
     }
   }
 };
+function redactFragment(fragment) {
+  var _a5;
+  if (!fragment) return "(empty)";
+  return `${(_a5 = fragment[0]) != null ? _a5 : ""}${"*".repeat(Math.max(fragment.length - 1, 0))}`;
+}
 
 // src/adapters/obsidian/ObsidianSessionCacheV2Store.ts
 var SESSION_CACHE_PATH = ".obsidian/plugins/obsidian-refined-layer/session-cache";
@@ -17494,13 +17531,14 @@ var RetryAttemptRunner = class {
 // src/application/CreateProposalUseCase.ts
 var ERROR_SESSION_CACHE_DISPLAY_PATH = ".obsidian/plugins/obsidian-refined-layer/error-session-cache/";
 var CreateProposalUseCase = class {
-  constructor(noteRepository, profile, llmProvider, sessionStore, settings, promptOverride, errorSessionCache, sessionCacheV2) {
+  constructor(noteRepository, profile, llmProvider, sessionStore, settings, promptOverride, errorSessionCache, sessionCacheV2, promptObservationStore) {
     this.noteRepository = noteRepository;
     this.profile = profile;
     this.llmProvider = llmProvider;
     this.sessionStore = sessionStore;
     this.settings = settings;
     this.promptOverride = promptOverride;
+    this.promptObservationStore = promptObservationStore;
     this.tokenUsageReporter = new TokenUsageReporter();
     this.blockExtractor = new BlockExtractor();
     this.eligibilityUseCase = new CheckEligibilityUseCase(noteRepository, profile, settings);
@@ -17651,7 +17689,7 @@ ${userPrompt}`,
       };
     }
     const promptBuilder = new PromptBuilder();
-    const { request, debugSnapshot: _debug } = promptBuilder.build({
+    const { request, debugSnapshot } = promptBuilder.build({
       provider: this.llmProvider.providerId,
       model: this.llmProvider.model,
       notePath: lookup.note.path,
@@ -17661,10 +17699,10 @@ ${userPrompt}`,
       tagWhitelist: this.settings.tagWhitelist,
       tagPrompt: this.settings.tagPrompt
     });
-    void _debug;
     const errorSessionId = `error-session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const ctx = {
       request,
+      debugSnapshot,
       noteContent: lookup.note.content,
       notePath: lookup.note.path,
       noteTitle: lookup.note.title,
@@ -17692,6 +17730,11 @@ ${userPrompt}`,
         void 0,
         {}
       );
+      this.observePrompt(ctx, {
+        validationSnapshot: {
+          errorSummary: failedAttempt.errorSummary
+        }
+      });
       return { success: false, attempt: failedAttempt };
     }
     const zodValidation = this.proposalValidator.validateV2Output(llmResponse.rawText);
@@ -17704,6 +17747,17 @@ ${userPrompt}`,
         llmResponse.usage,
         { zodError: zodValidation.zodError }
       );
+      this.observePrompt(ctx, {
+        responseSnapshot: {
+          rawText: llmResponse.rawText,
+          parsedJson: llmResponse.parsedJson
+        },
+        validationSnapshot: {
+          zodResult: "failed",
+          zodError: zodValidation.zodError,
+          errorSummary: failedAttempt.errorSummary
+        }
+      });
       return { success: false, attempt: failedAttempt };
     }
     const normalizer = new ProposalNormalizer();
@@ -17717,6 +17771,17 @@ ${userPrompt}`,
         llmResponse.usage,
         { normalizationReport: normalized.validation }
       );
+      this.observePrompt(ctx, {
+        responseSnapshot: {
+          rawText: llmResponse.rawText,
+          parsedJson: llmResponse.parsedJson
+        },
+        validationSnapshot: {
+          zodResult: "success",
+          normalizationReport: normalized.validation,
+          errorSummary: failedAttempt.errorSummary
+        }
+      });
       return { success: false, attempt: failedAttempt };
     }
     const parsedFrontmatter = parseFrontmatter(ctx.noteContent);
@@ -17760,7 +17825,29 @@ ${userPrompt}`,
         attemptsUsed: attemptIndex
       }
     };
+    this.observePrompt(ctx, {
+      responseSnapshot: {
+        rawText: llmResponse.rawText,
+        parsedJson: llmResponse.parsedJson
+      },
+      validationSnapshot: {
+        zodResult: "success",
+        normalizationReport: normalized.validation
+      }
+    });
     return { success: true, session };
+  }
+  observePrompt(ctx, snapshot) {
+    var _a5;
+    if (!this.settings.promptObservationEnabled) return;
+    (_a5 = this.promptObservationStore) == null ? void 0 : _a5.save({
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      provider: this.llmProvider.providerId,
+      model: this.llmProvider.model,
+      requestSnapshot: ctx.debugSnapshot,
+      responseSnapshot: snapshot.responseSnapshot,
+      validationSnapshot: snapshot.validationSnapshot
+    });
   }
   buildFailedAttempt(ctx, attemptIndex, errorSummary, llmResponse, providerUsage, validationSnapshotOverrides) {
     const responseSnapshot = llmResponse ? {
@@ -18206,6 +18293,80 @@ function buildV2DraftContent(session, decision) {
   ].join("\n");
 }
 
+// src/application/TestModelConnectionUseCase.ts
+var TestModelConnectionUseCase = class {
+  constructor(provider, secretStore) {
+    this.provider = provider;
+    this.secretStore = secretStore;
+  }
+  async execute(providerConfig, providerPreset) {
+    var _a5, _b, _c, _d;
+    const providerName = providerConfig.type;
+    if (providerName !== "mock" && !((_a5 = providerConfig.model) == null ? void 0 : _a5.trim())) {
+      return failure("model-missing", `${providerName} model is missing.`);
+    }
+    if (providerPreset.allowsBaseUrlEdit && !((_b = providerConfig.baseUrl) == null ? void 0 : _b.trim())) {
+      return failure("base-url-missing", `${providerName} API base URL is missing.`);
+    }
+    if (providerPreset.requiresSecret) {
+      const keyId = (_d = (_c = providerConfig.secretRef) == null ? void 0 : _c.trim()) != null ? _d : "";
+      if (!this.secretStore.isAvailable()) {
+        return failure("secret-storage-unavailable", "SecretStorage is unavailable.");
+      }
+      if (!keyId) {
+        return failure("key-id-missing", "Key ID is missing.");
+      }
+      let value;
+      try {
+        value = this.secretStore.getSecret(keyId);
+      } catch (error51) {
+        return failure("key-read-failed", toSafeErrorMessage(error51));
+      }
+      if (!value) {
+        return failure("key-read-failed", "No API key is stored for the configured Key ID.");
+      }
+      if (value.trim() === keyId) {
+        return failure("key-value-polluted", "The stored value equals the configured Key ID.");
+      }
+    }
+    try {
+      const response = await this.provider.generateProposal({
+        workflowProfileId: "raw-refined",
+        notePath: "__connection_test__.md",
+        noteTitle: "Connection test",
+        noteContent: "",
+        systemPrompt: "You are testing model connectivity. Return any short valid response.",
+        userPrompt: "Connection test only. Do not use user note content.",
+        promptVariables: {
+          notePath: "__connection_test__.md",
+          noteTitle: "Connection test",
+          noteContent: ""
+        }
+      });
+      if (!response || typeof response.rawText !== "string" || response.rawText.trim().length === 0) {
+        return failure("invalid-model-response", "Provider returned an empty or invalid response.");
+      }
+      return {
+        ok: true,
+        code: "success",
+        message: `${formatProvider(providerName)} connection succeeded.`
+      };
+    } catch (error51) {
+      return failure("provider-failed", toSafeErrorMessage(error51));
+    }
+  }
+};
+function failure(code, message) {
+  return {
+    ok: false,
+    code,
+    message
+  };
+}
+function formatProvider(provider) {
+  return provider === "mock" ? "Mock provider" : provider;
+}
+
 // src/runtime/ProposalSessionStore.ts
 var DEFAULT_HISTORY_LIMIT = 5;
 var ProposalSessionStore = class {
@@ -18305,6 +18466,19 @@ var ProposalSessionStore = class {
   }
 };
 
+// src/runtime/PromptObservationStore.ts
+var InMemoryPromptObservationStore = class {
+  constructor() {
+    this.latest = null;
+  }
+  save(snapshot) {
+    this.latest = redactSensitiveStrings(snapshot);
+  }
+  getLatest() {
+    return this.latest;
+  }
+};
+
 // src/settings/ProviderConfig.ts
 var PROVIDER_PRESETS = {
   mock: {
@@ -18388,7 +18562,7 @@ var enStrings = {
   "settings.title.providerType": "Provider type",
   "settings.title.providerModel": "Provider model",
   "settings.title.baseUrl": "API base URL",
-  "settings.title.secretRef": "Secret reference",
+  "settings.title.secretRef": "Key ID",
   "settings.title.apiKey": "API key",
   "settings.title.secretDiagnostics": "SecretStorage diagnostics",
   "settings.title.language": "Language",
@@ -18400,6 +18574,27 @@ var enStrings = {
   "settings.title.errorSessionCache": "Error session cache",
   "settings.title.errorSessionCacheLimit": "Error session cache limit",
   "settings.title.errorSessionCacheLocation": "Error session cache location",
+  "settings.title.blockConfig": "A/B block configuration",
+  "settings.title.protectH1": "Protect H1",
+  "settings.title.aBlocks": "A blocks",
+  "settings.title.aBlockEnabled": "Enabled",
+  "settings.title.aBlockName": "A block name",
+  "settings.title.aBlockHeadingLevel": "A block heading level",
+  "settings.title.aBlockOrder": "A block order",
+  "settings.title.aBlockPrompt": "A block prompt",
+  "settings.title.addABlock": "Add A block",
+  "settings.title.deleteABlock": "Delete A block",
+  "settings.title.bBlock": "B block",
+  "settings.title.bBlockName": "B block name",
+  "settings.title.bBlockHeadingLevel": "B block heading level",
+  "settings.title.tagConfig": "Tag configuration",
+  "settings.title.tagWhitelist": "Tag whitelist",
+  "settings.title.addTag": "Add tag",
+  "settings.title.tagWhitelistBulk": "Edit whitelist as text",
+  "settings.title.tagPrompt": "Tag prompt",
+  "settings.title.modelConnectionTest": "Test model connection",
+  "settings.title.promptObservation": "Prompt observation",
+  "settings.title.promptObservationSnapshot": "Latest prompt debug snapshot",
   "settings.title.draftFolder": "Draft folder",
   "settings.title.promptProfile": "Prompt Override Profile",
   "settings.title.systemPrompt": "System Prompt Override",
@@ -18412,6 +18607,17 @@ var enStrings = {
   "settings.desc.errorSessionCache": "Save failed generation attempts for debugging. Error session cache is separate from proposal cache records.",
   "settings.desc.errorSessionCacheLimit": "Maximum failed attempts to keep. Default: {defaultLimit}.",
   "settings.desc.cachePrivacy": "Cache records do not save API keys, Authorization headers, or provider secrets.",
+  "settings.desc.blockConfig": "Settings edits are saved only after core block validation passes.",
+  "settings.desc.protectH1": "Keep the first H1 as the note title; A/B blocks must use heading level 2 or deeper.",
+  "settings.desc.addABlock": "Create a new flat A block. Nested A blocks are not part of v0.2.0.",
+  "settings.desc.deleteABlock": "Remove this A block from future proposals.",
+  "settings.desc.tagConfig": "selectedTags can be applied only when they are in the whitelist. newTagSuggestions are shown for copying and are never applied directly.",
+  "settings.desc.addTag": "Tags are normalized when saved: separators are split, # is added if missing, duplicates are removed, and case is preserved.",
+  "settings.desc.tagWhitelistBulk": "One or more tags separated by comma, space, newline, Chinese comma, or dunhao.",
+  "settings.desc.tagPrompt": "Prompt instruction used when asking the model to choose selectedTags and suggest newTagSuggestions.",
+  "settings.desc.modelConnectionTest": "Sends a minimal connectivity request without real note content. It does not create proposal sessions or write cache records.",
+  "settings.desc.promptObservation": "When enabled, the latest v0.2 prompt debug snapshot is kept in memory for inspection. It is not written to disk by default.",
+  "settings.desc.promptObservationSnapshot": "Copyable, read-only snapshot of request prompts, tag whitelist, response, parsed JSON, Zod result, and normalization report. Values are redacted before storage.",
   "settings.desc.draftFolder": "Output folder for Save as Draft.",
   "settings.desc.promptProfile": "Only raw-refined prompt override is supported.",
   "settings.desc.promptVariables": "Available variables: {{notePath}} {{noteTitle}} {{noteContent}}",
@@ -18420,11 +18626,12 @@ var enStrings = {
   "settings.desc.providerType": "Choose where the model call should go.",
   "settings.desc.providerModel": "Enter the model name to call.",
   "settings.desc.baseUrl": "Only needed for custom or local providers. Usually stop at `/v1`.",
-  "settings.desc.secretRef": "Secure storage name for the API key. `data.json` stores only this name.",
+  "settings.desc.secretRef": "Key ID is saved in plugin settings and used to read the real API key from Obsidian SecretStorage. The real API key is never written to data.json.",
   "settings.desc.apiKey": "Saved only to Obsidian SecretStorage, never to plugin settings.",
   "settings.desc.secretDiagnostics": "Expand only when debugging SecretStorage issues.",
   "settings.warning.secretUnavailable": "This environment does not support secure secret storage. Direct LLM calls are disabled and the plugin will fall back to mock-llm.",
   "settings.placeholder.apiKeyUnavailable": "SecretStorage is not exposed in this runtime, so API key input is disabled",
+  "settings.placeholder.promptObservationEmpty": "No prompt debug snapshot is available.",
   "settings.placeholder.model.openai-compatible": "Example: gpt-4.1-mini",
   "settings.placeholder.model.deepseek": "Example: deepseek-v4-flash",
   "settings.placeholder.model.custom-openai-compatible": "Enter a model supported by your service",
@@ -18435,7 +18642,7 @@ var enStrings = {
   "settings.placeholder.secretRef.deepseek": "Example: obsidian-refined-layer-deepseek",
   "settings.placeholder.secretRef.custom-openai-compatible": "Example: obsidian-refined-layer-custom",
   "settings.help.provider.mock": "Local mock flow only. No external API call. Good for checking eligibility, review, and apply.",
-  "settings.help.provider.openai-compatible": "Connect to the official OpenAI API. You only need model, secret reference, and API key.",
+  "settings.help.provider.openai-compatible": "Connect to the official OpenAI API. You only need model, Key ID, and API key.",
   "settings.help.provider.deepseek": "Connect to the official DeepSeek OpenAI-compatible API. `deepseek-v4-flash` is the recommended default.",
   "settings.help.provider.custom-openai-compatible": "Connect to any remote service that supports OpenAI Chat Completions. Requires model, base URL, and API key.",
   "settings.help.provider.local-openai-compatible": "Connect to a local OpenAI-compatible server such as Ollama, LM Studio, or vLLM. API key is usually not required.",
@@ -18447,17 +18654,25 @@ var enStrings = {
   "settings.option.provider.custom": "Custom compatible service",
   "settings.option.provider.local": "Local compatible service",
   "settings.button.openSessionCache": "View cache records",
+  "settings.button.addABlock": "Add A block",
+  "settings.button.deleteABlock": "Delete",
+  "settings.button.addTag": "Add tag",
+  "settings.button.deleteTag": "Delete",
+  "settings.button.modelConnectionTest": "Test model connection",
+  "settings.default.aBlockName": "New block",
   "notice.review.reopened": "Reopened last proposal: {sessionId} \xB7 {title} \xB7 token usage {mode}",
   "notice.review.noSession": "No saved proposal session for the current note: {path}",
   "notice.provider.downgradedMock": "Secure secret storage is unavailable. Falling back to mock-llm.",
   "notice.provider.missingModel": "{provider} requires a model name.",
   "notice.provider.missingBaseUrl": "{provider} requires an API base URL.",
-  "notice.provider.missingSecretRef": "{provider} requires a secret reference.",
+  "notice.provider.missingSecretRef": "{provider} requires a Key ID.",
   "notice.provider.missingApiKey": "No API key is stored for {provider}.",
   "notice.provider.secretSaved": "API key saved to secure secret storage.",
   "notice.provider.secretBlocked": "Cannot save API key because secure secret storage is unavailable.",
-  "notice.provider.secretInvalidRef": "Secret reference must use lowercase letters, numbers, and dashes only.",
+  "notice.provider.secretInvalidRef": "Key ID must use lowercase letters, numbers, and dashes only.",
   "notice.provider.error": "Provider error: {message}",
+  "notice.modelConnection.success": "Model connection succeeded: {message}",
+  "notice.modelConnection.failure": "Model connection failed ({code}): {message}",
   "notice.v2.retry.success": "Refined Layer: generation succeeded after {attemptsUsed}/{maxAttempts} requests.",
   "notice.v2.retry.failure": "Refined Layer: generation used {attemptsUsed}/{maxAttempts} requests and did not produce a reviewable proposal.",
   "notice.v2.errorCache.saved": "Refined Layer: failed attempts were saved to cache records: {path}",
@@ -18522,7 +18737,7 @@ var zhCNStrings = {
   "settings.title.providerType": "Provider \u7C7B\u578B",
   "settings.title.providerModel": "Provider \u6A21\u578B",
   "settings.title.baseUrl": "API Base URL",
-  "settings.title.secretRef": "Secret Reference",
+  "settings.title.secretRef": "\u5BC6\u94A5 ID",
   "settings.title.apiKey": "API Key",
   "settings.title.secretDiagnostics": "SecretStorage \u8BCA\u65AD",
   "settings.title.language": "\u754C\u9762\u8BED\u8A00",
@@ -18534,6 +18749,27 @@ var zhCNStrings = {
   "settings.title.errorSessionCache": "\u9519\u8BEF\u4F1A\u8BDD\u7F13\u5B58",
   "settings.title.errorSessionCacheLimit": "\u9519\u8BEF\u4F1A\u8BDD\u7F13\u5B58\u6570\u91CF\u4E0A\u9650",
   "settings.title.errorSessionCacheLocation": "\u9519\u8BEF\u4F1A\u8BDD\u7F13\u5B58\u4F4D\u7F6E",
+  "settings.title.blockConfig": "A/B \u5206\u5757\u914D\u7F6E",
+  "settings.title.protectH1": "\u4FDD\u62A4\u4E00\u7EA7\u6807\u9898",
+  "settings.title.aBlocks": "A \u7C7B\u5206\u5757",
+  "settings.title.aBlockEnabled": "\u542F\u7528",
+  "settings.title.aBlockName": "A \u7C7B\u5206\u5757\u540D\u79F0",
+  "settings.title.aBlockHeadingLevel": "A \u7C7B\u5206\u5757\u6807\u9898\u5C42\u7EA7",
+  "settings.title.aBlockOrder": "A \u7C7B\u5206\u5757\u6392\u5E8F",
+  "settings.title.aBlockPrompt": "A \u7C7B\u5206\u5757 prompt",
+  "settings.title.addABlock": "\u65B0\u589E A \u7C7B\u5206\u5757",
+  "settings.title.deleteABlock": "\u5220\u9664 A \u7C7B\u5206\u5757",
+  "settings.title.bBlock": "B \u7C7B\u5206\u5757",
+  "settings.title.bBlockName": "B \u7C7B\u5206\u5757\u540D\u79F0",
+  "settings.title.bBlockHeadingLevel": "B \u7C7B\u5206\u5757\u6807\u9898\u5C42\u7EA7",
+  "settings.title.tagConfig": "Tag \u914D\u7F6E",
+  "settings.title.tagWhitelist": "Tag \u767D\u540D\u5355",
+  "settings.title.addTag": "\u65B0\u589E tag",
+  "settings.title.tagWhitelistBulk": "\u6309\u6587\u672C\u7F16\u8F91\u767D\u540D\u5355",
+  "settings.title.tagPrompt": "tag prompt",
+  "settings.title.modelConnectionTest": "\u6D4B\u8BD5\u6A21\u578B\u8FDE\u63A5",
+  "settings.title.promptObservation": "Prompt \u53EF\u89C2\u6D4B",
+  "settings.title.promptObservationSnapshot": "\u6700\u8FD1\u4E00\u6B21 Prompt Debug Snapshot",
   "settings.title.draftFolder": "\u8349\u7A3F\u76EE\u5F55",
   "settings.title.promptProfile": "Prompt Override Profile",
   "settings.title.systemPrompt": "System Prompt Override",
@@ -18546,6 +18782,17 @@ var zhCNStrings = {
   "settings.desc.errorSessionCache": "\u4FDD\u5B58\u5931\u8D25\u751F\u6210\u5C1D\u8BD5\uFF0C\u65B9\u4FBF\u6392\u67E5\u95EE\u9898\u3002\u9519\u8BEF\u4F1A\u8BDD\u7F13\u5B58\u4E0E proposal \u7F13\u5B58\u8BB0\u5F55\u5206\u5F00\u4FDD\u5B58\u3002",
   "settings.desc.errorSessionCacheLimit": "\u6700\u591A\u4FDD\u7559\u591A\u5C11\u6761\u5931\u8D25\u5C1D\u8BD5\u3002\u9ED8\u8BA4\uFF1A{defaultLimit}\u3002",
   "settings.desc.cachePrivacy": "\u7F13\u5B58\u8BB0\u5F55\u4E0D\u4FDD\u5B58 API key\u3001Authorization header \u6216 provider secret\u3002",
+  "settings.desc.blockConfig": "Settings \u53EA\u63D0\u4F9B\u914D\u7F6E\u5165\u53E3\uFF1B\u4FDD\u5B58\u524D\u4F1A\u5148\u901A\u8FC7 core \u7684\u5206\u5757\u914D\u7F6E\u6821\u9A8C\u3002",
+  "settings.desc.protectH1": "\u4FDD\u7559\u7B2C\u4E00\u4E2A H1 \u4F5C\u4E3A\u7B14\u8BB0\u6807\u9898\uFF1BA/B \u5206\u5757\u5FC5\u987B\u4F7F\u7528 2 \u7EA7\u6216\u66F4\u6DF1\u6807\u9898\u3002",
+  "settings.desc.addABlock": "\u65B0\u589E\u4E00\u4E2A\u6241\u5E73 A \u7C7B\u5206\u5757\u3002v0.2.0 \u4E0D\u652F\u6301\u5D4C\u5957 A \u7C7B\u5206\u5757\u3002",
+  "settings.desc.deleteABlock": "\u4ECE\u540E\u7EED proposal \u4E2D\u79FB\u9664\u8FD9\u4E2A A \u7C7B\u5206\u5757\u3002",
+  "settings.desc.tagConfig": "selectedTags \u53EA\u6709\u5728\u767D\u540D\u5355\u4E2D\u624D\u53EF\u88AB\u5E94\u7528\uFF1BnewTagSuggestions \u53EA\u5C55\u793A\u548C\u590D\u5236\uFF0C\u6C38\u8FDC\u4E0D\u4F1A\u76F4\u63A5\u5199\u5165\u3002",
+  "settings.desc.addTag": "\u4FDD\u5B58\u65F6\u4F1A\u89C4\u8303\u5316 tag\uFF1A\u6309\u5206\u9694\u7B26\u62C6\u5206\u3001\u81EA\u52A8\u8865 #\u3001\u53BB\u91CD\uFF0C\u5E76\u4FDD\u7559\u5927\u5C0F\u5199\u3002",
+  "settings.desc.tagWhitelistBulk": "\u53EF\u7528\u82F1\u6587\u9017\u53F7\u3001\u4E2D\u6587\u9017\u53F7\u3001\u7A7A\u683C\u3001\u6362\u884C\u6216\u987F\u53F7\u5206\u9694\u591A\u4E2A tag\u3002",
+  "settings.desc.tagPrompt": "\u7528\u4E8E\u6307\u5BFC\u6A21\u578B\u4ECE\u767D\u540D\u5355\u9009\u62E9 selectedTags\uFF0C\u5E76\u628A\u65B0\u6807\u7B7E\u653E\u5165 newTagSuggestions\u3002",
+  "settings.desc.modelConnectionTest": "\u53D1\u9001\u4E0D\u5305\u542B\u771F\u5B9E\u7B14\u8BB0\u5185\u5BB9\u7684\u6700\u5C0F\u8FDE\u63A5\u6D4B\u8BD5\u8BF7\u6C42\uFF1B\u4E0D\u4F1A\u521B\u5EFA ProposalSession\uFF0C\u4E5F\u4E0D\u4F1A\u5199\u7F13\u5B58\u8BB0\u5F55\u3002",
+  "settings.desc.promptObservation": "\u5F00\u542F\u540E\uFF0C\u6700\u8FD1\u4E00\u6B21 v0.2 prompt debug snapshot \u4F1A\u4FDD\u5B58\u5728\u5185\u5B58\u4E2D\u4F9B\u67E5\u770B\uFF1B\u9ED8\u8BA4\u4E0D\u5199\u5165\u78C1\u76D8\u3002",
+  "settings.desc.promptObservationSnapshot": "\u53EF\u590D\u5236\u3001\u4E0D\u53EF\u7F16\u8F91\uFF1B\u663E\u793A request prompts\u3001tag whitelist\u3001response\u3001parsed JSON\u3001Zod result \u548C normalization report\u3002\u4FDD\u5B58\u524D\u4F1A\u8131\u654F\u3002",
   "settings.desc.draftFolder": "Save as Draft \u7684\u8F93\u51FA\u76EE\u5F55\u3002",
   "settings.desc.promptProfile": "\u5F53\u524D\u53EA\u652F\u6301 raw-refined \u7684 prompt \u8986\u76D6\u3002",
   "settings.desc.promptVariables": "\u53EF\u7528\u53D8\u91CF\uFF1A{{notePath}} {{noteTitle}} {{noteContent}}",
@@ -18554,11 +18801,12 @@ var zhCNStrings = {
   "settings.desc.providerType": "\u9009\u62E9\u8981\u8FDE\u63A5\u7684\u6A21\u578B\u6765\u6E90\u3002",
   "settings.desc.providerModel": "\u586B\u5199\u8981\u8C03\u7528\u7684\u6A21\u578B\u540D\u3002",
   "settings.desc.baseUrl": "\u4EC5\u81EA\u5B9A\u4E49/\u672C\u5730 provider \u9700\u8981\u586B\u5199\uFF1B\u901A\u5E38\u5199\u5230 `/v1` \u5373\u53EF\u3002",
-  "settings.desc.secretRef": "API key \u7684\u5B89\u5168\u5B58\u50A8\u540D\u3002`data.json` \u53EA\u4FDD\u5B58\u8FD9\u4E2A\u540D\u5B57\uFF0C\u4E0D\u4FDD\u5B58 key\u3002",
+  "settings.desc.secretRef": "\u5BC6\u94A5 ID \u4F1A\u4FDD\u5B58\u5230\u63D2\u4EF6\u8BBE\u7F6E\uFF0C\u5E76\u7528\u4E8E\u4ECE Obsidian SecretStorage \u8BFB\u53D6\u771F\u5B9E API key\u3002\u771F\u5B9E API key \u6C38\u8FDC\u4E0D\u4F1A\u5199\u5165 data.json\u3002",
   "settings.desc.apiKey": "\u53EA\u5199\u5165 Obsidian SecretStorage\uFF0C\u4E0D\u843D\u76D8\u5230\u63D2\u4EF6\u8BBE\u7F6E\u3002",
   "settings.desc.secretDiagnostics": "\u4EC5\u5728\u6392\u67E5 SecretStorage \u95EE\u9898\u65F6\u5C55\u5F00\u67E5\u770B\u3002",
   "settings.warning.secretUnavailable": "\u5F53\u524D\u73AF\u5883\u4E0D\u652F\u6301\u5B89\u5168\u5B58\u50A8 API key\uFF0C\u771F\u5B9E LLM \u76F4\u8FDE\u80FD\u529B\u5DF2\u7981\u7528\uFF0C\u63D2\u4EF6\u5C06\u964D\u7EA7\u4E3A mock-llm\u3002",
   "settings.placeholder.apiKeyUnavailable": "\u5F53\u524D\u8FD0\u884C\u65F6\u672A\u66B4\u9732 SecretStorage\uFF0C\u65E0\u6CD5\u8F93\u5165 API key",
+  "settings.placeholder.promptObservationEmpty": "\u5F53\u524D\u6CA1\u6709\u53EF\u67E5\u770B\u7684 prompt debug snapshot\u3002",
   "settings.placeholder.model.openai-compatible": "\u4F8B\u5982\uFF1Agpt-4.1-mini",
   "settings.placeholder.model.deepseek": "\u4F8B\u5982\uFF1Adeepseek-v4-flash",
   "settings.placeholder.model.custom-openai-compatible": "\u586B\u5199\u4F60\u7684\u670D\u52A1\u652F\u6301\u7684\u6A21\u578B\u540D",
@@ -18569,7 +18817,7 @@ var zhCNStrings = {
   "settings.placeholder.secretRef.deepseek": "\u4F8B\u5982\uFF1Aobsidian-refined-layer-deepseek",
   "settings.placeholder.secretRef.custom-openai-compatible": "\u4F8B\u5982\uFF1Aobsidian-refined-layer-custom",
   "settings.help.provider.mock": "\u672C\u5730 mock \u6D41\u7A0B\uFF0C\u4E0D\u4F1A\u8C03\u7528\u5916\u90E8 API\u3002\u9002\u5408\u5148\u9A8C\u8BC1 eligibility\u3001review\u3001apply \u6D41\u7A0B\u3002",
-  "settings.help.provider.openai-compatible": "\u8FDE\u63A5 OpenAI \u5B98\u65B9\u63A5\u53E3\u3002\u53EA\u9700\u8981\u6A21\u578B\u540D\u3001Secret Reference \u548C API Key\u3002",
+  "settings.help.provider.openai-compatible": "\u8FDE\u63A5 OpenAI \u5B98\u65B9\u63A5\u53E3\u3002\u53EA\u9700\u8981\u6A21\u578B\u540D\u3001\u5BC6\u94A5 ID \u548C API Key\u3002",
   "settings.help.provider.deepseek": "\u8FDE\u63A5 DeepSeek \u5B98\u65B9 OpenAI-compatible \u63A5\u53E3\u3002\u9ED8\u8BA4\u6A21\u578B\u5EFA\u8BAE\u4F7F\u7528 deepseek-v4-flash\u3002",
   "settings.help.provider.custom-openai-compatible": "\u8FDE\u63A5\u4EFB\u610F\u517C\u5BB9 OpenAI Chat Completions \u7684\u8FDC\u7A0B\u670D\u52A1\u3002\u9700\u8981\u6A21\u578B\u540D\u3001Base URL \u548C API Key\u3002",
   "settings.help.provider.local-openai-compatible": "\u8FDE\u63A5\u672C\u5730 OpenAI-compatible \u670D\u52A1\uFF0C\u4F8B\u5982 Ollama\u3001LM Studio\u3001vLLM\u3002\u901A\u5E38\u4E0D\u9700\u8981 API Key\u3002",
@@ -18581,17 +18829,25 @@ var zhCNStrings = {
   "settings.option.provider.custom": "\u81EA\u5B9A\u4E49\u517C\u5BB9\u670D\u52A1",
   "settings.option.provider.local": "\u672C\u5730\u517C\u5BB9\u670D\u52A1",
   "settings.button.openSessionCache": "\u67E5\u770B\u7F13\u5B58\u8BB0\u5F55",
+  "settings.button.addABlock": "\u65B0\u589E A \u7C7B\u5206\u5757",
+  "settings.button.deleteABlock": "\u5220\u9664",
+  "settings.button.addTag": "\u65B0\u589E tag",
+  "settings.button.deleteTag": "\u5220\u9664",
+  "settings.button.modelConnectionTest": "\u6D4B\u8BD5\u6A21\u578B\u8FDE\u63A5",
+  "settings.default.aBlockName": "\u65B0\u5206\u5757",
   "notice.review.reopened": "\u5DF2\u6062\u590D\u6700\u8FD1 proposal\uFF1A{sessionId} \xB7 {title} \xB7 token usage {mode}",
   "notice.review.noSession": "\u5F53\u524D\u7B14\u8BB0\u6CA1\u6709\u53EF\u6062\u590D\u7684 proposal session\uFF1A{path}",
   "notice.provider.downgradedMock": "\u5F53\u524D\u73AF\u5883\u4E0D\u652F\u6301\u5B89\u5168 secret \u5B58\u50A8\uFF0C\u5DF2\u964D\u7EA7\u4E3A mock-llm\u3002",
   "notice.provider.missingModel": "{provider} \u9700\u8981\u914D\u7F6E\u6A21\u578B\u540D\u3002",
   "notice.provider.missingBaseUrl": "{provider} \u9700\u8981\u914D\u7F6E API Base URL\u3002",
-  "notice.provider.missingSecretRef": "{provider} \u9700\u8981\u914D\u7F6E secret reference\u3002",
-  "notice.provider.missingApiKey": "{provider} \u5F53\u524D secret reference \u4E0B\u6CA1\u6709\u4FDD\u5B58 API key\u3002",
+  "notice.provider.missingSecretRef": "{provider} \u9700\u8981\u914D\u7F6E\u5BC6\u94A5 ID\u3002",
+  "notice.provider.missingApiKey": "{provider} \u5F53\u524D\u5BC6\u94A5 ID \u4E0B\u6CA1\u6709\u4FDD\u5B58 API key\u3002",
   "notice.provider.secretSaved": "API key \u5DF2\u4FDD\u5B58\u5230\u5B89\u5168 SecretStorage\u3002",
   "notice.provider.secretBlocked": "\u5F53\u524D\u73AF\u5883\u4E0D\u652F\u6301\u5B89\u5168 secret \u5B58\u50A8\uFF0C\u65E0\u6CD5\u4FDD\u5B58 API key\u3002",
-  "notice.provider.secretInvalidRef": "Secret reference \u53EA\u80FD\u5305\u542B\u5C0F\u5199\u5B57\u6BCD\u3001\u6570\u5B57\u548C\u8FDE\u5B57\u7B26\u3002",
+  "notice.provider.secretInvalidRef": "\u5BC6\u94A5 ID \u53EA\u80FD\u5305\u542B\u5C0F\u5199\u5B57\u6BCD\u3001\u6570\u5B57\u548C\u8FDE\u5B57\u7B26\u3002",
   "notice.provider.error": "Provider \u9519\u8BEF\uFF1A{message}",
+  "notice.modelConnection.success": "\u6A21\u578B\u8FDE\u63A5\u6210\u529F\uFF1A{message}",
+  "notice.modelConnection.failure": "\u6A21\u578B\u8FDE\u63A5\u5931\u8D25\uFF08{code}\uFF09\uFF1A{message}",
   "notice.v2.retry.success": "Refined Layer\uFF1A\u672C\u6B21\u751F\u6210\u8BF7\u6C42\u4E86 {attemptsUsed}/{maxAttempts} \u6B21\u540E\u6210\u529F\u3002",
   "notice.v2.retry.failure": "Refined Layer\uFF1A\u672C\u6B21\u751F\u6210\u5DF2\u8BF7\u6C42 {attemptsUsed}/{maxAttempts} \u6B21\uFF0C\u672A\u751F\u6210\u53EF\u5BA1\u6838 proposal\u3002",
   "notice.v2.errorCache.saved": "Refined Layer\uFF1A\u5931\u8D25\u5C1D\u8BD5\u5DF2\u4FDD\u5B58\u5230\u7F13\u5B58\u8BB0\u5F55\uFF1A{path}",
@@ -19384,7 +19640,7 @@ var SettingsTab = class extends import_obsidian5.PluginSettingTab {
     this.plugin = plugin;
   }
   display() {
-    var _a5;
+    var _a5, _b;
     const { containerEl } = this;
     const settings = this.plugin.getSettings();
     const provider = settings.provider;
@@ -19432,6 +19688,9 @@ var SettingsTab = class extends import_obsidian5.PluginSettingTab {
       cls: "obsidian-refined-layer-settings-note",
       text: t(settings.language, "settings.desc.cachePrivacy")
     });
+    this.addBlockConfigSettings(containerEl, settings);
+    this.addTagConfigSettings(containerEl, settings);
+    this.addPromptObservationSettings(containerEl, settings);
     new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.draftFolder")).setDesc(t(settings.language, "settings.desc.draftFolder")).addText((text) => {
       text.setValue(settings.draftFolder).onChange(async (value) => {
         await this.plugin.updateSettings({ draftFolder: value.trim() || settings.draftFolder });
@@ -19447,6 +19706,11 @@ var SettingsTab = class extends import_obsidian5.PluginSettingTab {
     containerEl.createEl("p", {
       cls: "obsidian-refined-layer-settings-note",
       text: t(settings.language, `settings.help.provider.${providerType}`)
+    });
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.modelConnectionTest")).setDesc(t(settings.language, "settings.desc.modelConnectionTest")).addButton((button) => {
+      button.setButtonText(t(settings.language, "settings.button.modelConnectionTest")).onClick(async () => {
+        await this.plugin.testModelConnection();
+      });
     });
     if (providerType !== "mock") {
       const modelSetting = new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.providerModel")).setDesc(t(settings.language, "settings.desc.providerModel"));
@@ -19478,9 +19742,9 @@ var SettingsTab = class extends import_obsidian5.PluginSettingTab {
       if (secretAvailable) {
         const secretComponent = new import_obsidian5.SecretComponent(this.app, apiKeySetting.controlEl);
         secretComponent.onChange(async (value) => {
-          var _a6, _b;
+          var _a6, _b2;
           if (!value.trim()) return;
-          const secretRef = (_b = (_a6 = this.plugin.getSettings().provider) == null ? void 0 : _a6.secretRef) != null ? _b : "";
+          const secretRef = (_b2 = (_a6 = this.plugin.getSettings().provider) == null ? void 0 : _a6.secretRef) != null ? _b2 : "";
           await this.plugin.saveProviderApiKey(secretRef, value);
         });
         secretComponent.setValue("");
@@ -19500,19 +19764,27 @@ var SettingsTab = class extends import_obsidian5.PluginSettingTab {
       cls: "obsidian-refined-layer-settings-note",
       text: t(settings.language, "settings.desc.secretDiagnostics")
     });
-    diagnosticsContainer.createEl("pre", {
-      cls: "obsidian-refined-layer-settings-diagnostics",
-      text: [
-        `available: ${String(secretDiagnostics.available)}`,
-        `hasSecretStorage: ${String(secretDiagnostics.hasSecretStorage)}`,
-        `secretStorageType: ${secretDiagnostics.secretStorageType}`,
-        `secretStorageConstructorName: ${secretDiagnostics.secretStorageConstructorName}`,
-        `getSecretType: ${secretDiagnostics.getSecretType}`,
-        `setSecretType: ${secretDiagnostics.setSecretType}`,
-        `ownKeys: ${secretDiagnostics.ownKeys.length > 0 ? secretDiagnostics.ownKeys.join(", ") : "(none)"}`,
-        `reason: ${secretDiagnostics.reason}`
-      ].join("\n")
+    const diagnosticsEl = diagnosticsContainer.createEl("textarea", {
+      cls: "obsidian-refined-layer-settings-diagnostics"
     });
+    diagnosticsEl.readOnly = true;
+    diagnosticsEl.rows = 12;
+    diagnosticsEl.value = [
+      `available: ${String(secretDiagnostics.available)}`,
+      `hasSecretStorage: ${String(secretDiagnostics.hasSecretStorage)}`,
+      `secretStorageType: ${secretDiagnostics.secretStorageType}`,
+      `secretStorageConstructorName: ${secretDiagnostics.secretStorageConstructorName}`,
+      `getSecretType: ${secretDiagnostics.getSecretType}`,
+      `setSecretType: ${secretDiagnostics.setSecretType}`,
+      `ownKeys: ${secretDiagnostics.ownKeys.length > 0 ? secretDiagnostics.ownKeys.join(", ") : "(none)"}`,
+      `configuredKeyIdPresent: ${String(secretDiagnostics.configuredKeyIdPresent)}`,
+      `canReadConfiguredKey: ${String(secretDiagnostics.canReadConfiguredKey)}`,
+      `readValueEqualsKeyId: ${String(secretDiagnostics.readValueEqualsKeyId)}`,
+      `readValueLength: ${(_b = secretDiagnostics.readValueLength) != null ? _b : "(unavailable)"}`,
+      `readValuePrefix: ${secretDiagnostics.readValuePrefix}`,
+      `readValueSuffix: ${secretDiagnostics.readValueSuffix}`,
+      `reason: ${secretDiagnostics.reason}`
+    ].join("\n");
     new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.promptProfile")).setDesc(t(settings.language, "settings.desc.promptProfile"));
     this.addPromptOverrideField(
       containerEl,
@@ -19545,7 +19817,223 @@ var SettingsTab = class extends import_obsidian5.PluginSettingTab {
       await this.plugin.updatePromptOverride(field, value);
     });
   }
+  addBlockConfigSettings(containerEl, settings) {
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.blockConfig")).setDesc(t(settings.language, "settings.desc.blockConfig"));
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.protectH1")).setDesc(t(settings.language, "settings.desc.protectH1")).addToggle((toggle) => {
+      toggle.setValue(settings.rawRefined.protectH1).onChange(async (protectH1) => {
+        const result = await this.plugin.updateRawRefinedSettings({ protectH1 });
+        this.handleBlockConfigResult(result);
+      });
+    });
+    const aBlocksContainer = containerEl.createDiv({ cls: "obsidian-refined-layer-settings-block-list" });
+    aBlocksContainer.createEl("h3", {
+      text: t(settings.language, "settings.title.aBlocks")
+    });
+    for (const block of settings.rawRefined.aBlocks.slice().sort((a, b) => a.order - b.order)) {
+      this.addABlockSettings(aBlocksContainer, settings, block);
+    }
+    new import_obsidian5.Setting(aBlocksContainer).setName(t(settings.language, "settings.title.addABlock")).setDesc(t(settings.language, "settings.desc.addABlock")).addButton((button) => {
+      button.setButtonText(t(settings.language, "settings.button.addABlock")).onClick(async () => {
+        const current = this.plugin.getSettings().rawRefined;
+        const order = current.aBlocks.reduce((max, item) => Math.max(max, item.order), 0) + 1;
+        const nextBlock = {
+          id: `custom-${Date.now().toString(36)}`,
+          name: t(settings.language, "settings.default.aBlockName"),
+          heading: t(settings.language, "settings.default.aBlockName"),
+          headingLevel: current.protectH1 ? 2 : 1,
+          prompt: "",
+          order,
+          enabled: true
+        };
+        const result = await this.plugin.updateRawRefinedSettings({
+          aBlocks: [...current.aBlocks, nextBlock]
+        });
+        this.handleBlockConfigResult(result, true);
+      });
+    });
+    const bBlockContainer = containerEl.createDiv({ cls: "obsidian-refined-layer-settings-block-list" });
+    bBlockContainer.createEl("h3", {
+      text: t(settings.language, "settings.title.bBlock")
+    });
+    this.addBBlockSettings(bBlockContainer, settings, settings.rawRefined.bBlock);
+  }
+  addTagConfigSettings(containerEl, settings) {
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.tagConfig")).setDesc(t(settings.language, "settings.desc.tagConfig"));
+    const tagContainer = containerEl.createDiv({ cls: "obsidian-refined-layer-settings-block-list" });
+    tagContainer.createEl("h3", {
+      text: t(settings.language, "settings.title.tagWhitelist")
+    });
+    for (const tag of settings.rawRefined.tagWhitelist) {
+      new import_obsidian5.Setting(tagContainer).setName(tag).addButton((button) => {
+        button.setButtonText(t(settings.language, "settings.button.deleteTag")).onClick(async () => {
+          const current = this.plugin.getSettings().rawRefined;
+          const result = await this.plugin.updateRawRefinedSettings({
+            tagWhitelist: current.tagWhitelist.filter((item) => item !== tag)
+          });
+          this.handleBlockConfigResult(result, true);
+        });
+      });
+    }
+    let pendingTag = "";
+    new import_obsidian5.Setting(tagContainer).setName(t(settings.language, "settings.title.addTag")).setDesc(t(settings.language, "settings.desc.addTag")).addText((text) => {
+      text.setPlaceholder("#ai/generated").onChange((value) => {
+        pendingTag = value;
+      });
+    }).addButton((button) => {
+      button.setButtonText(t(settings.language, "settings.button.addTag")).onClick(async () => {
+        const normalized = normalizeTagList(pendingTag);
+        if (normalized.length === 0) return;
+        const current = this.plugin.getSettings().rawRefined;
+        const result = await this.plugin.updateRawRefinedSettings({
+          tagWhitelist: mergeTags(current.tagWhitelist, normalized)
+        });
+        this.handleBlockConfigResult(result, true);
+      });
+    });
+    const whitelistSetting = new import_obsidian5.Setting(tagContainer).setName(t(settings.language, "settings.title.tagWhitelistBulk")).setDesc(t(settings.language, "settings.desc.tagWhitelistBulk"));
+    whitelistSetting.controlEl.createDiv();
+    const whitelistArea = new import_obsidian5.TextAreaComponent(whitelistSetting.controlEl);
+    whitelistArea.inputEl.rows = 5;
+    whitelistArea.inputEl.cols = 40;
+    whitelistArea.setValue(settings.rawRefined.tagWhitelist.join("\n"));
+    whitelistArea.onChange(async (value) => {
+      const result = await this.plugin.updateRawRefinedSettings({
+        tagWhitelist: normalizeTagList(value)
+      });
+      this.handleBlockConfigResult(result);
+    });
+    const tagPromptSetting = new import_obsidian5.Setting(tagContainer).setName(t(settings.language, "settings.title.tagPrompt")).setDesc(t(settings.language, "settings.desc.tagPrompt"));
+    tagPromptSetting.controlEl.createDiv();
+    const tagPromptArea = new import_obsidian5.TextAreaComponent(tagPromptSetting.controlEl);
+    tagPromptArea.inputEl.rows = 4;
+    tagPromptArea.inputEl.cols = 40;
+    tagPromptArea.setValue(settings.rawRefined.tagPrompt);
+    tagPromptArea.onChange(async (value) => {
+      const result = await this.plugin.updateRawRefinedSettings({
+        tagPrompt: value
+      });
+      this.handleBlockConfigResult(result);
+    });
+  }
+  addPromptObservationSettings(containerEl, settings) {
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.promptObservation")).setDesc(t(settings.language, "settings.desc.promptObservation")).addToggle((toggle) => {
+      toggle.setValue(settings.rawRefined.promptObservationEnabled).onChange(async (promptObservationEnabled) => {
+        const result = await this.plugin.updateRawRefinedSettings({ promptObservationEnabled });
+        this.handleBlockConfigResult(result);
+      });
+    });
+    const snapshot = this.plugin.getLatestPromptObservation();
+    const snapshotSetting = new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.promptObservationSnapshot")).setDesc(t(settings.language, "settings.desc.promptObservationSnapshot"));
+    snapshotSetting.controlEl.createDiv();
+    const snapshotArea = new import_obsidian5.TextAreaComponent(snapshotSetting.controlEl);
+    snapshotArea.inputEl.rows = 12;
+    snapshotArea.inputEl.cols = 60;
+    snapshotArea.inputEl.readOnly = true;
+    snapshotArea.inputEl.addClass("obsidian-refined-layer-settings-diagnostics");
+    snapshotArea.setValue(snapshot ? JSON.stringify(snapshot, null, 2) : t(settings.language, "settings.placeholder.promptObservationEmpty"));
+  }
+  addABlockSettings(containerEl, settings, block) {
+    const blockEl = containerEl.createDiv({ cls: "obsidian-refined-layer-settings-block" });
+    blockEl.createEl("h4", {
+      text: `${block.order}. ${block.name}`
+    });
+    new import_obsidian5.Setting(blockEl).setName(t(settings.language, "settings.title.aBlockEnabled")).addToggle((toggle) => {
+      toggle.setValue(block.enabled).onChange(async (enabled) => {
+        await this.updateABlock(block.id, { enabled });
+      });
+    });
+    new import_obsidian5.Setting(blockEl).setName(t(settings.language, "settings.title.aBlockName")).addText((text) => {
+      text.setValue(block.name).onChange(async (value) => {
+        const name = value.trim() || block.name;
+        await this.updateABlock(block.id, { name, heading: name });
+      });
+    });
+    new import_obsidian5.Setting(blockEl).setName(t(settings.language, "settings.title.aBlockHeadingLevel")).addText((text) => {
+      text.setPlaceholder("2").setValue(String(block.headingLevel)).onChange(async (value) => {
+        await this.updateABlock(block.id, {
+          headingLevel: parseHeadingLevel(value, block.headingLevel)
+        });
+      });
+    });
+    new import_obsidian5.Setting(blockEl).setName(t(settings.language, "settings.title.aBlockOrder")).addText((text) => {
+      text.setPlaceholder(String(block.order)).setValue(String(block.order)).onChange(async (value) => {
+        const parsed = Number.parseInt(value, 10);
+        await this.updateABlock(block.id, {
+          order: Number.isFinite(parsed) ? parsed : block.order
+        });
+      });
+    });
+    const promptSetting = new import_obsidian5.Setting(blockEl).setName(t(settings.language, "settings.title.aBlockPrompt"));
+    promptSetting.controlEl.createDiv();
+    const promptArea = new import_obsidian5.TextAreaComponent(promptSetting.controlEl);
+    promptArea.inputEl.rows = 4;
+    promptArea.inputEl.cols = 40;
+    promptArea.setValue(block.prompt);
+    promptArea.onChange(async (value) => {
+      await this.updateABlock(block.id, { prompt: value });
+    });
+    new import_obsidian5.Setting(blockEl).setName(t(settings.language, "settings.title.deleteABlock")).setDesc(t(settings.language, "settings.desc.deleteABlock")).addButton((button) => {
+      button.setButtonText(t(settings.language, "settings.button.deleteABlock")).onClick(async () => {
+        const current = this.plugin.getSettings().rawRefined;
+        const result = await this.plugin.updateRawRefinedSettings({
+          aBlocks: current.aBlocks.filter((item) => item.id !== block.id)
+        });
+        this.handleBlockConfigResult(result, true);
+      });
+    });
+  }
+  addBBlockSettings(containerEl, settings, block) {
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.bBlockName")).addText((text) => {
+      text.setValue(block.name).onChange(async (value) => {
+        const name = value.trim() || block.name;
+        await this.updateBBlock({ name, heading: name });
+      });
+    });
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.bBlockHeadingLevel")).addText((text) => {
+      text.setPlaceholder("2").setValue(String(block.headingLevel)).onChange(async (value) => {
+        await this.updateBBlock({
+          headingLevel: parseHeadingLevel(value, block.headingLevel)
+        });
+      });
+    });
+  }
+  async updateABlock(id, partial2) {
+    const current = this.plugin.getSettings().rawRefined;
+    const result = await this.plugin.updateRawRefinedSettings({
+      aBlocks: current.aBlocks.map((block) => block.id === id ? { ...block, ...partial2 } : block)
+    });
+    this.handleBlockConfigResult(result);
+  }
+  async updateBBlock(partial2) {
+    const current = this.plugin.getSettings().rawRefined;
+    const result = await this.plugin.updateRawRefinedSettings({
+      bBlock: {
+        ...current.bBlock,
+        ...partial2
+      }
+    });
+    this.handleBlockConfigResult(result);
+  }
+  handleBlockConfigResult(result, redisplay = false) {
+    if (!result.ok) {
+      new import_obsidian5.Notice(result.errors.map((error51) => error51.message).join("\n"), 8e3);
+      return;
+    }
+    if (redisplay) {
+      this.display();
+    }
+  }
 };
+function parseHeadingLevel(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  if (parsed >= 1 && parsed <= 6) {
+    return parsed;
+  }
+  return fallback;
+}
+function mergeTags(existing, incoming) {
+  return [...existing, ...incoming].filter((tag, index, all) => all.indexOf(tag) === index);
+}
 
 // src/main.ts
 var REFINE_COMMAND_ID = "refine-current-note";
@@ -19558,6 +20046,7 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian6.Plugin {
     this.settingsStore = new ObsidianSettingsStore(this);
     this.sessionStore = new ProposalSessionStore(DEFAULT_PLUGIN_SETTINGS.historyLimit, new ObsidianSessionStore(this));
     this.sessionCacheV2 = new ObsidianSessionCacheV2Store(this);
+    this.promptObservationStore = new InMemoryPromptObservationStore();
     this.secretStore = new ObsidianSecretStore(this.app);
   }
   async onload() {
@@ -19656,7 +20145,8 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian6.Plugin {
     return this.secretStore.isAvailable();
   }
   getSecretStorageDiagnostics() {
-    return this.secretStore.getDiagnostics();
+    var _a5;
+    return this.secretStore.getDiagnostics((_a5 = this.settings.provider) == null ? void 0 : _a5.secretRef);
   }
   getSessionCacheInfo() {
     var _a5, _b, _c;
@@ -19675,6 +20165,9 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian6.Plugin {
       limit: this.settings.errorSessionCache.limit,
       defaultLimit: DEFAULT_ERROR_SESSION_CACHE_LIMIT
     };
+  }
+  getLatestPromptObservation() {
+    return this.promptObservationStore.getLatest();
   }
   async updateSettings(partial2) {
     var _a5, _b;
@@ -19711,6 +20204,48 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian6.Plugin {
         limit
       }
     });
+  }
+  async updateRawRefinedSettings(partial2) {
+    var _a5, _b;
+    const nextRawRefined = {
+      ...this.settings.rawRefined,
+      ...partial2,
+      aBlocks: (_a5 = partial2.aBlocks) != null ? _a5 : this.settings.rawRefined.aBlocks,
+      bBlock: (_b = partial2.bBlock) != null ? _b : this.settings.rawRefined.bBlock
+    };
+    const validation = new BlockConfigValidator().validate(
+      nextRawRefined.aBlocks,
+      nextRawRefined.bBlock,
+      nextRawRefined.protectH1
+    );
+    if (!validation.ok) {
+      return { ok: false, errors: validation.errors };
+    }
+    await this.updateSettings({
+      rawRefined: nextRawRefined
+    });
+    return { ok: true };
+  }
+  async testModelConnection() {
+    var _a5, _b, _c, _d, _e;
+    const providerConfig = (_a5 = this.settings.provider) != null ? _a5 : DEFAULT_PLUGIN_SETTINGS.provider;
+    const providerPreset = getProviderPreset(providerConfig.type);
+    const provider = providerConfig.type === "mock" ? new MockLlmProvider() : new OpenAICompatibleProvider({
+      providerId: providerConfig.type,
+      secretStore: this.secretStore,
+      ...((_b = providerConfig.secretRef) == null ? void 0 : _b.trim()) ? { secretRef: providerConfig.secretRef.trim() } : {},
+      model: (_d = (_c = providerConfig.model) == null ? void 0 : _c.trim()) != null ? _d : "",
+      ...((_e = providerConfig.baseUrl) == null ? void 0 : _e.trim()) ? { baseUrl: providerConfig.baseUrl.trim() } : {},
+      requiresApiKey: providerPreset.requiresSecret
+    });
+    const result = await new TestModelConnectionUseCase(provider, this.secretStore).execute(
+      providerConfig,
+      providerPreset
+    );
+    new import_obsidian6.Notice(t(this.settings.language, result.ok ? "notice.modelConnection.success" : "notice.modelConnection.failure", {
+      code: result.code,
+      message: result.message
+    }), result.ok ? 5e3 : 8e3);
   }
   async updateProviderSettings(partial2) {
     var _a5;
@@ -19759,7 +20294,7 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian6.Plugin {
       new import_obsidian6.Notice(t(this.settings.language, "notice.provider.secretSaved"), 4e3);
     } catch (error51) {
       const message = error51 instanceof Error ? error51.message : String(error51);
-      if (message.includes("Secret reference")) {
+      if (message.includes("Key ID")) {
         new import_obsidian6.Notice(t(this.settings.language, "notice.provider.secretInvalidRef"), 8e3);
       } else {
         new import_obsidian6.Notice(

@@ -31,12 +31,12 @@ export class OpenAICompatibleProvider implements LlmProvider {
       : null;
 
     if (this.requiresApiKey && !apiKey) {
-      throw new Error("API key is missing for the configured secret reference.");
+      throw new Error("API key is missing for the configured Key ID.");
     }
 
     if (apiKey && this.options.secretRef && apiKey.trim() === this.options.secretRef.trim()) {
       throw new Error(
-        `The stored value for secret reference "${this.options.secretRef}" appears to be the reference name itself. ` +
+        `The stored value for Key ID "${this.options.secretRef}" appears to be the Key ID itself. ` +
         "Please re-enter your real API key in Settings → API Key.",
       );
     }

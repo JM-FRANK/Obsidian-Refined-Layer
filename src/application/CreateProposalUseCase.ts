@@ -3,7 +3,7 @@ import { BlockExtractor } from "../core/markdown/BlockExtractor";
 import { parseFrontmatter } from "../core/profile/FrontmatterParser";
 import type { WorkflowProfile } from "../core/profile/WorkflowProfile";
 import { PromptBuilder } from "../core/prompt/PromptBuilder";
-import type { LlmRequestV2 } from "../core/prompt/PromptDebugSnapshot";
+import type { LlmRequestV2, PromptDebugSnapshot } from "../core/prompt/PromptDebugSnapshot";
 import { ProposalNormalizer } from "../core/proposal/ProposalNormalizer";
 import { ProposalValidator } from "../core/proposal/ProposalValidator";
 import { hashText } from "../core/protected-region/hash";
@@ -24,6 +24,7 @@ import {
 import type { ErrorSessionCacheStore } from "../runtime/ErrorSessionCacheStore";
 import type { SessionCacheV2Store } from "../runtime/SessionCacheV2Store";
 import type { TokenUsageReport } from "../core/proposal/TokenUsageReport";
+import type { PromptObservationStore } from "../runtime/PromptObservationStore";
 
 export interface V2NoticePlan {
   attemptsUsed: number;
@@ -81,6 +82,7 @@ interface PromptOverride {
 
 interface AttemptContext {
   request: LlmRequestV2;
+  debugSnapshot: PromptDebugSnapshot;
   noteContent: string;
   notePath: string;
   noteTitle: string;
@@ -107,6 +109,7 @@ export class CreateProposalUseCase {
     private readonly promptOverride?: PromptOverride,
     errorSessionCache?: ErrorSessionCacheStore,
     sessionCacheV2?: SessionCacheV2Store,
+    private readonly promptObservationStore?: PromptObservationStore,
   ) {
     this.eligibilityUseCase = new CheckEligibilityUseCase(noteRepository, profile, settings);
     this.proposalValidator = new ProposalValidator(profile);
@@ -282,7 +285,7 @@ export class CreateProposalUseCase {
     }
 
     const promptBuilder = new PromptBuilder();
-    const { request, debugSnapshot: _debug } = promptBuilder.build({
+    const { request, debugSnapshot } = promptBuilder.build({
       provider: this.llmProvider.providerId,
       model: this.llmProvider.model,
       notePath: lookup.note.path,
@@ -292,13 +295,13 @@ export class CreateProposalUseCase {
       tagWhitelist: this.settings.tagWhitelist,
       tagPrompt: this.settings.tagPrompt,
     });
-    void _debug;
 
     // Error session ID groups all failed attempts from this run
     const errorSessionId = `error-session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     const ctx: AttemptContext = {
       request,
+      debugSnapshot,
       noteContent: lookup.note.content,
       notePath: lookup.note.path,
       noteTitle: lookup.note.title,
@@ -335,6 +338,11 @@ export class CreateProposalUseCase {
         undefined,
         {},
       );
+      this.observePrompt(ctx, {
+        validationSnapshot: {
+          errorSummary: failedAttempt.errorSummary,
+        },
+      });
       return { success: false, attempt: failedAttempt };
     }
 
@@ -348,6 +356,17 @@ export class CreateProposalUseCase {
         llmResponse.usage,
         { zodError: zodValidation.zodError },
       );
+      this.observePrompt(ctx, {
+        responseSnapshot: {
+          rawText: llmResponse.rawText,
+          parsedJson: llmResponse.parsedJson,
+        },
+        validationSnapshot: {
+          zodResult: "failed",
+          zodError: zodValidation.zodError,
+          errorSummary: failedAttempt.errorSummary,
+        },
+      });
       return { success: false, attempt: failedAttempt };
     }
 
@@ -363,6 +382,17 @@ export class CreateProposalUseCase {
         llmResponse.usage,
         { normalizationReport: normalized.validation },
       );
+      this.observePrompt(ctx, {
+        responseSnapshot: {
+          rawText: llmResponse.rawText,
+          parsedJson: llmResponse.parsedJson,
+        },
+        validationSnapshot: {
+          zodResult: "success",
+          normalizationReport: normalized.validation,
+          errorSummary: failedAttempt.errorSummary,
+        },
+      });
       return { success: false, attempt: failedAttempt };
     }
 
@@ -414,7 +444,42 @@ export class CreateProposalUseCase {
       },
     };
 
+    this.observePrompt(ctx, {
+      responseSnapshot: {
+        rawText: llmResponse.rawText,
+        parsedJson: llmResponse.parsedJson,
+      },
+      validationSnapshot: {
+        zodResult: "success",
+        normalizationReport: normalized.validation,
+      },
+    });
+
     return { success: true, session };
+  }
+
+  private observePrompt(
+    ctx: AttemptContext,
+    snapshot: {
+      responseSnapshot?: { rawText?: string; parsedJson?: unknown };
+      validationSnapshot?: {
+        zodResult?: "success" | "failed";
+        zodError?: unknown;
+        normalizationReport?: unknown;
+        errorSummary?: string;
+      };
+    },
+  ): void {
+    if (!this.settings.promptObservationEnabled) return;
+
+    this.promptObservationStore?.save({
+      updatedAt: new Date().toISOString(),
+      provider: this.llmProvider.providerId,
+      model: this.llmProvider.model,
+      requestSnapshot: ctx.debugSnapshot,
+      responseSnapshot: snapshot.responseSnapshot,
+      validationSnapshot: snapshot.validationSnapshot,
+    });
   }
 
   private buildFailedAttempt(

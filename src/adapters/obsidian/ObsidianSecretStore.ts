@@ -15,6 +15,12 @@ export interface SecretStorageDiagnostics {
   setSecretType: string;
   ownKeys: string[];
   reason: string;
+  configuredKeyIdPresent: boolean;
+  canReadConfiguredKey: boolean;
+  readValueEqualsKeyId: boolean;
+  readValueLength: number | null;
+  readValuePrefix: string;
+  readValueSuffix: string;
 }
 
 const SECRET_ID_PATTERN = /^[a-z0-9-]+$/;
@@ -26,7 +32,7 @@ export class ObsidianSecretStore implements SecretStore {
     return this.getDiagnostics().available;
   }
 
-  getDiagnostics(): SecretStorageDiagnostics {
+  getDiagnostics(configuredKeyId?: string): SecretStorageDiagnostics {
     const maybeSecretStorage = (this.app as unknown as {
       secretStorage?: {
         getSecret?: (id: string) => string | null;
@@ -37,6 +43,34 @@ export class ObsidianSecretStore implements SecretStore {
     const getSecretType = typeof maybeSecretStorage?.getSecret;
     const setSecretType = typeof maybeSecretStorage?.setSecret;
     const available = getSecretType === "function" && setSecretType === "function";
+
+    const keyId = configuredKeyId?.trim() ?? "";
+    const configuredKeyIdPresent = keyId.length > 0;
+    let canReadConfiguredKey = false;
+    let readValueEqualsKeyId = false;
+    let readValueLength: number | null = null;
+    let readValuePrefix = "(unavailable)";
+    let readValueSuffix = "(unavailable)";
+
+    if (available && configuredKeyIdPresent) {
+      try {
+        this.ensureValidSecretRef(keyId);
+        const value = maybeSecretStorage!.getSecret!(keyId);
+        if (value !== null && value !== undefined) {
+          canReadConfiguredKey = true;
+          readValueEqualsKeyId = value.trim() === keyId;
+          readValueLength = value.length;
+          readValuePrefix = redactFragment(value.slice(0, 4));
+          readValueSuffix = redactFragment(value.slice(-4));
+        } else {
+          readValuePrefix = "(empty)";
+          readValueSuffix = "(empty)";
+        }
+      } catch {
+        readValuePrefix = "(read failed)";
+        readValueSuffix = "(read failed)";
+      }
+    }
 
     return {
       available,
@@ -51,6 +85,12 @@ export class ObsidianSecretStore implements SecretStore {
       reason: available
         ? "secretStorage.getSecret/setSecret are both available."
         : "secretStorage is missing, or getSecret/setSecret is not exposed as functions.",
+      configuredKeyIdPresent,
+      canReadConfiguredKey,
+      readValueEqualsKeyId,
+      readValueLength,
+      readValuePrefix,
+      readValueSuffix,
     };
   }
 
@@ -78,7 +118,12 @@ export class ObsidianSecretStore implements SecretStore {
 
   private ensureValidSecretRef(secretRef: string): void {
     if (!SECRET_ID_PATTERN.test(secretRef)) {
-      throw new Error("Secret reference must use lowercase letters, numbers, and dashes only.");
+      throw new Error("Key ID must use lowercase letters, numbers, and dashes only.");
     }
   }
+}
+
+function redactFragment(fragment: string): string {
+  if (!fragment) return "(empty)";
+  return `${fragment[0] ?? ""}${"*".repeat(Math.max(fragment.length - 1, 0))}`;
 }
