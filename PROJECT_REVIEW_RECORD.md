@@ -39,19 +39,19 @@ Further sections below will be completed after deeper review.
 |---|---|---|
 | Technical plan / architecture | `docs/obsidian-refined-layer-architecture-v0.2.0-agent.md`; `docs/achieve/Obsidian Refined Layer 插件架构书 v0.1.0 Codex执行版.md` | v0.2.0 active architecture plus v0.1.0 archived baseline. |
 | Daily plan | `docs/obsidian-refined-layer-v0.2.0-daily-plan.md`; `docs/achieve/Obsidian Refined Layer 插件开发日计划 v0.1.0.md`; `docs/achieve/fix-feature-tasks.md` | v0.2.0 plan covers D36-D69; archived v0.1.0 plan covers D1-D27 plus post-delivery fixes. |
-| dev-log | `docs/dev-log.md`; `docs/achieve/dev-log-achieve.md` | Active v0.2.0 log currently D36-D52 plus Phase 12 verification notes; archived log covers D1-D35. |
+| dev-log | `docs/dev-log.md`; `docs/achieve/dev-log-achieve.md` | Active v0.2.0 log currently D36-D58 plus Phase 12/13 verification notes; archived log covers D1-D35. |
 | Agent troubleshooting log | `agent-troubleshooting-log.md` | Records D40.1, D42, D47 agent/implementation issues with root causes and fixes. |
-| Test config | `vitest.config.ts`; `tests/**` | 30 test files discovered after Phase 12 follow-up coverage. |
+| Test config | `vitest.config.ts`; `tests/**` | 31 test files after Phase 13 coverage. |
 | Build config | `package.json`; `esbuild.config.mjs`; `tsconfig.json` | Node/TypeScript Obsidian plugin build. |
 | Lint / typecheck config | `tsconfig.json`; package script `typecheck` | No lint script declared. |
-| Acceptance evidence | `docs/TEST-MATRIX.md`; `docs/achieve/v0.1.0-delivery-checklist.md`; logs' phase acceptance sections | Current manual matrix is still v0.1.0; v0.2.0 delivery evidence not complete because current progress is D52 of planned D69. |
+| Acceptance evidence | `docs/TEST-MATRIX.md`; `docs/achieve/v0.1.0-delivery-checklist.md`; logs' phase acceptance sections | Current manual matrix is still v0.1.0; v0.2.0 delivery evidence not complete because current progress is D58 of planned D69. |
 
 #### 2.2 Missing or Ambiguous Files
 
 | Expected Item | Status | Impact |
 |---|---|---|
 | v0.2.0 final manual test matrix | Not present yet | Expected later in D65-D69; prevents final v0.2.0 acceptance today. |
-| v0.2.0 README/user docs | Not updated yet; README remains v0.1.0 scoped | Expected later in D68; not a defect for current D52 progress, but final delivery remains incomplete. |
+| v0.2.0 README/user docs | Not updated yet; README remains v0.1.0 scoped | Expected later in D68; not a defect for current D58 progress, but final delivery remains incomplete. |
 | Lint command | No declared `lint` script | Non-blocking; typecheck/test/build are declared and passing. |
 
 #### 2.3 Discovery Method
@@ -79,8 +79,8 @@ Further sections below will be completed after deeper review.
 #### Technical Plan Summary
 
 - Strengths: Strong boundary definitions, explicit non-goals, clear cache/write/security invariants, day-by-day migration plan.
-- Risks: Final UI/settings/apply phases remain unfinished; v0.2.0 still cannot claim final acceptance until planned D53-D69 scope is closed.
-- Delivery impact: Current D52 progress is technically credible, and the prior cache redaction blocker has been remediated; final v0.2.0 acceptance still depends on completing the remaining plan.
+- Risks: Settings/observability and final E2E/docs phases remain unfinished; v0.2.0 still cannot claim final acceptance until planned D59-D69 scope is closed.
+- Delivery impact: Current D58 progress is technically credible, and the prior cache redaction blocker has been remediated; final v0.2.0 acceptance still depends on completing the remaining plan.
 
 ---
 
@@ -100,15 +100,16 @@ Further sections below will be completed after deeper review.
 | D43-D47 + Phase 11 | PromptBuilder, Zod, tag normalization, ProposalNormalizer, executeV2 | Completed and phase accepted | Current tests: PromptBuilder, ProposalSchema, TagNormalizer, ProposalNormalizer, CreateProposalUseCase | Real provider v2 support still not implemented | ISSUE-002 |
 | D48-D50 | Retry runner, error-session-cache, session-cache v2, CreateProposalUseCase retry/cache | Completed in logs and tests | Current tests: `CreateProposalUseCase.retry.test.ts`; v2 cache redaction regression tests; typecheck/test/build pass | Prior cache redaction gap fixed in follow-up | ISSUE-001 |
 | D51-D52 + Phase 12 | Request-count/error-cache notices, session-cache v2 persistence and compatibility migration | Completed and phase accepted | Current tests: `V2NoticeMessages.test.ts`, `ObsidianSessionCacheV2Store.test.ts`, `CreateProposalUseCase.retry.test.ts`; Phase 12 full typecheck/test/build pass | No material Phase 12 gap found after follow-up fix |  |
-| D53-D69 | Review UI v2, cached-session recovery, Settings UI, final E2E/docs/delivery | Planned, not yet executed | Daily plan only | Not a contradiction; final v0.2.0 is not ready yet | ISSUE-004 |
+| D53-D58 + Phase 13 | ReviewViewModel v2, ReviewModal v2, UserDecisionV2/ApplyPlan v2, ApplyDecision v2, cached-session UI, SaveDraft v2 | Completed and phase accepted | Current tests: ReviewViewModel, BuildApplyPlanUseCase, ApplyDecisionUseCase, OpenCachedSessionUseCase, SaveDraftUseCase; Phase 13 full typecheck/test/build pass | No material Phase 13 gap found |  |
+| D59-D69 | Settings UI, observability, final E2E/docs/delivery | Planned, not yet executed | Daily plan only | Not a contradiction; final v0.2.0 is not ready yet | ISSUE-004 |
 
 #### Daily Process Summary
 
-- Clear progress evidence: D1-D52 have structured logs and passing automated checks.
+- Clear progress evidence: D1-D58 have structured logs and passing automated checks.
 - Missing or ambiguous days: User said D0, but project plans use baseline section `0` plus D1+; no separate D0 implementation log was found.
 - Claimed completion without evidence: No broad unsupported completion claim found for D1-D52; the earlier D50 cache privacy gap has been fixed and verified.
 - Scope changes: v0.1 post-delivery D28-D35 and v0.2 migration are documented.
-- Delivery impact: Process evidence is good; final v0.2.0 remains incomplete by design at D52.
+- Delivery impact: Process evidence is good; final v0.2.0 remains incomplete by design at D58.
 
 ---
 
@@ -124,7 +125,7 @@ Further sections below will be completed after deeper review.
 | Finding | Evidence | Issue Reference |
 |---|---|---|
 | D50 originally preserved raw snapshot string values before cache writes; this follow-up now recursively redacts persisted string values and keeps key-name scanning as defense in depth. | `src/runtime/redaction.ts`; `src/adapters/obsidian/ObsidianErrorSessionCacheStore.ts`; `src/adapters/obsidian/ObsidianSessionCacheV2Store.ts`; targeted v2 cache tests pass. | ISSUE-001 |
-| Active log now states Phase 12 is complete through D52 and next is D53. | `docs/dev-log.md` latest entries D50-D52 plus Phase 12 verification notes; daily plan continues through D69. | ISSUE-004 |
+| Active log now states Phase 13 is complete through D58 and next is D59. | `docs/dev-log.md` latest entries include D56-D58 plus Phase 13 verification notes; daily plan continues through D69. | ISSUE-004 |
 
 ---
 
@@ -159,11 +160,11 @@ Further sections below will be completed after deeper review.
 
 #### 7.2 Code Review Summary
 
-- Core functionality readiness: v0.1.0 remains usable; v0.2.0 core/application pipeline is credible through D52 but not final user-facing delivery.
+- Core functionality readiness: v0.1.0 remains usable; v0.2.0 core/application/UI path is credible through D58 but not final delivery.
 - Architecture alignment: Good overall. The v1/v2 split is intentional and documented.
 - Error handling and edge cases: Retry/exhaustion paths are tested; cache corrupt JSON handling exists.
 - Security-sensitive findings: The prior v2 cache snapshot string-value redaction gap is fixed by recursive string redaction before persistence plus regression tests.
-- Maintainability findings: The v0.2 path is not yet wired through `main.ts`; future D53-D58 must bridge this carefully.
+- Maintainability findings: Phase 13 wired v2 cached review/apply/draft pieces, but the primary refine command still runs the v0.1 path; later E2E migration must bridge this carefully.
 - Debug / temporary code findings: No harmful temporary code found. Logs contain expected compatibility notes.
 
 ---
@@ -177,7 +178,7 @@ Further sections below will be completed after deeper review.
 | `Get-Content .agnets\skills\project-review-lifecycle\SKILL.md` | `D:\VibeCoding\Obsidian-Refined-Layer` | Load user-specified skill | Pass | Skill requires writing `PROJECT_REVIEW_RECORD.md` and final short summary. |  |
 | `Get-Content package.json` | `D:\VibeCoding\Obsidian-Refined-Layer` | Detect declared commands | Pass | Scripts: `build`, `dev`, `test`, `test:watch`, `typecheck`. |  |
 | `npm run typecheck` | `D:\VibeCoding\Obsidian-Refined-Layer` | TypeScript typecheck | Pass | `tsc --noEmit` completed successfully. |  |
-| `npm test` | `D:\VibeCoding\Obsidian-Refined-Layer` | Automated tests | Pass | Latest Phase 12 verification: Vitest 30 files, 298 tests passed. Expected stderr from persistence-failure test shown. |  |
+| `npm test` | `D:\VibeCoding\Obsidian-Refined-Layer` | Automated tests | Pass | Latest Phase 13 verification: Vitest 31 files, 312 tests passed. Expected stderr from persistence-failure test shown. |  |
 | `npm run build` | `D:\VibeCoding\Obsidian-Refined-Layer` | Production build | Pass | `node esbuild.config.mjs production` completed successfully. |  |
 | `git status --short` | `D:\VibeCoding\Obsidian-Refined-Layer` | Check worktree state | Pass | Only `?? PROJECT_REVIEW_RECORD.md` after review initialization. |  |
 | Targeted `rg` / `Get-Content` reads | `D:\VibeCoding\Obsidian-Refined-Layer` | Docs/source evidence collection | Pass | Reviewed plans/logs/troubleshooting and key Phase 12 implementation files. |  |
@@ -238,7 +239,7 @@ Further sections below will be completed after deeper review.
 - Location: `src/main.ts:62`; `src/main.ts:70`
 - Found In: Code / Daily Plan
 - Description: The Obsidian command constructs `CreateProposalUseCase` without v2 caches and calls `execute()`, not `executeV2()`. Therefore the current plugin command remains the v0.1 fixed-section flow even though v0.2 core/application pieces through D50 exist.
-- Impact: This is not a contradiction for the current plan because Review UI/apply/session recovery migration is scheduled for D53-D58 and final E2E for D65-D69. It does mean current D52 cannot be accepted as a user-facing v0.2 workflow.
+- Impact: This is not a contradiction for the current plan because final E2E command migration is scheduled for D65-D69. It does mean current D58 still cannot be accepted as a fully user-facing v0.2 workflow.
 - Evidence: `main.ts:70` calls `createProposalUseCase.execute()`. No `ObsidianSessionCacheV2Store` or `ObsidianErrorSessionCacheStore` is wired in `main.ts` yet.
 - Recommendation: In the planned UI/application migration, wire v2 stores and `executeV2()` behind the command only when Review UI v2, notices, draft behavior, and apply safety are ready. Add integration tests around composition root behavior where feasible.
 - Blocks Acceptance: No for D50 progress; Yes for final v0.2.0 delivery if still open.
@@ -250,10 +251,10 @@ Further sections below will be completed after deeper review.
 - Type: Missing Evidence
 - Location: `docs/dev-log.md`; `docs/obsidian-refined-layer-v0.2.0-daily-plan.md`; `docs/TEST-MATRIX.md`; `README.md`
 - Found In: Daily Plan / Dev Log / Acceptance
-- Description: Active development is now at D52 with Phase 12 accepted, while the v0.2.0 plan continues through D69 and Phase 15. Current manual test matrix and README remain v0.1.0 scoped.
+- Description: Active development is now at D58 with Phase 13 accepted, while the v0.2.0 plan continues through D69 and Phase 15. Current manual test matrix and README remain v0.1.0 scoped.
 - Impact: This is expected for a mid-project review, but it prevents a final v0.2.0 PASS today.
-- Evidence: Active dev-log latest entry is D52 with `Next: D53`. Daily plan lists D53-D69, including Review UI, Settings UI, E2E migration, test matrix, README, and delivery check. `docs/TEST-MATRIX.md` title is v0.1.0 and README has `## v0.1.0 范围`.
-- Recommendation: Treat this review as a D52 progress review. Before final acceptance, complete D53-D69, update README/test matrix, and collect manual Obsidian evidence for v2 mock and real-provider paths.
+- Evidence: Active dev-log latest entry is D58 with `Next: D59`. Daily plan lists D59-D69, including Settings UI, observability, E2E migration, test matrix, README, and delivery check. `docs/TEST-MATRIX.md` title is v0.1.0 and README has `## v0.1.0 范围`.
+- Recommendation: Treat this review as a D58 progress review. Before final acceptance, complete D59-D69, update README/test matrix, and collect manual Obsidian evidence for v2 mock and real-provider paths.
 - Blocks Acceptance: No for D50 progress; Yes for final v0.2.0 delivery if still open.
 - Status: Open
 
@@ -270,11 +271,11 @@ Further sections below will be completed after deeper review.
 
 #### Decision Rationale
 
-For the current D52 progress, the project is well structured and the automated evidence is strong: typecheck, all 298 tests, and build pass. The previously open security blocker in the new v2 cache persistence path has been fixed in follow-up work. Under the skill's delivery/acceptance rubric, the review still cannot pass final v0.2.0 acceptance because the active v0.2.0 plan is not complete beyond D52.
+For the current D58 progress, the project is well structured and the automated evidence is strong: typecheck, all 312 tests, and build pass. The previously open security blocker in the new v2 cache persistence path has been fixed in follow-up work. Under the skill's delivery/acceptance rubric, the review still cannot pass final v0.2.0 acceptance because the active v0.2.0 plan is not complete beyond D58.
 
 #### Required Follow-up Before Acceptance
 
-1. Complete planned D53-D69 or explicitly redefine the acceptance target as "D52 progress only".
+1. Complete planned D59-D69 or explicitly redefine the acceptance target as "D58 progress only".
 2. Implement/wire the v2 user-facing flow and real-provider path before claiming v0.2.0 final delivery.
 
 #### Recommended Follow-up After Acceptance
@@ -304,9 +305,9 @@ For the current D52 progress, the project is well structured and the automated e
 证据不足项：1 个
 
 关键发现：
-1. D1-D52 的计划、日志、排障和自动化证据整体一致，最新 `typecheck`、298 条测试和 build 均通过。
+1. D1-D58 的计划、日志、排障和自动化证据整体一致，最新 `typecheck`、312 条测试和 build 均通过。
 2. 原 D50 v2 cache/error-cache 字符串值 redaction 风险已修复，并补充了回归测试。
-3. v0.2.0 当前已完成 Phase 12 / D52，D53-D69 的 UI、Settings、E2E、README、测试矩阵和最终交付检查尚未完成。
+3. v0.2.0 当前已完成 Phase 13 / D58，D59-D69 的 Settings、E2E、README、测试矩阵和最终交付检查尚未完成。
 
 审查记录已写入：
 PROJECT_REVIEW_RECORD.md

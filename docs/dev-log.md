@@ -558,3 +558,153 @@ npm run build
 结果：typecheck 通过；全量 Vitest 30 files / 298 tests 通过；production build 通过。`ProposalSessionStore` persistence failure 测试仍会输出预期 stderr：`disk full`，不代表失败。
 
 Next: D53 — ReviewViewModel v2 映射（Phase 13，需用户显式要求后再继续）
+
+---
+
+## D53 开发日志
+
+### Current status
+
+ReviewViewModel v2 映射已实现。旧 `createReviewViewModel()` v0.1 路径保持不变；新增 `ReviewViewModelV2` 与 `createReviewViewModelV2()`，让 UI 数据只来自 ViewModel。v2 ViewModel 支持按配置 order 排序的 A 类分块列表，每个 block 含 id、heading、headingLevel、content、warnings、accepted=false；selectedTags 映射为默认未勾选项；newTagSuggestions 作为只读数组保留且不进入 initialDecision 可应用 tags；tagNormalizationApplied、validation warnings、rejectedFields、attemptsUsed 与 token usage 均可展示。尚未执行 D54 ReviewModal v2 交互。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: ReviewViewModel v2 映射（Phase 13 首任务）
+- Reason: v0.2.0 Review UI 必须消费 `ReviewViewModel`，UI 不做 validation、tag normalization、block legality 判断、ApplyPlan 生成或写文件；D53 先把 `ProposalSessionV2` 转成完整 UI 数据
+- Change:
+  - `src/ui/review/ReviewViewModel.ts`：新增 `ReviewABlockViewModel`、`ReviewSelectedTagViewModel`、`ReviewViewModelV2`、`createReviewViewModelV2(session)`；保留 v0.1 `ReviewViewModel` 和 `createReviewViewModel()`
+  - v2 block 映射：从 `session.proposal.blocks` 读取内容，从 `blockConfigSnapshot.aBlocks` 读取 heading/headingLevel/order，按 order 排序；每个 block 默认 `accepted=false`
+  - v2 tag 映射：`selectedTags` 变为默认未勾选项；`newTagSuggestions` 只作为只读数据，不写入 `initialDecision.acceptTags.add`
+  - v2 validation 映射：暴露 `tagNormalizationApplied`、`validationWarnings`、`rejectedFields`、`attemptsUsed`、`tokenUsage`；frontmatter suggestion 仍只映射 status/source/context
+  - `tests/ui/review/ReviewViewModel.test.ts`：新增 3 个 v2 tests，覆盖 A block 映射与默认未勾选、selectedTags/newTagSuggestions 边界、normalization/validation/attempts/token usage 展示
+- Verification: `npm run typecheck` 通过；`npm test -- tests/ui/review/ReviewViewModel.test.ts` 通过（1 file / 4 tests）
+- Next: D54 — ReviewModal v2 交互
+
+---
+
+## D54 开发日志
+
+### Current status
+
+ReviewModal v2 交互已实现为新增 `ReviewModalV2`，旧 v0.1 `ReviewModal` 保持不变。`ReviewModalV2` 消费 `ReviewViewModelV2`，返回 `UserDecisionV2`。A 类分块逐块展示并可勾选是否应用；正文 block 当前只展示不编辑，避免在 D54 额外引入编辑内容回写语义。selectedTags 可勾选加入 `decision.acceptTags.add`；newTagSuggestions 用只读 textarea 展示，可选中复制，不进入可应用 tags；tagNormalizationApplied、validation warnings、rejectedFields、attemptsUsed 和 token usage 可展示。UI 不做 tag normalization、不生成 ApplyPlan、不写文件。尚未执行 D55 UserDecisionV2 与 BuildApplyPlanUseCase v2。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: ReviewModal v2 交互（Phase 13 第二任务）
+- Reason: v0.2.0 需要 Review UI 能展示 configurable A block proposal，且所有写入项默认未选中；selectedTags 与 newTagSuggestions 必须在 UI 行为上分离
+- Change:
+  - `src/ui/review/ReviewModal.ts`：新增 `ReviewModalV2` 和 `ReviewModalV2Callbacks`；v2 modal 渲染 A block 列表、frontmatter suggestions、selectedTags、newTagSuggestions、token usage、validation 信息和 action row
+  - A block 行为：每个 block 有独立 checkbox，默认 false，切换后只更新 `decision.acceptBlocks[block.id]`
+  - Tag 行为：selectedTags checkbox 默认 false，勾选后写入 `decision.acceptTags.add`；newTagSuggestions 只读可复制，不会进入 decision
+  - `src/ui/i18n/zh-CN.ts`、`src/ui/i18n/en.ts`：新增 v2 review section、block toggle、normalization、new tag suggestion、attemptsUsed 文案
+  - `styles.css`：新增 v2 block、只读 textarea、warning list 样式
+- Verification: `npm run typecheck` 通过；`npm test -- tests/ui/review/ReviewViewModel.test.ts tests/ui/i18n/i18n.test.ts` 通过（2 files / 6 tests）
+- Next: D55 — UserDecisionV2 与 BuildApplyPlanUseCase v2
+
+---
+
+## D55 开发日志
+
+### Current status
+
+UserDecisionV2 与 BuildApplyPlanUseCase v2 已实现。`ApplyPlan` 新增 v0.2 operations：`replace-refined-blocks` 与 `append-tags`；旧 `replace-refined-body` / `update-tags` 保留给 v0.1。`ApplyPlanner.buildPlanV2()` 只把用户勾选的 A blocks 生成 `replace-refined-blocks`，只把用户勾选且属于 selectedTags + tag whitelist 的 tags 生成 `append-tags`，不再生成 remove-tags。`BuildApplyPlanUseCase.executeV2()` 从 `SessionCacheV2Store` 读取 `ProposalSessionV2`，重新读取当前 note 并提取当前 B block，若 accepted A block 包含完整当前 B block 文本则拒绝生成 plan。尚未执行 D56 ApplyDecisionUseCase v2 写入。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: UserDecisionV2 与 BuildApplyPlanUseCase v2（Phase 13 第三任务）
+- Reason: v0.2.0 需要从 Review UI 返回的 `UserDecisionV2` 生成 ApplyPlan，但所有写入仍必须通过 ApplyPlan，且 newTagSuggestions / remove-tags 不得进入写入计划
+- Change:
+  - `src/core/apply/ApplyPlan.ts`：新增 `ReplaceRefinedBlocksOperation`（`type: "replace-refined-blocks"`，携带 accepted A blocks）与 `AppendTagsOperation`（`type: "append-tags"`，仅追加 tags）
+  - `src/core/apply/ApplyPlanner.ts`：新增 `buildPlanV2(session, decision)`；仅接受 `decision.acceptBlocks[id] === true` 的 proposal blocks；frontmatter 仍只支持 status/source/context；tags 仅从 `selectedTags` 且在 `tagWhitelist` 内筛选；不生成 remove-tags
+  - `src/application/BuildApplyPlanUseCase.ts`：新增可选 `SessionCacheV2Store` 注入和 `executeV2(sessionId, decision)`；读取当前 note 并用 `BlockExtractor` 提取 B block；accepted block 含完整当前 B block 文本时返回 `accepted-block-contains-b-block`
+  - `tests/application/BuildApplyPlanUseCase.test.ts`：新增 4 个 v2 tests，覆盖 accepted block/tag/frontmatter 生成、未勾选项不进入 plan、newTagSuggestions 不应用且不生成 remove-tags、accepted A block 包含 B block 文本时拒绝
+- Verification: `npm run typecheck` 通过；`npm test -- tests/application/BuildApplyPlanUseCase.test.ts` 通过（1 file / 6 tests）
+- Next: D56 — ApplyDecisionUseCase v2：replace-refined-blocks 与 append-tags
+
+---
+
+## D56 开发日志
+
+### Current status
+
+ApplyDecisionUseCase v2 已实现。旧 v0.1 `execute()` 保持不变；新增 `executeV2(plan)` 从 `SessionCacheV2Store` 读取 `ProposalSessionV2`，Apply 前重读当前 note，先检查 base file hash，再用 `BlockExtractor` 提取当前 B block 并比较 `baseBBlockHash`。`replace-refined-blocks` 通过 `MarkdownAssembler` 组装 accepted A blocks + 当前 B block，并在 protectH1=true 时保留当前 H1；`append-tags` 只追加仍属于 selectedTags + tag whitelist 的 tags，保留已有 YAML tags、去重、不覆盖、不删除。写入前再次提取 post-apply B block 并逐字比较，防止 B block 被破坏。尚未执行 D57 cached session 命令与只读式 Review UI。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: ApplyDecisionUseCase v2：replace-refined-blocks 与 append-tags（Phase 13 第四任务）
+- Reason: v0.2.0 的所有写入必须通过 ApplyPlan；Apply 阶段必须重读当前文件、做 freshness/B block 检查，并确保 newTagSuggestions 不写入
+- Change:
+  - `src/core/apply/FrontmatterTagApplier.ts`：新增 `appendTags(markdown, tags)`，仅追加 YAML tags、保留已有 tags、去重、不删除
+  - `src/application/ApplyDecisionUseCase.ts`：新增可选 `SessionCacheV2Store` 注入和 `executeV2(plan)`；支持 `replace-refined-blocks`、`update-frontmatter`、`append-tags`；拒绝 v0.1-only operations（`replace-refined-body` / `update-tags`）进入 v2 apply path
+  - v2 apply freshness：当前文件 hash 与 `baseFileHash` 不一致返回 `file-changed` conflict；当前 B block hash 与 `baseBBlockHash` 不一致返回 `protected-region-changed` conflict
+  - v2 apply assembly：`replace-refined-blocks` 根据 session block config 将 operation blocks 转为 `AcceptedABlock[]`，使用 `MarkdownAssembler` 保留当前 B block；frontmatter 保留并可继续更新
+  - `tests/application/ApplyDecisionUseCase.test.ts`：新增 3 个 v2 tests，覆盖 replace-refined-blocks + append-tags + B block 保留、file-changed conflict、B block hash conflict
+- Verification: `npm run typecheck` 通过；`npm test -- tests/application/ApplyDecisionUseCase.test.ts` 通过（1 file / 12 tests）
+- Next: D57 — Open cached session 命令与只读式 Review UI
+
+---
+
+## D57 开发日志
+
+### Current status
+
+Open cached proposal session / 查看缓存记录流程已接入。新增 `OpenCachedSessionUseCase` 从 v2 session-cache 列出和打开 cached `ProposalSessionV2`；新增 `CachedSessionPickerModal` 展示缓存记录（title/path/status/provider/model/token/attemptsUsed）并进入 v2 Review UI。`ReviewModalV2` 支持 `applyDisabled`，cached session 模式下 Apply selected changes 灰色不可用；Save as Draft 按钮保持可用入口，但实际 v2 草稿导出仍按日计划留给 D58 接入。cached session 不做 freshness apply 恢复，不写原 note。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: Open cached session 命令与只读式 Review UI（Phase 13 第五任务）
+- Reason: v0.2.0 要求 session-cache 可查看最近缓存记录，cached session 只能查看和保存草稿，不能直接 apply
+- Change:
+  - 新增 `src/application/OpenCachedSessionUseCase.ts`：`list()` 从 `SessionCacheV2Store.loadAll()` 读取并按 `updatedAt` 倒序返回 summary；`open(sessionId)` 返回指定 `ProposalSessionV2`
+  - 新增 `src/ui/review/CachedSessionPickerModal.ts`：显示缓存记录列表并打开选中 session；无记录时显示空状态
+  - `src/ui/review/ReviewModal.ts`：`ReviewModalV2` 新增 `ReviewModalV2Options.applyDisabled`；cached 模式下 Apply button disabled，点击也不会回调 apply
+  - `src/main.ts`：新增命令 `open-cached-proposal-session` / `Open cached proposal session`；创建 `ObsidianSessionCacheV2Store`；命令流程为 picker → `ReviewModalV2(createReviewViewModelV2(session), { applyDisabled: true })`
+  - `src/ui/i18n/zh-CN.ts`、`src/ui/i18n/en.ts`：新增 cached session picker 和 cached apply disabled / draft pending 文案
+  - 新增 `tests/application/OpenCachedSessionUseCase.test.ts`：覆盖 cached sessions 倒序列表和按 id 打开
+- Verification: `npm run typecheck` 通过；`npm test -- tests/application/OpenCachedSessionUseCase.test.ts tests/ui/review/ReviewViewModel.test.ts tests/ui/i18n/i18n.test.ts` 通过（3 files / 8 tests）
+- Next: D58 — SaveDraftUseCase v2
+
+---
+
+## D58 开发日志
+
+### Current status
+
+SaveDraftUseCase v2 已实现，cached session 模式下 Save as Draft 已从 D57 的入口接到真实草稿导出。`SaveDraftUseCase.executeV2(sessionId, decision?)` 从 `SessionCacheV2Store` 读取 `ProposalSessionV2`，写独立 draft 文件，不读取/写入原 note。草稿包含 A 类分块 proposal、selectedTags、newTagSuggestions、validation result、tagNormalizationApplied、attemptsUsed、token usage，并可标记用户在 Review 中接受的 block/tag。草稿写入前调用 `redactSensitiveText()`，避免 API key / Authorization / provider secret 形态文本进入 draft。v2 session 保存草稿后状态更新为 `saved_as_draft`。Phase 13 尚待整体验收。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: SaveDraftUseCase v2（Phase 13 第六任务）
+- Reason: v0.2.0 要求正常 proposal 和 cached session 都可 Save as Draft；draft 是独立用户可见草稿，不修改原 note，不包含 secrets
+- Change:
+  - `src/application/SaveDraftUseCase.ts`：新增可选 `SessionCacheV2Store` 注入和 `executeV2(sessionId, decision?)`；新增 v2 draft content builder，包含 proposed A blocks、selectedTags、newTagSuggestions、validation warnings/rejectedFields、tagNormalizationApplied、attemptsUsed、token usage；写入前 redaction
+  - `src/main.ts`：cached `ReviewModalV2` 的 Save as Draft 回调改为调用 `saveCachedDraft(session.id, decision)`，通过 `SaveDraftUseCase.executeV2()` 真实写 draft
+  - `tests/application/SaveDraftUseCase.test.ts`：新增 2 个 v2 tests，覆盖 v2 draft 内容/secret redaction/status update，以及 cached session 可保存 draft 且不读写 source note
+- Verification: `npm run typecheck` 通过；`npm test -- tests/application/SaveDraftUseCase.test.ts` 通过（1 file / 3 tests）
+- Next: Phase 13 验收任务；通过后进入 Phase 14 / D59（需用户显式要求）
+
+### Phase 13 Verification notes
+
+Phase 13（Review UI 与 Cached Session 恢复）验收通过：
+
+```text
+[x] ProposalSessionV2 可进入 Review UI。
+[x] A 类分块可按块勾选。
+[x] selectedTags 可勾选应用。
+[x] newTagSuggestions 可复制不可编辑不可应用。
+[x] BuildApplyPlanUseCase 使用 UserDecisionV2。
+[x] ApplyDecisionUseCase 支持 replace-refined-blocks / append-tags。
+[x] cached session UI 中 Apply 灰色，Save as Draft 可用。
+```
+
+Verification:
+
+```text
+npm run typecheck
+npm test
+npm run build
+```
+
+结果：typecheck 通过；全量 Vitest 31 files / 312 tests 通过；production build 通过。`ProposalSessionStore` persistence failure 测试仍会输出预期 stderr：`disk full`，不代表失败。
+
+Next: D59 — Settings UI 文案迁移与缓存记录设置（Phase 14，需用户显式要求后再继续）

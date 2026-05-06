@@ -5,6 +5,7 @@ import { OpenAICompatibleProvider } from "./adapters/llm/OpenAICompatibleProvide
 import type { LlmProvider } from "./adapters/llm/LlmProvider";
 import { ObsidianNoteRepository } from "./adapters/obsidian/ObsidianNoteRepository";
 import { ObsidianSecretStore, type SecretStorageDiagnostics } from "./adapters/obsidian/ObsidianSecretStore";
+import { ObsidianSessionCacheV2Store } from "./adapters/obsidian/ObsidianSessionCacheV2Store";
 import { ObsidianSessionStore } from "./adapters/obsidian/ObsidianSessionStore";
 import { ObsidianSettingsStore } from "./adapters/obsidian/ObsidianSettingsStore";
 import { ApplyDecisionUseCase } from "./application/ApplyDecisionUseCase";
@@ -12,34 +13,42 @@ import { BuildApplyPlanUseCase } from "./application/BuildApplyPlanUseCase";
 import type { CheckEligibilityResult } from "./application/CheckEligibilityUseCase";
 import { CreateProposalUseCase } from "./application/CreateProposalUseCase";
 import { ListRecoverableSessionsUseCase } from "./application/ListRecoverableSessionsUseCase";
+import { OpenCachedSessionUseCase } from "./application/OpenCachedSessionUseCase";
 import { RecoverProposalSessionUseCase } from "./application/RecoverProposalSessionUseCase";
 import { RequestReviewUseCase } from "./application/RequestReviewUseCase";
 import { SaveDraftUseCase } from "./application/SaveDraftUseCase";
 import { rawRefinedProfile } from "./core/profile/rawRefinedProfile";
-import type { UserDecision } from "./core/review/UserDecision";
+import type { UserDecision, UserDecisionV2 } from "./core/review/UserDecision";
 import { ProposalSessionStore } from "./runtime/ProposalSessionStore";
+import type { SessionCacheV2Store } from "./runtime/SessionCacheV2Store";
 import { toSafeErrorMessage } from "./runtime/redaction";
 import { getDefaultProviderSettings, getProviderPreset, type ProviderType } from "./settings/ProviderConfig";
 import type { PluginSettings } from "./settings/PluginSettings";
 import { DEFAULT_PLUGIN_SETTINGS } from "./settings/PluginSettings";
 import { t } from "./ui/i18n";
 import { ObsidianReviewGate } from "./ui/review/ObsidianReviewGate";
+import { CachedSessionPickerModal } from "./ui/review/CachedSessionPickerModal";
+import { ReviewModalV2 } from "./ui/review/ReviewModal";
+import { createReviewViewModelV2 } from "./ui/review/ReviewViewModel";
 import { SessionPickerModal } from "./ui/review/SessionPickerModal";
 import { SettingsTab } from "./ui/settings/SettingsTab";
 
 const REFINE_COMMAND_ID = "refine-current-note";
 const REOPEN_LAST_PROPOSAL_COMMAND_ID = "reopen-last-proposal-for-current-note";
+const OPEN_CACHED_PROPOSAL_SESSION_COMMAND_ID = "open-cached-proposal-session";
 
 export default class ObsidianRefinedLayerPlugin extends Plugin {
   private settings: PluginSettings = DEFAULT_PLUGIN_SETTINGS;
   private settingsStore = new ObsidianSettingsStore(this);
   private sessionStore = new ProposalSessionStore(DEFAULT_PLUGIN_SETTINGS.historyLimit, new ObsidianSessionStore(this));
+  private sessionCacheV2: SessionCacheV2Store = new ObsidianSessionCacheV2Store(this);
   private secretStore = new ObsidianSecretStore(this.app);
 
   async onload(): Promise<void> {
     this.settings = await this.settingsStore.load();
     this.sessionStore = new ProposalSessionStore(this.settings.historyLimit, new ObsidianSessionStore(this));
     await this.sessionStore.restoreFromDisk();
+    this.sessionCacheV2 = new ObsidianSessionCacheV2Store(this);
     this.secretStore = new ObsidianSecretStore(this.app);
 
     this.addSettingTab(new SettingsTab(this.app, this));
@@ -120,6 +129,14 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
             },
           },
         ).open();
+      },
+    });
+
+    this.addCommand({
+      id: OPEN_CACHED_PROPOSAL_SESSION_COMMAND_ID,
+      name: "Open cached proposal session",
+      callback: async () => {
+        await this.openCachedProposalSessionFlow();
       },
     });
   }
@@ -289,6 +306,48 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     await this.sessionStore.updateSessionStatus(sessionId, "discarded");
   }
 
+  private async openCachedProposalSessionFlow(): Promise<void> {
+    const useCase = new OpenCachedSessionUseCase(this.sessionCacheV2);
+    const sessions = await useCase.list();
+
+    if (sessions.length === 0) {
+      new Notice(t(this.settings.language, "cachedSessionPicker.empty"), 6000);
+      return;
+    }
+
+    new CachedSessionPickerModal(this.app, sessions, this.settings.language, {
+      onOpenSession: async (sessionId) => {
+        const session = await useCase.open(sessionId);
+        if (!session) {
+          new Notice(t(this.settings.language, "notice.cachedSession.notFound"), 6000);
+          return;
+        }
+
+        const modal = new ReviewModalV2(
+          this.app,
+          createReviewViewModelV2(session),
+          this.settings.language,
+          {
+            onApply: () => {
+              new Notice(t(this.settings.language, "notice.cachedSession.applyDisabled"), 6000);
+            },
+            onSaveDraft: async (decision) => {
+              await this.saveCachedDraft(session.id, decision);
+            },
+            onCloseWithoutDecision: () => {
+              new Notice(t(this.settings.language, "review.placeholder.cancel"), 4000);
+            },
+          },
+          { applyDisabled: true },
+        );
+        modal.open();
+      },
+      onCancel: () => {
+        // Modal closed; nothing to do.
+      },
+    }).open();
+  }
+
   private async applySelectedChanges(sessionId: string, decision: UserDecision): Promise<void> {
     const noteRepository = new ObsidianNoteRepository(this.app);
     const buildApplyPlanUseCase = new BuildApplyPlanUseCase(
@@ -335,6 +394,19 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
 
     if (result.saved) {
       await this.sessionStore.updateSessionStatus(sessionId, "saved_as_draft");
+      new Notice(`Refined Layer: draft saved to ${result.draftPath}.`, 6000);
+      return;
+    }
+
+    new Notice(`Refined Layer: save draft failed - ${result.message}`, 8000);
+  }
+
+  private async saveCachedDraft(sessionId: string, decision?: UserDecisionV2): Promise<void> {
+    const noteRepository = new ObsidianNoteRepository(this.app);
+    const saveDraftUseCase = new SaveDraftUseCase(this.sessionStore, noteRepository, this.settings, this.sessionCacheV2);
+    const result = await saveDraftUseCase.executeV2(sessionId, decision);
+
+    if (result.saved) {
       new Notice(`Refined Layer: draft saved to ${result.draftPath}.`, 6000);
       return;
     }

@@ -23,7 +23,7 @@ __export(main_exports, {
   default: () => ObsidianRefinedLayerPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // src/adapters/llm/MockLlmProvider.ts
 var MockLlmProvider = class {
@@ -115,6 +115,22 @@ function redactSensitiveText(text) {
     (result, pattern) => result.replace(pattern, "[REDACTED]"),
     text
   );
+}
+function redactSensitiveStrings(value) {
+  if (typeof value === "string") {
+    return redactSensitiveText(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSensitiveStrings(item));
+  }
+  if (value && typeof value === "object") {
+    const redacted = {};
+    for (const [key, item] of Object.entries(value)) {
+      redacted[key] = redactSensitiveStrings(item);
+    }
+    return redacted;
+  }
+  return value;
 }
 function toSafeErrorMessage(error51) {
   if (error51 instanceof Error) {
@@ -332,10 +348,12 @@ var ObsidianSecretStore = class {
   }
 };
 
-// src/adapters/obsidian/ObsidianSessionStore.ts
+// src/adapters/obsidian/ObsidianSessionCacheV2Store.ts
 var SESSION_CACHE_PATH = ".obsidian/plugins/obsidian-refined-layer/session-cache";
-var SESSION_FILE_NAME = "sessions.v1.json";
+var SESSION_FILE_NAME = "sessions.v2.json";
 var SESSION_FILE_PATH = `${SESSION_CACHE_PATH}/${SESSION_FILE_NAME}`;
+var LEGACY_SESSION_FILE_PATH = `${SESSION_CACHE_PATH}/sessions.v1.json`;
+var DEFAULT_SESSION_CACHE_V2_LIMIT = 5;
 var VALID_STATUSES = /* @__PURE__ */ new Set([
   "generated",
   "reviewing",
@@ -359,6 +377,214 @@ var SECRET_KEYWORDS = /* @__PURE__ */ new Set([
   "providerrawresponse"
 ]);
 var SAFE_TOKEN_KEYS = /* @__PURE__ */ new Set(["inputtokens", "outputtokens", "totaltokens", "countingmode"]);
+var ObsidianSessionCacheV2Store = class {
+  constructor(plugin, limit = DEFAULT_SESSION_CACHE_V2_LIMIT) {
+    this.plugin = plugin;
+    this.limit = limit;
+  }
+  async save(session) {
+    const persisted = toPersistedV2(session);
+    if (!persisted) return;
+    const existing = await this.loadPersisted();
+    const withoutCurrent = existing.filter((s) => s.notePath !== persisted.notePath);
+    const all = [persisted, ...withoutCurrent].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, this.limit);
+    await this.writePersisted(all);
+  }
+  async loadAll() {
+    const persisted = await this.loadPersisted();
+    return persisted.map(restoreSessionV2).filter(Boolean);
+  }
+  async getLatestForNote(notePath) {
+    var _a5;
+    const all = await this.loadAll();
+    const forNote = all.filter((s) => s.notePath === notePath);
+    forNote.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return (_a5 = forNote[0]) != null ? _a5 : null;
+  }
+  async setSessionCacheLimit(limit) {
+    this.limit = normalizeLimit(limit);
+    const trimmed = (await this.loadPersisted()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, this.limit);
+    await this.writePersisted(trimmed);
+  }
+  getCacheInfo() {
+    return {
+      cachePath: SESSION_CACHE_PATH,
+      filePath: SESSION_FILE_PATH,
+      legacyFilePath: LEGACY_SESSION_FILE_PATH,
+      compatibilityStrategy: "ignore-v1",
+      limit: this.limit
+    };
+  }
+  async loadPersisted() {
+    const adapter = this.plugin.app.vault.adapter;
+    if (!await adapter.exists(SESSION_FILE_PATH)) {
+      return [];
+    }
+    let raw;
+    try {
+      raw = await adapter.read(SESSION_FILE_PATH);
+    } catch (e) {
+      return [];
+    }
+    let payload;
+    try {
+      payload = JSON.parse(raw);
+    } catch (e) {
+      return [];
+    }
+    if (typeof payload !== "object" || payload === null || !("version" in payload) || payload.version !== 2) {
+      return [];
+    }
+    const sessions = payload.sessions;
+    if (!Array.isArray(sessions)) return [];
+    return sessions;
+  }
+  async writePersisted(sessions) {
+    const payload = {
+      version: 2,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      sessions
+    };
+    const json2 = JSON.stringify(payload);
+    if (containsSecretPattern(json2)) {
+      throw new Error("Session cache V2 save blocked: serialized data contains potential secret patterns.");
+    }
+    const adapter = this.plugin.app.vault.adapter;
+    if (!await adapter.exists(SESSION_CACHE_PATH)) {
+      await adapter.mkdir(SESSION_CACHE_PATH);
+    }
+    await adapter.write(SESSION_FILE_PATH, json2);
+  }
+};
+function toPersistedV2(session) {
+  if (!session.id || !session.notePath || !session.createdAt || !session.updatedAt) {
+    return null;
+  }
+  if (session.workflowProfileId !== "raw-refined") return null;
+  if (session.schemaVersion !== "0.2") return null;
+  if (!VALID_STATUSES.has(session.status)) return null;
+  return redactSensitiveStrings({
+    id: session.id,
+    workflowProfileId: session.workflowProfileId,
+    schemaVersion: session.schemaVersion,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    notePath: session.notePath,
+    noteTitle: session.noteTitle,
+    baseFileHash: session.baseFileHash,
+    baseFrontmatterHash: session.baseFrontmatterHash,
+    baseBBlockHash: session.baseBBlockHash,
+    blockConfigSnapshot: session.blockConfigSnapshot,
+    proposal: session.proposal,
+    validation: session.validation,
+    tokenUsage: session.tokenUsage,
+    status: session.status,
+    decision: session.decision,
+    source: session.source
+  });
+}
+function restoreSessionV2(raw) {
+  var _a5, _b, _c, _d;
+  if (typeof raw.id !== "string" || typeof raw.notePath !== "string" || typeof raw.noteTitle !== "string" || typeof raw.createdAt !== "string" || typeof raw.updatedAt !== "string" || typeof raw.baseFileHash !== "string" || typeof raw.baseBBlockHash !== "string" || raw.workflowProfileId !== "raw-refined" || raw.schemaVersion !== "0.2" || !VALID_STATUSES.has(raw.status)) {
+    return null;
+  }
+  return {
+    id: raw.id,
+    workflowProfileId: raw.workflowProfileId,
+    schemaVersion: raw.schemaVersion,
+    createdAt: raw.createdAt,
+    updatedAt: raw.updatedAt,
+    notePath: raw.notePath,
+    noteTitle: raw.noteTitle,
+    baseFileHash: raw.baseFileHash,
+    baseFrontmatterHash: raw.baseFrontmatterHash,
+    baseBBlockHash: raw.baseBBlockHash,
+    blockConfigSnapshot: (_a5 = raw.blockConfigSnapshot) != null ? _a5 : {
+      protectH1: true,
+      aBlocks: [],
+      bBlock: { id: "original-content", name: "\u539F\u59CB\u5185\u5BB9", heading: "\u539F\u59CB\u5185\u5BB9", headingLevel: 2, required: true },
+      tagWhitelist: []
+    },
+    proposal: (_b = raw.proposal) != null ? _b : {
+      workflowProfileId: "raw-refined",
+      schemaVersion: "0.2",
+      blocks: []
+    },
+    validation: (_c = raw.validation) != null ? _c : {
+      status: "invalid",
+      acceptedFields: [],
+      rejectedFields: [],
+      warnings: ["Restored from incomplete cache entry."],
+      tagNormalizationApplied: false
+    },
+    tokenUsage: raw.tokenUsage,
+    status: raw.status,
+    decision: raw.decision,
+    source: (_d = raw.source) != null ? _d : { provider: "unknown", model: "unknown", attemptsUsed: 1 }
+  };
+}
+function containsSecretPattern(json2) {
+  try {
+    const obj = JSON.parse(json2);
+    return scanObjectForSecrets(obj);
+  } catch (e) {
+    return true;
+  }
+}
+function normalizeLimit(limit) {
+  if (!Number.isFinite(limit)) return DEFAULT_SESSION_CACHE_V2_LIMIT;
+  return Math.max(1, Math.floor(limit));
+}
+function scanObjectForSecrets(obj, currentKey) {
+  if (obj === null || obj === void 0) return false;
+  if (currentKey !== void 0) {
+    const lower = currentKey.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (SECRET_KEYWORDS.has(lower) && !SAFE_TOKEN_KEYS.has(lower)) {
+      return true;
+    }
+  }
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      if (scanObjectForSecrets(item)) return true;
+    }
+    return false;
+  }
+  if (typeof obj === "object") {
+    for (const [key, value] of Object.entries(obj)) {
+      if (scanObjectForSecrets(value, key)) return true;
+    }
+    return false;
+  }
+  return false;
+}
+
+// src/adapters/obsidian/ObsidianSessionStore.ts
+var SESSION_CACHE_PATH2 = ".obsidian/plugins/obsidian-refined-layer/session-cache";
+var SESSION_FILE_NAME2 = "sessions.v1.json";
+var SESSION_FILE_PATH2 = `${SESSION_CACHE_PATH2}/${SESSION_FILE_NAME2}`;
+var VALID_STATUSES2 = /* @__PURE__ */ new Set([
+  "generated",
+  "reviewing",
+  "applied",
+  "saved_as_draft",
+  "discarded",
+  "conflicted"
+]);
+var SECRET_KEYWORDS2 = /* @__PURE__ */ new Set([
+  "apikey",
+  "api_key",
+  "key",
+  "secret",
+  "authorization",
+  "authheader",
+  "bearer",
+  "credential",
+  "x-api-key",
+  "rawrequest",
+  "rawresponse",
+  "providerrawresponse"
+]);
+var SAFE_TOKEN_KEYS2 = /* @__PURE__ */ new Set(["inputtokens", "outputtokens", "totaltokens", "countingmode"]);
 var ObsidianSessionStore = class {
   constructor(plugin) {
     this.plugin = plugin;
@@ -377,25 +603,25 @@ var ObsidianSessionStore = class {
       sessionsByNotePath: data
     };
     const json2 = JSON.stringify(payload);
-    if (containsSecretPattern(json2)) {
+    if (containsSecretPattern2(json2)) {
       throw new Error("Session persistence blocked: serialized data contains potential secret patterns.");
     }
     const adapter = this.plugin.app.vault.adapter;
-    const cacheDir = SESSION_CACHE_PATH;
+    const cacheDir = SESSION_CACHE_PATH2;
     if (!await adapter.exists(cacheDir)) {
       await adapter.mkdir(cacheDir);
     }
-    await adapter.write(SESSION_FILE_PATH, json2);
+    await adapter.write(SESSION_FILE_PATH2, json2);
   }
   async loadAll() {
     const result = /* @__PURE__ */ new Map();
     const adapter = this.plugin.app.vault.adapter;
-    if (!await adapter.exists(SESSION_FILE_PATH)) {
+    if (!await adapter.exists(SESSION_FILE_PATH2)) {
       return result;
     }
     let raw;
     try {
-      raw = await adapter.read(SESSION_FILE_PATH);
+      raw = await adapter.read(SESSION_FILE_PATH2);
     } catch (e) {
       return result;
     }
@@ -437,7 +663,7 @@ function toPersisted(session) {
   if (session.workflowProfileId !== "raw-refined") {
     return null;
   }
-  if (!VALID_STATUSES.has(session.status)) {
+  if (!VALID_STATUSES2.has(session.status)) {
     return null;
   }
   const proposal = toPersistedProposal(session.proposal);
@@ -530,31 +756,31 @@ function toPersistedDecision(decision) {
     saveAsDraftOnly: decision.saveAsDraftOnly
   };
 }
-function containsSecretPattern(json2) {
+function containsSecretPattern2(json2) {
   try {
     const obj = JSON.parse(json2);
-    return scanObjectForSecrets(obj);
+    return scanObjectForSecrets2(obj);
   } catch (e) {
     return true;
   }
 }
-function scanObjectForSecrets(obj, currentKey) {
+function scanObjectForSecrets2(obj, currentKey) {
   if (obj === null || obj === void 0) return false;
   if (currentKey !== void 0) {
     const lower = currentKey.toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (SECRET_KEYWORDS.has(lower) && !SAFE_TOKEN_KEYS.has(lower)) {
+    if (SECRET_KEYWORDS2.has(lower) && !SAFE_TOKEN_KEYS2.has(lower)) {
       return true;
     }
   }
   if (Array.isArray(obj)) {
     for (const item of obj) {
-      if (scanObjectForSecrets(item)) return true;
+      if (scanObjectForSecrets2(item)) return true;
     }
     return false;
   }
   if (typeof obj === "object") {
     for (const [key, value] of Object.entries(obj)) {
-      if (scanObjectForSecrets(value, key)) return true;
+      if (scanObjectForSecrets2(value, key)) return true;
     }
     return false;
   }
@@ -563,7 +789,7 @@ function scanObjectForSecrets(obj, currentKey) {
 function restoreSession(raw) {
   if (typeof raw !== "object" || raw === null) return null;
   const s = raw;
-  if (typeof s.id !== "string" || typeof s.notePath !== "string" || typeof s.noteTitle !== "string" || typeof s.createdAt !== "string" || typeof s.updatedAt !== "string" || typeof s.baseFileHash !== "string" || typeof s.policySnapshotId !== "string" || s.workflowProfileId !== "raw-refined" || !VALID_STATUSES.has(s.status)) {
+  if (typeof s.id !== "string" || typeof s.notePath !== "string" || typeof s.noteTitle !== "string" || typeof s.createdAt !== "string" || typeof s.updatedAt !== "string" || typeof s.baseFileHash !== "string" || typeof s.policySnapshotId !== "string" || s.workflowProfileId !== "raw-refined" || !VALID_STATUSES2.has(s.status)) {
     return null;
   }
   const proposal = restoreProposal(s.proposal);
@@ -969,6 +1195,25 @@ ${serializeFrontmatter(nextFrontmatter)}
 ---
 ${trimLeadingNewlines(body)}`;
 }
+function appendTags(markdown, tags) {
+  const normalized = markdown.replace(/\r\n/g, "\n");
+  const parsed = parseFrontmatter(normalized);
+  const base = parsed.hasFrontmatter ? parsed.frontmatter : {};
+  const currentTags = Array.isArray(base.tags) ? base.tags : [];
+  const nextTags = new Set(currentTags.filter((tag) => typeof tag === "string"));
+  for (const tag of tags) {
+    nextTags.add(tag);
+  }
+  const nextFrontmatter = {
+    ...base,
+    tags: [...nextTags]
+  };
+  const body = parsed.hasFrontmatter ? parsed.body : normalized;
+  return `---
+${serializeFrontmatter(nextFrontmatter)}
+---
+${trimLeadingNewlines(body)}`;
+}
 function isAllowedTag(tag, profile) {
   return profile.tags.allowedTags.includes(tag) && !profile.tags.blockedTags.some((blocked) => blocked.endsWith("*") ? tag.startsWith(blocked.slice(0, -1)) : tag === blocked);
 }
@@ -988,11 +1233,149 @@ function trimLeadingNewlines(value) {
   return value.replace(/^\n+/, "");
 }
 
+// src/core/markdown/MarkdownAssembler.ts
+var MarkdownAssembler = class {
+  assemble(input) {
+    const parts = [];
+    if (input.protectH1 && input.firstH1Text) {
+      parts.push(`# ${input.firstH1Text}`);
+    }
+    const sorted = [...input.acceptedABlocks].sort(
+      (a, b) => a.config.order - b.config.order
+    );
+    for (const block of sorted) {
+      const heading = `${"#".repeat(block.config.headingLevel)} ${block.config.heading}`;
+      parts.push(`${heading}
+
+${block.content.trimEnd()}`);
+    }
+    parts.push(input.bBlockText);
+    return parts.join("\n\n") + "\n";
+  }
+};
+
 // src/core/protected-region/hash.ts
 var import_node_crypto = require("node:crypto");
 function hashText(text) {
   return (0, import_node_crypto.createHash)("sha256").update(text, "utf8").digest("hex");
 }
+
+// src/core/markdown/HeadingParser.ts
+var HeadingParser = class {
+  parse(markdown) {
+    const headings = [];
+    let firstH1;
+    const frontmatterEnd = this.findFrontmatterEnd(markdown);
+    let pos = 0;
+    let lineIndex = 0;
+    const len = markdown.length;
+    while (pos < len) {
+      const lineStart = pos;
+      const newlineIdx = markdown.indexOf("\n", pos);
+      const lineEnd = newlineIdx === -1 ? len : newlineIdx;
+      const line = markdown.slice(lineStart, lineEnd);
+      const heading = this.parseAtxHeading(line, lineIndex, lineStart, lineEnd);
+      if (heading) {
+        headings.push(heading);
+        if (!firstH1 && heading.level === 1 && lineStart >= frontmatterEnd) {
+          firstH1 = heading;
+        }
+      }
+      pos = lineEnd + (newlineIdx === -1 ? 0 : 1);
+      lineIndex++;
+    }
+    return { headings, firstH1 };
+  }
+  findFrontmatterEnd(markdown) {
+    if (!markdown.startsWith("---")) return 0;
+    const closingIdx = markdown.indexOf("\n---", 3);
+    if (closingIdx === -1) return 0;
+    const nextNewline = markdown.indexOf("\n", closingIdx + 4);
+    return nextNewline === -1 ? markdown.length : nextNewline + 1;
+  }
+  parseAtxHeading(line, lineIndex, charStart, charEnd) {
+    const normalizedLine = line.endsWith("\r") ? line.slice(0, -1) : line;
+    const match = normalizedLine.match(/^(#{1,6})\s+(.+?)(?:\s+#+\s*)?$/);
+    if (!match) return null;
+    const level = match[1].length;
+    const text = match[2].trim();
+    if (text.length === 0) return null;
+    return { level, text, lineIndex, charStart, charEnd };
+  }
+};
+
+// src/core/markdown/BlockExtractor.ts
+var BlockExtractor = class {
+  constructor() {
+    this.headingParser = new HeadingParser();
+  }
+  extract(markdown, config2) {
+    const { headings } = this.headingParser.parse(markdown);
+    const matches = headings.filter(
+      (h) => h.text === config2.heading && h.level === config2.headingLevel
+    );
+    if (matches.length === 0) {
+      const sameTextDiffLevel = headings.find((h) => h.text === config2.heading);
+      if (sameTextDiffLevel) {
+        return {
+          ok: false,
+          error: {
+            code: "heading-level-mismatch",
+            message: `Heading "${config2.heading}" found at level ${sameTextDiffLevel.level}, but config expects level ${config2.headingLevel}.`
+          }
+        };
+      }
+      return {
+        ok: false,
+        error: {
+          code: "missing-heading",
+          message: `Required B block heading "${config2.heading}" (level ${config2.headingLevel}) was not found.`
+        }
+      };
+    }
+    if (matches.length > 1) {
+      return {
+        ok: false,
+        error: {
+          code: "multiple-heading",
+          message: `B block heading "${config2.heading}" (level ${config2.headingLevel}) appears ${matches.length} times.`
+        }
+      };
+    }
+    const bHeading = matches[0];
+    return this.extractRange(markdown, bHeading, config2);
+  }
+  extractRange(markdown, bHeading, config2) {
+    const { headings } = this.headingParser.parse(markdown);
+    const nextBoundaryHeading = headings.find(
+      (h) => h.lineIndex > bHeading.lineIndex && h.level <= config2.headingLevel
+    );
+    const blockEnd = nextBoundaryHeading ? nextBoundaryHeading.charStart : markdown.length;
+    const text = markdown.slice(bHeading.charStart, blockEnd);
+    const trimmedText = text.replace(/[\s\r\n]+$/, "");
+    const headingLine = `${"#".repeat(config2.headingLevel)} ${config2.heading}`;
+    if (trimmedText.trim() === headingLine) {
+      return {
+        ok: false,
+        error: {
+          code: "empty-b-block",
+          message: `B block heading "${config2.heading}" has no content after it.`
+        }
+      };
+    }
+    return {
+      ok: true,
+      block: {
+        heading: config2.heading,
+        headingLevel: config2.headingLevel,
+        text: trimmedText,
+        charStart: bHeading.charStart,
+        charEnd: blockEnd,
+        hash: hashText(trimmedText)
+      }
+    };
+  }
+};
 
 // src/core/protected-region/ProtectedRegionExtractor.ts
 var ProtectedRegionExtractor = class {
@@ -1055,11 +1438,14 @@ function escapeRegExp(value) {
 
 // src/application/ApplyDecisionUseCase.ts
 var ApplyDecisionUseCase = class {
-  constructor(profile, sessionStore, noteFilePort) {
+  constructor(profile, sessionStore, noteFilePort, sessionCacheV2) {
     this.profile = profile;
     this.sessionStore = sessionStore;
     this.noteFilePort = noteFilePort;
+    this.sessionCacheV2 = sessionCacheV2;
     this.extractor = new ProtectedRegionExtractor();
+    this.blockExtractor = new BlockExtractor();
+    this.markdownAssembler = new MarkdownAssembler();
   }
   async execute(plan) {
     const session = await this.sessionStore.get(plan.sessionId);
@@ -1150,6 +1536,116 @@ var ApplyDecisionUseCase = class {
       options: ["save-draft", "regenerate", "manual-copy", "discard"]
     };
   }
+  async executeV2(plan) {
+    var _a5, _b, _c;
+    const session = await this.findSessionV2(plan.sessionId);
+    if (!session) {
+      return {
+        kind: "failed",
+        code: "missing-session",
+        message: `Proposal session ${plan.sessionId} was not found.`
+      };
+    }
+    const note = await this.noteFilePort.readNoteByPath(plan.notePath);
+    if (!note) {
+      return {
+        kind: "failed",
+        code: "missing-note",
+        message: `Target note ${plan.notePath} was not found.`
+      };
+    }
+    if (hashText(note.content) !== session.baseFileHash) {
+      session.status = "conflicted";
+      session.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+      await ((_a5 = this.sessionCacheV2) == null ? void 0 : _a5.save(session));
+      return this.conflict("file-changed");
+    }
+    const bBlock = this.blockExtractor.extract(note.content, session.blockConfigSnapshot.bBlock);
+    if (!bBlock.ok) {
+      return {
+        kind: "failed",
+        code: bBlock.error.code,
+        message: bBlock.error.message
+      };
+    }
+    if (hashText(bBlock.block.text) !== session.baseBBlockHash) {
+      session.status = "conflicted";
+      session.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+      await ((_b = this.sessionCacheV2) == null ? void 0 : _b.save(session));
+      return this.conflict("protected-region-changed");
+    }
+    let nextContent = note.content;
+    for (const operation of plan.operations) {
+      switch (operation.type) {
+        case "replace-refined-blocks":
+          nextContent = this.replaceRefinedBlocks(nextContent, operation.blocks, bBlock.block.text, session);
+          break;
+        case "update-frontmatter":
+          nextContent = applyFrontmatterChanges(nextContent, operation.changes);
+          break;
+        case "append-tags": {
+          const allowed = this.filterAppendTags(operation.tags, session);
+          nextContent = appendTags(nextContent, allowed);
+          break;
+        }
+        case "replace-refined-body":
+        case "update-tags":
+          return {
+            kind: "failed",
+            code: "unsupported-v2-operation",
+            message: `Apply operation ${operation.type} is not supported by the v0.2 apply path.`
+          };
+      }
+    }
+    const postApplyBBlock = this.blockExtractor.extract(nextContent, session.blockConfigSnapshot.bBlock);
+    if (!postApplyBBlock.ok) {
+      return {
+        kind: "failed",
+        code: postApplyBBlock.error.code,
+        message: `Apply aborted: ${postApplyBBlock.error.message}`
+      };
+    }
+    if (postApplyBBlock.block.text !== bBlock.block.text) {
+      return {
+        kind: "failed",
+        code: "b-block-corrupted",
+        message: "Apply aborted: B block changed during assembly."
+      };
+    }
+    await this.noteFilePort.writeNote(plan.notePath, nextContent);
+    session.status = "applied";
+    session.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    await ((_c = this.sessionCacheV2) == null ? void 0 : _c.save(session));
+    return {
+      kind: "applied",
+      notePath: plan.notePath
+    };
+  }
+  replaceRefinedBlocks(currentContent, blocks, bBlockText, session) {
+    const configById = new Map(session.blockConfigSnapshot.aBlocks.map((config2) => [config2.id, config2]));
+    const acceptedABlocks = blocks.map((block) => {
+      const config2 = configById.get(block.id);
+      return config2 ? { config: config2, content: block.content } : null;
+    }).filter(Boolean);
+    const assembledBody = this.markdownAssembler.assemble({
+      acceptedABlocks,
+      bBlockText,
+      firstH1Text: getFirstH1Text(currentContent),
+      protectH1: session.blockConfigSnapshot.protectH1
+    });
+    return replaceMarkdownBody(currentContent, assembledBody);
+  }
+  filterAppendTags(tags, session) {
+    var _a5, _b;
+    const selectedTags = new Set((_b = (_a5 = session.proposal.tagSuggestion) == null ? void 0 : _a5.selectedTags) != null ? _b : []);
+    const whitelist = new Set(session.blockConfigSnapshot.tagWhitelist);
+    return [...new Set(tags.filter((tag) => selectedTags.has(tag) && whitelist.has(tag)))];
+  }
+  async findSessionV2(sessionId) {
+    var _a5, _b;
+    const sessions = await ((_a5 = this.sessionCacheV2) == null ? void 0 : _a5.loadAll());
+    return (_b = sessions == null ? void 0 : sessions.find((session) => session.id === sessionId)) != null ? _b : null;
+  }
 };
 function mergeBodyIntoMarkdown(markdown, body, currentProtectedRegion) {
   const normalized = markdown.replace(/\r\n/g, "\n");
@@ -1182,6 +1678,33 @@ function stripProtectedRegionFromBody(body) {
     return normalized;
   }
   return normalized.slice(0, headingIndex);
+}
+function replaceMarkdownBody(markdown, nextBody) {
+  const normalized = markdown.replace(/\r\n/g, "\n");
+  const parsed = parseFrontmatter(normalized);
+  if (!parsed.hasFrontmatter) {
+    return nextBody;
+  }
+  return `---
+${serializeFrontmatterForApply(parsed.frontmatter)}
+---
+${nextBody.replace(/^\n+/, "")}`;
+}
+function getFirstH1Text(markdown) {
+  const parsed = parseFrontmatter(markdown.replace(/\r\n/g, "\n"));
+  const body = parsed.hasFrontmatter ? parsed.body : markdown;
+  const match = body.match(/^#\s+(.+)$/m);
+  return match == null ? void 0 : match[1];
+}
+function serializeFrontmatterForApply(frontmatter) {
+  return Object.entries(frontmatter).map(([key, value]) => {
+    if (Array.isArray(value)) {
+      if (value.length === 0) return `${key}: []`;
+      return `${key}:
+${value.map((item) => `  - ${item}`).join("\n")}`;
+    }
+    return `${key}: ${value}`;
+  }).join("\n");
 }
 
 // src/core/apply/ApplyPlanner.ts
@@ -1222,6 +1745,58 @@ var ApplyPlanner = class {
         targetPath: session.notePath,
         add,
         remove
+      });
+    }
+    return {
+      notePath: session.notePath,
+      sessionId: session.id,
+      operations
+    };
+  }
+  buildPlanV2(session, decision) {
+    var _a5, _b, _c, _d, _e;
+    const operations = [];
+    const acceptedBlockIds = new Set(
+      Object.entries(decision.acceptBlocks).filter(([, accepted]) => accepted).map(([id]) => id)
+    );
+    const configById = new Map(session.blockConfigSnapshot.aBlocks.map((block) => [block.id, block]));
+    const acceptedBlocks = session.proposal.blocks.filter((block) => acceptedBlockIds.has(block.id)).map((block) => {
+      var _a6, _b2;
+      const config2 = configById.get(block.id);
+      return {
+        id: block.id,
+        heading: (_a6 = config2 == null ? void 0 : config2.heading) != null ? _a6 : block.id,
+        headingLevel: (_b2 = config2 == null ? void 0 : config2.headingLevel) != null ? _b2 : 2,
+        content: block.content
+      };
+    });
+    if (acceptedBlocks.length > 0) {
+      operations.push({
+        type: "replace-refined-blocks",
+        targetPath: session.notePath,
+        blocks: acceptedBlocks
+      });
+    }
+    const frontmatterChanges = {
+      ...decision.acceptFrontmatter.status && ((_a5 = session.proposal.frontmatterSuggestion) == null ? void 0 : _a5.status) ? { status: session.proposal.frontmatterSuggestion.status } : {},
+      ...decision.acceptFrontmatter.source && ((_b = session.proposal.frontmatterSuggestion) == null ? void 0 : _b.source) ? { source: session.proposal.frontmatterSuggestion.source } : {},
+      ...decision.acceptFrontmatter.context && ((_c = session.proposal.frontmatterSuggestion) == null ? void 0 : _c.context) ? { context: session.proposal.frontmatterSuggestion.context } : {}
+    };
+    if (Object.keys(frontmatterChanges).length > 0) {
+      operations.push({
+        type: "update-frontmatter",
+        targetPath: session.notePath,
+        changes: frontmatterChanges
+      });
+    }
+    const selectedTags = new Set((_e = (_d = session.proposal.tagSuggestion) == null ? void 0 : _d.selectedTags) != null ? _e : []);
+    const whitelist = new Set(session.blockConfigSnapshot.tagWhitelist);
+    const tags = decision.acceptTags.add.filter((tag) => selectedTags.has(tag) && whitelist.has(tag));
+    if (tags.length > 0) {
+      operations.push({
+        type: "append-tags",
+        targetPath: session.notePath,
+        tags: [...new Set(tags)]
       });
     }
     return {
@@ -16367,12 +16942,14 @@ function collectStringValues(value) {
 
 // src/application/BuildApplyPlanUseCase.ts
 var BuildApplyPlanUseCase = class {
-  constructor(profile, sessionStore, noteFilePort) {
+  constructor(profile, sessionStore, noteFilePort, sessionCacheV2) {
     this.sessionStore = sessionStore;
     this.noteFilePort = noteFilePort;
+    this.sessionCacheV2 = sessionCacheV2;
     this.planner = new ApplyPlanner();
     this.bodyAssembler = new BodyAssembler();
     this.protectedRegionExtractor = new ProtectedRegionExtractor();
+    this.blockExtractor = new BlockExtractor();
     this.profile = profile;
     this.policyGuard = new PolicyGuard(profile);
     this.proposalValidator = new ProposalValidator(profile);
@@ -16440,122 +17017,53 @@ var BuildApplyPlanUseCase = class {
       plan: this.planner.buildPlan(session, guardedDecision, body)
     };
   }
-};
-
-// src/core/markdown/HeadingParser.ts
-var HeadingParser = class {
-  parse(markdown) {
-    const headings = [];
-    let firstH1;
-    const frontmatterEnd = this.findFrontmatterEnd(markdown);
-    let pos = 0;
-    let lineIndex = 0;
-    const len = markdown.length;
-    while (pos < len) {
-      const lineStart = pos;
-      const newlineIdx = markdown.indexOf("\n", pos);
-      const lineEnd = newlineIdx === -1 ? len : newlineIdx;
-      const line = markdown.slice(lineStart, lineEnd);
-      const heading = this.parseAtxHeading(line, lineIndex, lineStart, lineEnd);
-      if (heading) {
-        headings.push(heading);
-        if (!firstH1 && heading.level === 1 && lineStart >= frontmatterEnd) {
-          firstH1 = heading;
-        }
-      }
-      pos = lineEnd + (newlineIdx === -1 ? 0 : 1);
-      lineIndex++;
+  async executeV2(sessionId, decision) {
+    const session = await this.findSessionV2(sessionId);
+    if (!session) {
+      return {
+        ok: false,
+        code: "missing-session",
+        message: `Proposal session ${sessionId} was not found.`
+      };
     }
-    return { headings, firstH1 };
-  }
-  findFrontmatterEnd(markdown) {
-    if (!markdown.startsWith("---")) return 0;
-    const closingIdx = markdown.indexOf("\n---", 3);
-    if (closingIdx === -1) return 0;
-    const nextNewline = markdown.indexOf("\n", closingIdx + 4);
-    return nextNewline === -1 ? markdown.length : nextNewline + 1;
-  }
-  parseAtxHeading(line, lineIndex, charStart, charEnd) {
-    const normalizedLine = line.endsWith("\r") ? line.slice(0, -1) : line;
-    const match = normalizedLine.match(/^(#{1,6})\s+(.+?)(?:\s+#+\s*)?$/);
-    if (!match) return null;
-    const level = match[1].length;
-    const text = match[2].trim();
-    if (text.length === 0) return null;
-    return { level, text, lineIndex, charStart, charEnd };
-  }
-};
-
-// src/core/markdown/BlockExtractor.ts
-var BlockExtractor = class {
-  constructor() {
-    this.headingParser = new HeadingParser();
-  }
-  extract(markdown, config2) {
-    const { headings } = this.headingParser.parse(markdown);
-    const matches = headings.filter(
-      (h) => h.text === config2.heading && h.level === config2.headingLevel
+    const note = await this.noteFilePort.readNoteByPath(session.notePath);
+    if (!note) {
+      return {
+        ok: false,
+        code: "missing-note",
+        message: `Target note ${session.notePath} was not found.`
+      };
+    }
+    const bBlock = this.blockExtractor.extract(note.content, session.blockConfigSnapshot.bBlock);
+    if (!bBlock.ok) {
+      return {
+        ok: false,
+        code: bBlock.error.code,
+        message: bBlock.error.message
+      };
+    }
+    const acceptedBlockIds = new Set(
+      Object.entries(decision.acceptBlocks).filter(([, accepted]) => accepted).map(([id]) => id)
     );
-    if (matches.length === 0) {
-      const sameTextDiffLevel = headings.find((h) => h.text === config2.heading);
-      if (sameTextDiffLevel) {
+    for (const block of session.proposal.blocks) {
+      if (!acceptedBlockIds.has(block.id)) continue;
+      if (block.content.includes(bBlock.block.text)) {
         return {
           ok: false,
-          error: {
-            code: "heading-level-mismatch",
-            message: `Heading "${config2.heading}" found at level ${sameTextDiffLevel.level}, but config expects level ${config2.headingLevel}.`
-          }
+          code: "accepted-block-contains-b-block",
+          message: `Accepted block ${block.id} contains protected B block content.`
         };
       }
-      return {
-        ok: false,
-        error: {
-          code: "missing-heading",
-          message: `Required B block heading "${config2.heading}" (level ${config2.headingLevel}) was not found.`
-        }
-      };
-    }
-    if (matches.length > 1) {
-      return {
-        ok: false,
-        error: {
-          code: "multiple-heading",
-          message: `B block heading "${config2.heading}" (level ${config2.headingLevel}) appears ${matches.length} times.`
-        }
-      };
-    }
-    const bHeading = matches[0];
-    return this.extractRange(markdown, bHeading, config2);
-  }
-  extractRange(markdown, bHeading, config2) {
-    const { headings } = this.headingParser.parse(markdown);
-    const nextBoundaryHeading = headings.find(
-      (h) => h.lineIndex > bHeading.lineIndex && h.level <= config2.headingLevel
-    );
-    const blockEnd = nextBoundaryHeading ? nextBoundaryHeading.charStart : markdown.length;
-    const text = markdown.slice(bHeading.charStart, blockEnd);
-    const trimmedText = text.replace(/[\s\r\n]+$/, "");
-    const headingLine = `${"#".repeat(config2.headingLevel)} ${config2.heading}`;
-    if (trimmedText.trim() === headingLine) {
-      return {
-        ok: false,
-        error: {
-          code: "empty-b-block",
-          message: `B block heading "${config2.heading}" has no content after it.`
-        }
-      };
     }
     return {
       ok: true,
-      block: {
-        heading: config2.heading,
-        headingLevel: config2.headingLevel,
-        text: trimmedText,
-        charStart: bHeading.charStart,
-        charEnd: blockEnd,
-        hash: hashText(trimmedText)
-      }
+      plan: this.planner.buildPlanV2(session, decision)
     };
+  }
+  async findSessionV2(sessionId) {
+    var _a5, _b;
+    const sessions = await ((_a5 = this.sessionCacheV2) == null ? void 0 : _a5.loadAll());
+    return (_b = sessions == null ? void 0 : sessions.find((session) => session.id === sessionId)) != null ? _b : null;
   }
 };
 
@@ -17488,6 +17996,33 @@ var ListRecoverableSessionsUseCase = class {
   }
 };
 
+// src/application/OpenCachedSessionUseCase.ts
+var OpenCachedSessionUseCase = class {
+  constructor(sessionCache) {
+    this.sessionCache = sessionCache;
+  }
+  async list() {
+    const sessions = await this.sessionCache.loadAll();
+    return [...sessions].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((session) => ({
+      id: session.id,
+      notePath: session.notePath,
+      noteTitle: session.noteTitle,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      status: session.status,
+      provider: session.source.provider,
+      model: session.source.model,
+      attemptsUsed: session.source.attemptsUsed,
+      tokenUsage: session.tokenUsage
+    }));
+  }
+  async open(sessionId) {
+    var _a5;
+    const sessions = await this.sessionCache.loadAll();
+    return (_a5 = sessions.find((session) => session.id === sessionId)) != null ? _a5 : null;
+  }
+};
+
 // src/application/RecoverProposalSessionUseCase.ts
 var RecoverProposalSessionUseCase = class {
   constructor(sessionStore, noteRepository) {
@@ -17540,10 +18075,11 @@ var RequestReviewUseCase = class {
 
 // src/application/SaveDraftUseCase.ts
 var SaveDraftUseCase = class {
-  constructor(sessionStore, noteFilePort, settings) {
+  constructor(sessionStore, noteFilePort, settings, sessionCacheV2) {
     this.sessionStore = sessionStore;
     this.noteFilePort = noteFilePort;
     this.settings = settings;
+    this.sessionCacheV2 = sessionCacheV2;
   }
   async execute(sessionId, conflictReason, editedRefinedSections) {
     var _a5, _b, _c;
@@ -17583,9 +18119,85 @@ var SaveDraftUseCase = class {
       draftPath
     };
   }
+  async executeV2(sessionId, decision) {
+    var _a5;
+    const session = await this.findSessionV2(sessionId);
+    if (!session) {
+      return {
+        saved: false,
+        message: `Proposal session ${sessionId} was not found.`
+      };
+    }
+    const fileName = `${sanitizeFileName(session.noteTitle)}-${session.id}.md`;
+    const draftPath = `${this.settings.draftFolder}/${fileName}`;
+    const content = redactSensitiveText(buildV2DraftContent(session, decision));
+    await this.noteFilePort.writeDraft(draftPath, content);
+    session.status = "saved_as_draft";
+    session.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    await ((_a5 = this.sessionCacheV2) == null ? void 0 : _a5.save(session));
+    return {
+      saved: true,
+      draftPath
+    };
+  }
+  async findSessionV2(sessionId) {
+    var _a5, _b;
+    const sessions = await ((_a5 = this.sessionCacheV2) == null ? void 0 : _a5.loadAll());
+    return (_b = sessions == null ? void 0 : sessions.find((session) => session.id === sessionId)) != null ? _b : null;
+  }
 };
 function sanitizeFileName(value) {
   return value.replace(/[<>:"/\\|?*]/g, "-");
+}
+function buildV2DraftContent(session, decision) {
+  var _a5, _b, _c, _d, _e, _f;
+  const selectedTags = (_b = (_a5 = session.proposal.tagSuggestion) == null ? void 0 : _a5.selectedTags) != null ? _b : [];
+  const newTagSuggestions = (_d = (_c = session.proposal.tagSuggestion) == null ? void 0 : _c.newTagSuggestions) != null ? _d : [];
+  return [
+    `# Refined Layer Draft`,
+    ``,
+    `- source note path: ${session.notePath}`,
+    `- workflow id: ${session.workflowProfileId}`,
+    `- schema version: ${session.schemaVersion}`,
+    `- created time: ${session.createdAt}`,
+    `- token usage: ${(_f = (_e = session.tokenUsage) == null ? void 0 : _e.countingMode) != null ? _f : "unavailable"}`,
+    `- attempts used: ${session.source.attemptsUsed}`,
+    ``,
+    `## Proposed A Blocks`,
+    ``,
+    ...session.proposal.blocks.flatMap((block) => {
+      var _a6;
+      return [
+        `### ${block.id}`,
+        `accepted in review: ${(decision == null ? void 0 : decision.acceptBlocks[block.id]) === true ? "yes" : "no"}`,
+        ``,
+        block.content,
+        ``,
+        ...((_a6 = block.warnings) == null ? void 0 : _a6.length) ? [`warnings:`, ...block.warnings.map((warning) => `- ${warning}`), ``] : []
+      ];
+    }),
+    `## Selected Tags`,
+    ``,
+    ...selectedTags.length ? selectedTags.map((tag) => `- ${tag}${(decision == null ? void 0 : decision.acceptTags.add.includes(tag)) ? " (accepted)" : ""}`) : ["none"],
+    ``,
+    `## New Tag Suggestions`,
+    ``,
+    ...newTagSuggestions.length ? newTagSuggestions.map((tag) => `- ${tag}`) : ["none"],
+    ``,
+    `## Validation`,
+    ``,
+    `- status: ${session.validation.status}`,
+    `- tagNormalizationApplied: ${session.validation.tagNormalizationApplied}`,
+    ``,
+    `### Warnings`,
+    ``,
+    ...session.validation.warnings.length ? session.validation.warnings.map((warning) => `- ${warning}`) : ["none"],
+    ``,
+    `### Rejected Fields`,
+    ``,
+    ...session.validation.rejectedFields.length ? session.validation.rejectedFields.map((field) => `- ${field.field}: ${field.reason}`) : ["none"],
+    ``
+  ].join("\n");
 }
 
 // src/runtime/ProposalSessionStore.ts
@@ -17744,15 +18356,21 @@ var enStrings = {
   "review.section.body": "Editable refined body",
   "review.section.frontmatter": "YAML suggestions",
   "review.section.tags": "Tag suggestions",
+  "review.section.newTagSuggestions": "New tag suggestions",
   "review.section.tokenUsage": "Token Usage",
   "review.section.warnings": "Warnings",
+  "review.section.validation": "Validation",
   "review.empty.none": "None",
   "review.toggle.body": "Accept body changes",
+  "review.toggle.block": "Apply block: {heading}",
   "review.toggle.frontmatter.status": "Accept status change",
   "review.toggle.frontmatter.source": "Accept source change",
   "review.toggle.frontmatter.context": "Accept context change",
   "review.toggle.tag.add": "Accept added tag: {tag}",
   "review.toggle.tag.remove": "Accept removed tag: {tag}",
+  "review.notice.tagNormalizationApplied": "Tag fields were normalized locally.",
+  "review.notice.newTagSuggestions": "These are new tag suggestions. Add them to the tag whitelist before applying them.",
+  "review.meta.attemptsUsed": "Requests used: {attemptsUsed}",
   "review.button.apply": "Apply selected changes",
   "review.button.saveDraft": "Save as Draft",
   "review.button.close": "Close",
@@ -17837,6 +18455,13 @@ var enStrings = {
   "sessionPicker.empty": "No recoverable proposal sessions for this note.",
   "sessionPicker.sessionMeta": "{createdAt} \xB7 {status} \xB7 token {mode}",
   "sessionPicker.conflict": "File has changed: {reason}. Cannot apply directly.",
+  "cachedSessionPicker.title": "Open cached proposal session",
+  "cachedSessionPicker.empty": "No cache records are available.",
+  "cachedSessionPicker.button.open": "Open cache record",
+  "cachedSessionPicker.sessionMeta": "{createdAt} \xB7 {status} \xB7 {provider}/{model} \xB7 requests {attemptsUsed} \xB7 token {mode}",
+  "notice.cachedSession.notFound": "Cache record not found.",
+  "notice.cachedSession.applyDisabled": "Cache records can be viewed and saved as drafts, but cannot be applied directly.",
+  "notice.cachedSession.draftPending": "Cached session draft export will be wired in D58.",
   "eligibility.missingBBlock": "Missing B block heading",
   "eligibility.multipleBBlock": "B block heading appears multiple times",
   "eligibility.bBlockLevelMismatch": "B block heading level mismatch",
@@ -17851,15 +18476,21 @@ var zhCNStrings = {
   "review.section.body": "Refined \u6B63\u6587\u7F16\u8F91",
   "review.section.frontmatter": "YAML \u4FEE\u6539\u5EFA\u8BAE",
   "review.section.tags": "\u6807\u7B7E\u4FEE\u6539\u5EFA\u8BAE",
+  "review.section.newTagSuggestions": "\u65B0\u6807\u7B7E\u5EFA\u8BAE",
   "review.section.tokenUsage": "Token Usage",
   "review.section.warnings": "Warnings",
+  "review.section.validation": "Validation",
   "review.empty.none": "\u65E0",
   "review.toggle.body": "\u63A5\u53D7\u6B63\u6587\u4FEE\u6539",
+  "review.toggle.block": "\u5E94\u7528\u5206\u5757\uFF1A{heading}",
   "review.toggle.frontmatter.status": "\u63A5\u53D7 status \u4FEE\u6539",
   "review.toggle.frontmatter.source": "\u63A5\u53D7 source \u4FEE\u6539",
   "review.toggle.frontmatter.context": "\u63A5\u53D7 context \u4FEE\u6539",
   "review.toggle.tag.add": "\u63A5\u53D7\u65B0\u589E\u6807\u7B7E\uFF1A{tag}",
   "review.toggle.tag.remove": "\u63A5\u53D7\u79FB\u9664\u6807\u7B7E\uFF1A{tag}",
+  "review.notice.tagNormalizationApplied": "\u6807\u7B7E\u5B57\u6BB5\u5DF2\u5728\u672C\u5730\u505A\u89C4\u8303\u5316\u5904\u7406\u3002",
+  "review.notice.newTagSuggestions": "\u8FD9\u4E9B\u662F\u65B0\u6807\u7B7E\u5EFA\u8BAE\u3002\u82E5\u8981\u4F7F\u7528\uFF0C\u8BF7\u5148\u5C06\u5176\u52A0\u5165 Tag \u767D\u540D\u5355\u3002",
+  "review.meta.attemptsUsed": "\u8BF7\u6C42\u6B21\u6570\uFF1A{attemptsUsed}",
   "review.button.apply": "Apply selected changes",
   "review.button.saveDraft": "Save as Draft",
   "review.button.close": "\u5173\u95ED",
@@ -17944,6 +18575,13 @@ var zhCNStrings = {
   "sessionPicker.empty": "\u5F53\u524D\u7B14\u8BB0\u6CA1\u6709\u53EF\u6062\u590D\u7684 proposal session\u3002",
   "sessionPicker.sessionMeta": "{createdAt} \xB7 {status} \xB7 token {mode}",
   "sessionPicker.conflict": "\u6587\u4EF6\u5DF2\u53D8\u5316\uFF1A{reason}\u3002\u65E0\u6CD5\u76F4\u63A5 apply\u3002",
+  "cachedSessionPicker.title": "\u67E5\u770B\u7F13\u5B58\u8BB0\u5F55",
+  "cachedSessionPicker.empty": "\u5F53\u524D\u6CA1\u6709\u7F13\u5B58\u8BB0\u5F55\u3002",
+  "cachedSessionPicker.button.open": "\u6253\u5F00\u7F13\u5B58\u8BB0\u5F55",
+  "cachedSessionPicker.sessionMeta": "{createdAt} \xB7 {status} \xB7 {provider}/{model} \xB7 \u8BF7\u6C42 {attemptsUsed} \xB7 token {mode}",
+  "notice.cachedSession.notFound": "\u7F13\u5B58\u8BB0\u5F55\u672A\u627E\u5230\u3002",
+  "notice.cachedSession.applyDisabled": "\u7F13\u5B58\u8BB0\u5F55\u4EC5\u53EF\u67E5\u770B\u548C\u4FDD\u5B58\u8349\u7A3F\uFF0C\u4E0D\u80FD\u76F4\u63A5 Apply\u3002",
+  "notice.cachedSession.draftPending": "\u7F13\u5B58\u8BB0\u5F55\u8349\u7A3F\u5BFC\u51FA\u5C06\u5728 D58 \u63A5\u5165\u3002",
   "eligibility.missingBBlock": "\u7F3A\u5C11 B \u7C7B\u5206\u5757 heading",
   "eligibility.multipleBBlock": "B \u7C7B\u5206\u5757 heading \u51FA\u73B0\u591A\u6B21",
   "eligibility.bBlockLevelMismatch": "B \u7C7B\u5206\u5757 heading \u5C42\u7EA7\u4E0D\u5339\u914D",
@@ -18132,6 +18770,194 @@ var ReviewModal = class extends import_obsidian2.Modal {
     };
   }
 };
+var ReviewModalV2 = class extends import_obsidian2.Modal {
+  constructor(app, viewModel, language, callbacks, options = {}) {
+    super(app);
+    this.viewModel = viewModel;
+    this.language = language;
+    this.callbacks = callbacks;
+    this.options = options;
+    this.completed = false;
+    this.decision = structuredClone(viewModel.initialDecision);
+  }
+  onOpen() {
+    const { contentEl, titleEl } = this;
+    titleEl.setText(t(this.language, "review.title"));
+    contentEl.empty();
+    contentEl.addClass("obsidian-refined-layer-review");
+    contentEl.createEl("p", {
+      cls: "obsidian-refined-layer-meta",
+      text: t(this.language, "review.noteMeta", {
+        title: this.viewModel.noteTitle,
+        path: this.viewModel.notePath
+      })
+    });
+    contentEl.createEl("p", {
+      cls: "obsidian-refined-layer-meta",
+      text: t(this.language, "review.meta.attemptsUsed", {
+        attemptsUsed: String(this.viewModel.attemptsUsed)
+      })
+    });
+    this.renderBlocksSection(contentEl);
+    this.renderFrontmatterSection(contentEl);
+    this.renderSelectedTagsSection(contentEl);
+    this.renderNewTagSuggestionsSection(contentEl);
+    this.renderTokenUsageSection(contentEl);
+    this.renderValidationSection(contentEl);
+    this.renderActionRow(contentEl);
+  }
+  onClose() {
+    this.contentEl.empty();
+    if (!this.completed) {
+      this.callbacks.onCloseWithoutDecision();
+    }
+  }
+  renderBlocksSection(container) {
+    const section = container.createDiv("obsidian-refined-layer-section");
+    section.createEl("h3", { text: t(this.language, "review.section.body") });
+    if (this.viewModel.blocks.length === 0) {
+      section.createEl("p", { text: t(this.language, "review.empty.none") });
+      return;
+    }
+    for (const block of this.viewModel.blocks) {
+      this.renderBlock(section, block);
+    }
+  }
+  renderBlock(container, block) {
+    const blockEl = container.createDiv("obsidian-refined-layer-v2-block");
+    const row = this.createCheckboxRow(blockEl, t(this.language, "review.toggle.block", { heading: block.heading }), false, (checked) => {
+      this.decision.acceptBlocks[block.id] = checked;
+    });
+    row.addClass("obsidian-refined-layer-toggle");
+    blockEl.createEl(`h${Math.min(Math.max(block.headingLevel, 1), 6)}`, {
+      cls: "obsidian-refined-layer-v2-block-heading",
+      text: block.heading
+    });
+    blockEl.createEl("pre", {
+      cls: "obsidian-refined-layer-preview",
+      text: block.content
+    });
+    if (block.warnings.length > 0) {
+      const list = blockEl.createEl("ul", { cls: "obsidian-refined-layer-warning-list" });
+      for (const warning of block.warnings) {
+        list.createEl("li", { text: warning });
+      }
+    }
+  }
+  renderFrontmatterSection(container) {
+    const section = container.createDiv("obsidian-refined-layer-section");
+    section.createEl("h3", { text: t(this.language, "review.section.frontmatter") });
+    if (this.viewModel.frontmatterSuggestions.length === 0) {
+      section.createEl("p", { text: t(this.language, "review.empty.none") });
+      return;
+    }
+    for (const suggestion of this.viewModel.frontmatterSuggestions) {
+      const key = `review.toggle.frontmatter.${suggestion.field}`;
+      const row = this.createCheckboxRow(section, t(this.language, key), false, (checked) => {
+        this.decision.acceptFrontmatter[suggestion.field] = checked;
+      });
+      row.createEl("code", { text: `${suggestion.field}: ${suggestion.value}` });
+    }
+  }
+  renderSelectedTagsSection(container) {
+    const section = container.createDiv("obsidian-refined-layer-section");
+    section.createEl("h3", { text: t(this.language, "review.section.tags") });
+    if (this.viewModel.selectedTags.length === 0) {
+      section.createEl("p", { text: t(this.language, "review.empty.none") });
+      return;
+    }
+    for (const item of this.viewModel.selectedTags) {
+      this.createCheckboxRow(section, t(this.language, "review.toggle.tag.add", { tag: item.tag }), false, (checked) => {
+        const next = new Set(this.decision.acceptTags.add);
+        checked ? next.add(item.tag) : next.delete(item.tag);
+        this.decision.acceptTags.add = [...next];
+      });
+    }
+  }
+  renderNewTagSuggestionsSection(container) {
+    const section = container.createDiv("obsidian-refined-layer-section");
+    section.createEl("h3", { text: t(this.language, "review.section.newTagSuggestions") });
+    if (this.viewModel.newTagSuggestions.length === 0) {
+      section.createEl("p", { text: t(this.language, "review.empty.none") });
+      return;
+    }
+    section.createEl("p", {
+      cls: "obsidian-refined-layer-meta",
+      text: t(this.language, "review.notice.newTagSuggestions")
+    });
+    const textArea = new import_obsidian2.TextAreaComponent(section);
+    textArea.inputEl.rows = Math.min(Math.max(this.viewModel.newTagSuggestions.length, 2), 6);
+    textArea.inputEl.addClass("obsidian-refined-layer-readonly-textarea");
+    textArea.setValue(this.viewModel.newTagSuggestions.join("\n"));
+    textArea.inputEl.readOnly = true;
+  }
+  renderTokenUsageSection(container) {
+    var _a5;
+    const section = container.createDiv("obsidian-refined-layer-section");
+    section.createEl("h3", { text: t(this.language, "review.section.tokenUsage") });
+    const usage = this.viewModel.tokenUsage;
+    section.createEl("p", {
+      text: usage ? t(this.language, "review.token.summary", {
+        provider: usage.provider,
+        model: usage.model,
+        mode: usage.countingMode,
+        total: (_a5 = usage.totalTokens) != null ? _a5 : t(this.language, "review.token.unavailable")
+      }) : t(this.language, "review.token.unavailable")
+    });
+  }
+  renderValidationSection(container) {
+    const section = container.createDiv("obsidian-refined-layer-section");
+    section.createEl("h3", { text: t(this.language, "review.section.validation") });
+    const items = [];
+    if (this.viewModel.tagNormalizationApplied) {
+      items.push(t(this.language, "review.notice.tagNormalizationApplied"));
+    }
+    items.push(...this.viewModel.validationWarnings);
+    for (const rejected of this.viewModel.rejectedFields) {
+      items.push(`${rejected.field}: ${rejected.reason}`);
+    }
+    if (items.length === 0) {
+      section.createEl("p", { text: t(this.language, "review.empty.none") });
+      return;
+    }
+    const list = section.createEl("ul", { cls: "obsidian-refined-layer-warning-list" });
+    for (const item of items) {
+      list.createEl("li", { text: item });
+    }
+  }
+  renderActionRow(container) {
+    const row = container.createDiv("obsidian-refined-layer-actions");
+    const applyButton = row.createEl("button", { text: t(this.language, "review.button.apply") });
+    applyButton.disabled = this.options.applyDisabled === true;
+    applyButton.addEventListener("click", () => {
+      if (this.options.applyDisabled) return;
+      this.completed = true;
+      this.callbacks.onApply(this.decision);
+      this.close();
+    });
+    const draftButton = row.createEl("button", { text: t(this.language, "review.button.saveDraft") });
+    draftButton.addEventListener("click", () => {
+      this.completed = true;
+      this.callbacks.onSaveDraft({
+        ...this.decision,
+        saveAsDraftOnly: true
+      });
+      this.close();
+    });
+    const closeButton = row.createEl("button", { text: t(this.language, "review.button.close") });
+    closeButton.addEventListener("click", () => {
+      this.close();
+    });
+  }
+  createCheckboxRow(container, labelText, checked, onChange) {
+    const row = container.createEl("label", { cls: "obsidian-refined-layer-checkbox-row" });
+    const checkbox = row.createEl("input", { type: "checkbox" });
+    checkbox.checked = checked;
+    checkbox.addEventListener("change", () => onChange(checkbox.checked));
+    row.createSpan({ text: labelText });
+    return row;
+  }
+};
 
 // src/ui/review/ReviewViewModel.ts
 function createReviewViewModel(session) {
@@ -18183,6 +19009,84 @@ function createReviewViewModel(session) {
       acceptTags: {
         ...((_f = session.proposal.tagSuggestion) == null ? void 0 : _f.add) ? { add: [] } : {},
         ...((_g = session.proposal.tagSuggestion) == null ? void 0 : _g.remove) ? { remove: [] } : {}
+      }
+    }
+  };
+}
+function createReviewViewModelV2(session) {
+  var _a5, _b, _c, _d, _e, _f;
+  const frontmatterSuggestions = [];
+  const suggestion = session.proposal.frontmatterSuggestion;
+  if (suggestion == null ? void 0 : suggestion.status) {
+    frontmatterSuggestions.push({ field: "status", value: suggestion.status });
+  }
+  if (suggestion == null ? void 0 : suggestion.source) {
+    frontmatterSuggestions.push({ field: "source", value: suggestion.source.join(", ") });
+  }
+  if (suggestion == null ? void 0 : suggestion.context) {
+    frontmatterSuggestions.push({ field: "context", value: suggestion.context.join(", ") });
+  }
+  const configById = new Map(
+    session.blockConfigSnapshot.aBlocks.map((block) => [block.id, block])
+  );
+  const configuredOrder = new Map(
+    session.blockConfigSnapshot.aBlocks.map((block) => [block.id, block.order])
+  );
+  const blocks = [...session.proposal.blocks].sort((a, b) => {
+    var _a6, _b2;
+    return ((_a6 = configuredOrder.get(a.id)) != null ? _a6 : Number.MAX_SAFE_INTEGER) - ((_b2 = configuredOrder.get(b.id)) != null ? _b2 : Number.MAX_SAFE_INTEGER);
+  }).map((block) => {
+    var _a6, _b2, _c2;
+    const config2 = configById.get(block.id);
+    return {
+      id: block.id,
+      heading: (_a6 = config2 == null ? void 0 : config2.heading) != null ? _a6 : block.id,
+      headingLevel: (_b2 = config2 == null ? void 0 : config2.headingLevel) != null ? _b2 : 2,
+      content: block.content,
+      warnings: (_c2 = block.warnings) != null ? _c2 : [],
+      accepted: false
+    };
+  });
+  const selectedTags = ((_b = (_a5 = session.proposal.tagSuggestion) == null ? void 0 : _a5.selectedTags) != null ? _b : []).map((tag) => ({
+    tag,
+    accepted: false
+  }));
+  const acceptBlocks = Object.fromEntries(blocks.map((block) => [block.id, false]));
+  return {
+    sessionId: session.id,
+    workflowProfileId: session.workflowProfileId,
+    schemaVersion: session.schemaVersion,
+    notePath: session.notePath,
+    noteTitle: session.noteTitle,
+    blocks,
+    frontmatterSuggestions,
+    selectedTags,
+    newTagSuggestions: (_d = (_c = session.proposal.tagSuggestion) == null ? void 0 : _c.newTagSuggestions) != null ? _d : [],
+    tagNormalizationApplied: session.validation.tagNormalizationApplied || session.proposal.tagNormalizationApplied === true,
+    validationWarnings: [
+      ...(_e = session.validation.warnings) != null ? _e : [],
+      ...(_f = session.proposal.warnings) != null ? _f : []
+    ],
+    rejectedFields: session.validation.rejectedFields,
+    attemptsUsed: session.source.attemptsUsed,
+    tokenUsage: session.tokenUsage ? {
+      provider: session.tokenUsage.provider,
+      model: session.tokenUsage.model,
+      countingMode: session.tokenUsage.countingMode,
+      totalTokens: session.tokenUsage.totalTokens,
+      inputTokens: session.tokenUsage.inputTokens,
+      outputTokens: session.tokenUsage.outputTokens,
+      generatedAt: session.tokenUsage.generatedAt
+    } : null,
+    initialDecision: {
+      acceptBlocks,
+      acceptFrontmatter: {
+        ...(suggestion == null ? void 0 : suggestion.status) ? { status: false } : {},
+        ...(suggestion == null ? void 0 : suggestion.source) ? { source: false } : {},
+        ...(suggestion == null ? void 0 : suggestion.context) ? { context: false } : {}
+      },
+      acceptTags: {
+        add: []
       }
     }
   };
@@ -18240,9 +19144,83 @@ var ObsidianReviewGate = class {
   }
 };
 
-// src/ui/review/SessionPickerModal.ts
+// src/ui/review/CachedSessionPickerModal.ts
 var import_obsidian3 = require("obsidian");
-var SessionPickerModal = class extends import_obsidian3.Modal {
+var CachedSessionPickerModal = class extends import_obsidian3.Modal {
+  constructor(app, sessions, language, callbacks) {
+    super(app);
+    this.sessions = sessions;
+    this.language = language;
+    this.callbacks = callbacks;
+    this.completed = false;
+  }
+  onOpen() {
+    const { contentEl, titleEl } = this;
+    titleEl.setText(t(this.language, "cachedSessionPicker.title"));
+    contentEl.empty();
+    contentEl.addClass("obsidian-refined-layer-session-picker");
+    if (this.sessions.length === 0) {
+      contentEl.createEl("p", {
+        cls: "obsidian-refined-layer-empty",
+        text: t(this.language, "cachedSessionPicker.empty")
+      });
+      this.renderCloseButton(contentEl);
+      return;
+    }
+    for (const session of this.sessions) {
+      this.renderSessionItem(contentEl, session);
+    }
+    this.renderCloseButton(contentEl);
+  }
+  onClose() {
+    this.contentEl.empty();
+    if (!this.completed) {
+      this.callbacks.onCancel();
+    }
+  }
+  renderSessionItem(container, session) {
+    var _a5, _b;
+    const item = container.createDiv("obsidian-refined-layer-session-item");
+    const header = item.createDiv("obsidian-refined-layer-session-header");
+    header.createEl("strong", { text: session.noteTitle });
+    item.createDiv("obsidian-refined-layer-session-meta").createSpan({
+      text: session.notePath
+    });
+    const mode = (_b = (_a5 = session.tokenUsage) == null ? void 0 : _a5.countingMode) != null ? _b : "unavailable";
+    item.createDiv("obsidian-refined-layer-session-meta").createSpan({
+      text: t(this.language, "cachedSessionPicker.sessionMeta", {
+        createdAt: session.createdAt.slice(0, 10),
+        status: session.status,
+        provider: session.provider,
+        model: session.model,
+        attemptsUsed: String(session.attemptsUsed),
+        mode
+      })
+    });
+    const actions = item.createDiv("obsidian-refined-layer-session-actions");
+    const openButton = actions.createEl("button", {
+      text: t(this.language, "cachedSessionPicker.button.open")
+    });
+    openButton.addEventListener("click", () => {
+      this.completed = true;
+      this.callbacks.onOpenSession(session.id);
+      this.close();
+    });
+  }
+  renderCloseButton(container) {
+    const row = container.createDiv("obsidian-refined-layer-actions");
+    const closeBtn = row.createEl("button", {
+      text: t(this.language, "sessionPicker.button.cancel")
+    });
+    closeBtn.addEventListener("click", () => {
+      this.close();
+    });
+  }
+};
+
+// src/ui/review/SessionPickerModal.ts
+var import_obsidian4 = require("obsidian");
+var SessionPickerModal = class extends import_obsidian4.Modal {
   constructor(app, sessions, noteTitle, notePath, language, callbacks) {
     super(app);
     this.sessions = sessions;
@@ -18365,8 +19343,8 @@ var SessionPickerModal = class extends import_obsidian3.Modal {
 };
 
 // src/ui/settings/SettingsTab.ts
-var import_obsidian4 = require("obsidian");
-var SettingsTab = class extends import_obsidian4.PluginSettingTab {
+var import_obsidian5 = require("obsidian");
+var SettingsTab = class extends import_obsidian5.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -18381,13 +19359,13 @@ var SettingsTab = class extends import_obsidian4.PluginSettingTab {
     const secretAvailable = this.plugin.hasSecureSecretStorage();
     const secretDiagnostics = this.plugin.getSecretStorageDiagnostics();
     containerEl.empty();
-    new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.language")).setDesc(t(settings.language, "settings.desc.language")).addDropdown((dropdown) => {
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.language")).setDesc(t(settings.language, "settings.desc.language")).addDropdown((dropdown) => {
       dropdown.addOption("zh-CN", t(settings.language, "settings.option.language.zh-CN")).addOption("en", t(settings.language, "settings.option.language.en")).setValue(settings.language).onChange(async (value) => {
         await this.plugin.updateSettings({ language: value });
         this.display();
       });
     });
-    new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.historyLimit")).setDesc(t(settings.language, "settings.desc.historyLimit")).addText((text) => {
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.historyLimit")).setDesc(t(settings.language, "settings.desc.historyLimit")).addText((text) => {
       text.setPlaceholder("5").setValue(String(settings.historyLimit)).onChange(async (value) => {
         const parsed = Number.parseInt(value, 10);
         await this.plugin.updateSettings({
@@ -18395,12 +19373,12 @@ var SettingsTab = class extends import_obsidian4.PluginSettingTab {
         });
       });
     });
-    new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.draftFolder")).setDesc(t(settings.language, "settings.desc.draftFolder")).addText((text) => {
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.draftFolder")).setDesc(t(settings.language, "settings.desc.draftFolder")).addText((text) => {
       text.setValue(settings.draftFolder).onChange(async (value) => {
         await this.plugin.updateSettings({ draftFolder: value.trim() || settings.draftFolder });
       });
     });
-    const providerSetting = new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.providerType")).setDesc(secretAvailable ? t(settings.language, "settings.desc.providerType") : t(settings.language, "settings.warning.secretUnavailable"));
+    const providerSetting = new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.providerType")).setDesc(secretAvailable ? t(settings.language, "settings.desc.providerType") : t(settings.language, "settings.warning.secretUnavailable"));
     providerSetting.addDropdown((dropdown) => {
       dropdown.addOption("mock", t(settings.language, "settings.option.provider.mock")).addOption("openai-compatible", t(settings.language, "settings.option.provider.openai")).addOption("deepseek", t(settings.language, "settings.option.provider.deepseek")).addOption("custom-openai-compatible", t(settings.language, "settings.option.provider.custom")).addOption("local-openai-compatible", t(settings.language, "settings.option.provider.local")).setValue(providerType).onChange(async (value) => {
         await this.plugin.switchProviderType(value);
@@ -18412,7 +19390,7 @@ var SettingsTab = class extends import_obsidian4.PluginSettingTab {
       text: t(settings.language, `settings.help.provider.${providerType}`)
     });
     if (providerType !== "mock") {
-      const modelSetting = new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.providerModel")).setDesc(t(settings.language, "settings.desc.providerModel"));
+      const modelSetting = new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.providerModel")).setDesc(t(settings.language, "settings.desc.providerModel"));
       modelSetting.addText((text) => {
         var _a6;
         text.setValue((_a6 = provider == null ? void 0 : provider.model) != null ? _a6 : "").setPlaceholder(t(settings.language, `settings.placeholder.model.${providerType}`)).onChange(async (value) => {
@@ -18421,7 +19399,7 @@ var SettingsTab = class extends import_obsidian4.PluginSettingTab {
       });
     }
     if (providerPreset.allowsBaseUrlEdit) {
-      const baseUrlSetting = new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.baseUrl")).setDesc(t(settings.language, "settings.desc.baseUrl"));
+      const baseUrlSetting = new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.baseUrl")).setDesc(t(settings.language, "settings.desc.baseUrl"));
       baseUrlSetting.addText((text) => {
         var _a6;
         text.setValue((_a6 = provider == null ? void 0 : provider.baseUrl) != null ? _a6 : "").setPlaceholder(t(settings.language, `settings.placeholder.baseUrl.${providerType}`)).onChange(async (value) => {
@@ -18430,16 +19408,16 @@ var SettingsTab = class extends import_obsidian4.PluginSettingTab {
       });
     }
     if (providerPreset.requiresSecret) {
-      const secretRefSetting = new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.secretRef")).setDesc(t(settings.language, "settings.desc.secretRef")).setDisabled(!secretAvailable);
+      const secretRefSetting = new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.secretRef")).setDesc(t(settings.language, "settings.desc.secretRef")).setDisabled(!secretAvailable);
       secretRefSetting.addText((text) => {
         var _a6;
         text.setValue((_a6 = provider == null ? void 0 : provider.secretRef) != null ? _a6 : "").setPlaceholder(t(settings.language, `settings.placeholder.secretRef.${providerType}`)).setDisabled(!secretAvailable).onChange(async (value) => {
           await this.plugin.updateProviderSettings({ secretRef: value.trim() });
         });
       });
-      const apiKeySetting = new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.apiKey")).setDesc(t(settings.language, "settings.desc.apiKey")).setDisabled(!secretAvailable);
+      const apiKeySetting = new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.apiKey")).setDesc(t(settings.language, "settings.desc.apiKey")).setDisabled(!secretAvailable);
       if (secretAvailable) {
-        const secretComponent = new import_obsidian4.SecretComponent(this.app, apiKeySetting.controlEl);
+        const secretComponent = new import_obsidian5.SecretComponent(this.app, apiKeySetting.controlEl);
         secretComponent.onChange(async (value) => {
           var _a6, _b;
           if (!value.trim()) return;
@@ -18476,7 +19454,7 @@ var SettingsTab = class extends import_obsidian4.PluginSettingTab {
         `reason: ${secretDiagnostics.reason}`
       ].join("\n")
     });
-    new import_obsidian4.Setting(containerEl).setName(t(settings.language, "settings.title.promptProfile")).setDesc(t(settings.language, "settings.desc.promptProfile"));
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.promptProfile")).setDesc(t(settings.language, "settings.desc.promptProfile"));
     this.addPromptOverrideField(
       containerEl,
       settings,
@@ -18498,9 +19476,9 @@ var SettingsTab = class extends import_obsidian4.PluginSettingTab {
   }
   addPromptOverrideField(containerEl, settings, field, title, description) {
     var _a5, _b, _c;
-    const setting = new import_obsidian4.Setting(containerEl).setName(title).setDesc(description);
+    const setting = new import_obsidian5.Setting(containerEl).setName(title).setDesc(description);
     setting.controlEl.createDiv();
-    const textArea = new import_obsidian4.TextAreaComponent(setting.controlEl);
+    const textArea = new import_obsidian5.TextAreaComponent(setting.controlEl);
     textArea.inputEl.rows = 5;
     textArea.inputEl.cols = 40;
     textArea.setValue((_c = (_b = (_a5 = settings.promptOverrides) == null ? void 0 : _a5["raw-refined"]) == null ? void 0 : _b[field]) != null ? _c : "");
@@ -18513,18 +19491,21 @@ var SettingsTab = class extends import_obsidian4.PluginSettingTab {
 // src/main.ts
 var REFINE_COMMAND_ID = "refine-current-note";
 var REOPEN_LAST_PROPOSAL_COMMAND_ID = "reopen-last-proposal-for-current-note";
-var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
+var OPEN_CACHED_PROPOSAL_SESSION_COMMAND_ID = "open-cached-proposal-session";
+var ObsidianRefinedLayerPlugin = class extends import_obsidian6.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_PLUGIN_SETTINGS;
     this.settingsStore = new ObsidianSettingsStore(this);
     this.sessionStore = new ProposalSessionStore(DEFAULT_PLUGIN_SETTINGS.historyLimit, new ObsidianSessionStore(this));
+    this.sessionCacheV2 = new ObsidianSessionCacheV2Store(this);
     this.secretStore = new ObsidianSecretStore(this.app);
   }
   async onload() {
     this.settings = await this.settingsStore.load();
     this.sessionStore = new ProposalSessionStore(this.settings.historyLimit, new ObsidianSessionStore(this));
     await this.sessionStore.restoreFromDisk();
+    this.sessionCacheV2 = new ObsidianSessionCacheV2Store(this);
     this.secretStore = new ObsidianSecretStore(this.app);
     this.addSettingTab(new SettingsTab(this.app, this));
     this.addCommand({
@@ -18534,11 +19515,11 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
         var _a5;
         const providerSelection = this.selectLlmProvider();
         if (providerSelection.kind === "error") {
-          new import_obsidian5.Notice(providerSelection.message, 8e3);
+          new import_obsidian6.Notice(providerSelection.message, 8e3);
           return;
         }
         if (providerSelection.warning) {
-          new import_obsidian5.Notice(providerSelection.warning, 6e3);
+          new import_obsidian6.Notice(providerSelection.warning, 6e3);
         }
         const noteRepository = new ObsidianNoteRepository(this.app);
         const createProposalUseCase = new CreateProposalUseCase(
@@ -18554,7 +19535,7 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
           await this.openReviewForSession(result.session.id);
           return;
         }
-        new import_obsidian5.Notice(formatCreateProposalMessage(this.settings.language, result), 8e3);
+        new import_obsidian6.Notice(formatCreateProposalMessage(this.settings.language, result), 8e3);
       }
     });
     this.addCommand({
@@ -18566,7 +19547,7 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
         const listUseCase = new ListRecoverableSessionsUseCase(this.sessionStore, noteRepository);
         const result = await listUseCase.execute();
         if (result.sessions.length === 0) {
-          new import_obsidian5.Notice(t(this.settings.language, "sessionPicker.empty"), 6e3);
+          new import_obsidian6.Notice(t(this.settings.language, "sessionPicker.empty"), 6e3);
           return;
         }
         new SessionPickerModal(
@@ -18584,18 +19565,25 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
             },
             onManualCopy: async (sessionId) => {
               await this.discardSession(sessionId);
-              new import_obsidian5.Notice("Session content shown for manual copy. Copy and close the modal.", 6e3);
+              new import_obsidian6.Notice("Session content shown for manual copy. Copy and close the modal.", 6e3);
             },
             onRegenerate: () => {
             },
             onDiscard: async (sessionId) => {
               await this.discardSession(sessionId);
-              new import_obsidian5.Notice("Session discarded.", 4e3);
+              new import_obsidian6.Notice("Session discarded.", 4e3);
             },
             onCancel: () => {
             }
           }
         ).open();
+      }
+    });
+    this.addCommand({
+      id: OPEN_CACHED_PROPOSAL_SESSION_COMMAND_ID,
+      name: "Open cached proposal session",
+      callback: async () => {
+        await this.openCachedProposalSessionFlow();
       }
     });
   }
@@ -18653,11 +19641,11 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
   }
   async saveProviderApiKey(secretRef, value) {
     if (!this.secretStore.isAvailable()) {
-      new import_obsidian5.Notice(t(this.settings.language, "notice.provider.secretBlocked"), 8e3);
+      new import_obsidian6.Notice(t(this.settings.language, "notice.provider.secretBlocked"), 8e3);
       return;
     }
     if (!secretRef.trim()) {
-      new import_obsidian5.Notice(t(this.settings.language, "notice.provider.missingSecretRef"), 8e3);
+      new import_obsidian6.Notice(t(this.settings.language, "notice.provider.missingSecretRef"), 8e3);
       return;
     }
     if (!value.trim()) {
@@ -18665,13 +19653,13 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
     }
     try {
       this.secretStore.setSecret(secretRef.trim(), value);
-      new import_obsidian5.Notice(t(this.settings.language, "notice.provider.secretSaved"), 4e3);
+      new import_obsidian6.Notice(t(this.settings.language, "notice.provider.secretSaved"), 4e3);
     } catch (error51) {
       const message = error51 instanceof Error ? error51.message : String(error51);
       if (message.includes("Secret reference")) {
-        new import_obsidian5.Notice(t(this.settings.language, "notice.provider.secretInvalidRef"), 8e3);
+        new import_obsidian6.Notice(t(this.settings.language, "notice.provider.secretInvalidRef"), 8e3);
       } else {
-        new import_obsidian5.Notice(
+        new import_obsidian6.Notice(
           t(this.settings.language, "notice.provider.error", { message: toSafeErrorMessage(error51) }),
           8e3
         );
@@ -18711,7 +19699,7 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
         await this.saveDraft(sessionId, void 0, decision);
       },
       onCancelNotice: () => {
-        new import_obsidian5.Notice(t(this.settings.language, "review.placeholder.cancel"), 4e3);
+        new import_obsidian6.Notice(t(this.settings.language, "review.placeholder.cancel"), 4e3);
       }
     });
     const requestReviewUseCase = new RequestReviewUseCase(gate);
@@ -18722,14 +19710,14 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
     const recoverUseCase = new RecoverProposalSessionUseCase(this.sessionStore, noteRepository);
     const recovery = await recoverUseCase.execute(sessionId);
     if (!recovery) {
-      new import_obsidian5.Notice("Session not found.", 6e3);
+      new import_obsidian6.Notice("Session not found.", 6e3);
       return;
     }
     if (recovery.kind === "fresh") {
       await this.openReviewForSession(sessionId);
       return;
     }
-    new import_obsidian5.Notice(
+    new import_obsidian6.Notice(
       t(this.settings.language, "sessionPicker.conflict", {
         reason: recovery.reason
       }),
@@ -18740,6 +19728,43 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
   async discardSession(sessionId) {
     await this.sessionStore.updateSessionStatus(sessionId, "discarded");
   }
+  async openCachedProposalSessionFlow() {
+    const useCase = new OpenCachedSessionUseCase(this.sessionCacheV2);
+    const sessions = await useCase.list();
+    if (sessions.length === 0) {
+      new import_obsidian6.Notice(t(this.settings.language, "cachedSessionPicker.empty"), 6e3);
+      return;
+    }
+    new CachedSessionPickerModal(this.app, sessions, this.settings.language, {
+      onOpenSession: async (sessionId) => {
+        const session = await useCase.open(sessionId);
+        if (!session) {
+          new import_obsidian6.Notice(t(this.settings.language, "notice.cachedSession.notFound"), 6e3);
+          return;
+        }
+        const modal = new ReviewModalV2(
+          this.app,
+          createReviewViewModelV2(session),
+          this.settings.language,
+          {
+            onApply: () => {
+              new import_obsidian6.Notice(t(this.settings.language, "notice.cachedSession.applyDisabled"), 6e3);
+            },
+            onSaveDraft: async (decision) => {
+              await this.saveCachedDraft(session.id, decision);
+            },
+            onCloseWithoutDecision: () => {
+              new import_obsidian6.Notice(t(this.settings.language, "review.placeholder.cancel"), 4e3);
+            }
+          },
+          { applyDisabled: true }
+        );
+        modal.open();
+      },
+      onCancel: () => {
+      }
+    }).open();
+  }
   async applySelectedChanges(sessionId, decision) {
     const noteRepository = new ObsidianNoteRepository(this.app);
     const buildApplyPlanUseCase = new BuildApplyPlanUseCase(
@@ -18749,7 +19774,7 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
     );
     const planResult = await buildApplyPlanUseCase.execute(sessionId, decision);
     if (!planResult.ok) {
-      new import_obsidian5.Notice(`Refined Layer: apply plan failed (${planResult.code}) - ${planResult.message}`, 8e3);
+      new import_obsidian6.Notice(`Refined Layer: apply plan failed (${planResult.code}) - ${planResult.message}`, 8e3);
       return;
     }
     const applyDecisionUseCase = new ApplyDecisionUseCase(
@@ -18760,18 +19785,18 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
     const applyResult = await applyDecisionUseCase.execute(planResult.plan);
     if (applyResult.kind === "applied") {
       await this.sessionStore.updateSessionStatus(sessionId, "applied");
-      new import_obsidian5.Notice(`Refined Layer: applied selected changes to ${applyResult.notePath}.`, 6e3);
+      new import_obsidian6.Notice(`Refined Layer: applied selected changes to ${applyResult.notePath}.`, 6e3);
       return;
     }
     if (applyResult.kind === "conflict") {
       await this.sessionStore.updateSessionStatus(sessionId, "conflicted");
-      new import_obsidian5.Notice(
+      new import_obsidian6.Notice(
         `Refined Layer: apply blocked by conflict (${applyResult.reason}). Options: ${applyResult.options.join(", ")}.`,
         8e3
       );
       return;
     }
-    new import_obsidian5.Notice(`Refined Layer: apply failed (${applyResult.code}) - ${applyResult.message}`, 8e3);
+    new import_obsidian6.Notice(`Refined Layer: apply failed (${applyResult.code}) - ${applyResult.message}`, 8e3);
   }
   async saveDraft(sessionId, conflictReason, decision) {
     const noteRepository = new ObsidianNoteRepository(this.app);
@@ -18779,10 +19804,20 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian5.Plugin {
     const result = await saveDraftUseCase.execute(sessionId, conflictReason, decision == null ? void 0 : decision.editedRefinedSections);
     if (result.saved) {
       await this.sessionStore.updateSessionStatus(sessionId, "saved_as_draft");
-      new import_obsidian5.Notice(`Refined Layer: draft saved to ${result.draftPath}.`, 6e3);
+      new import_obsidian6.Notice(`Refined Layer: draft saved to ${result.draftPath}.`, 6e3);
       return;
     }
-    new import_obsidian5.Notice(`Refined Layer: save draft failed - ${result.message}`, 8e3);
+    new import_obsidian6.Notice(`Refined Layer: save draft failed - ${result.message}`, 8e3);
+  }
+  async saveCachedDraft(sessionId, decision) {
+    const noteRepository = new ObsidianNoteRepository(this.app);
+    const saveDraftUseCase = new SaveDraftUseCase(this.sessionStore, noteRepository, this.settings, this.sessionCacheV2);
+    const result = await saveDraftUseCase.executeV2(sessionId, decision);
+    if (result.saved) {
+      new import_obsidian6.Notice(`Refined Layer: draft saved to ${result.draftPath}.`, 6e3);
+      return;
+    }
+    new import_obsidian6.Notice(`Refined Layer: save draft failed - ${result.message}`, 8e3);
   }
   selectLlmProvider() {
     var _a5, _b, _c, _d, _e, _f;

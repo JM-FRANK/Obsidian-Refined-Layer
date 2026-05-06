@@ -63,6 +63,36 @@
   margin-bottom: 0.8rem;
 }
 
+.obsidian-refined-layer-v2-block {
+  border-top: 1px solid var(--background-modifier-border);
+  padding: 0.8rem 0;
+}
+
+.obsidian-refined-layer-v2-block:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.obsidian-refined-layer-v2-block-heading {
+  font-size: var(--font-ui-medium);
+  margin: 0.4rem 0;
+}
+
+.obsidian-refined-layer-readonly-textarea {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  resize: vertical;
+  width: 100%;
+}
+
+.obsidian-refined-layer-warning-list {
+  color: var(--text-warning);
+  margin: 0.45rem 0 0;
+  padding-inline-start: 1.2rem;
+}
+
 .obsidian-refined-layer-actions {
   display: flex;
   gap: 0.75rem;

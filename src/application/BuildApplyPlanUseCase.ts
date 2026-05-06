@@ -1,12 +1,14 @@
 import { ApplyPlanner } from "../core/apply/ApplyPlanner";
 import type { ApplyPlan } from "../core/apply/ApplyPlan";
 import { BodyAssembler } from "../core/apply/BodyAssembler";
+import { BlockExtractor } from "../core/markdown/BlockExtractor";
 import { PolicyGuard } from "../core/policy/PolicyGuard";
 import { ProposalValidator } from "../core/proposal/ProposalValidator";
 import { ProtectedRegionExtractor } from "../core/protected-region/ProtectedRegionExtractor";
 import type { WorkflowProfile } from "../core/profile/WorkflowProfile";
-import type { UserDecision } from "../core/review/UserDecision";
+import type { UserDecision, UserDecisionV2 } from "../core/review/UserDecision";
 import type { ProposalSessionStore } from "../runtime/ProposalSessionStore";
+import type { SessionCacheV2Store } from "../runtime/SessionCacheV2Store";
 import type { NoteFilePort } from "./ports/NoteFilePort";
 
 export type BuildApplyPlanResult =
@@ -26,12 +28,14 @@ export class BuildApplyPlanUseCase {
   private readonly policyGuard: PolicyGuard;
   private readonly proposalValidator: ProposalValidator;
   private readonly protectedRegionExtractor = new ProtectedRegionExtractor();
+  private readonly blockExtractor = new BlockExtractor();
   private readonly profile: WorkflowProfile;
 
   constructor(
     profile: WorkflowProfile,
     private readonly sessionStore: ProposalSessionStore,
     private readonly noteFilePort: NoteFilePort,
+    private readonly sessionCacheV2?: SessionCacheV2Store,
   ) {
     this.profile = profile;
     this.policyGuard = new PolicyGuard(profile);
@@ -103,5 +107,61 @@ export class BuildApplyPlanUseCase {
       ok: true,
       plan: this.planner.buildPlan(session, guardedDecision, body),
     };
+  }
+
+  async executeV2(sessionId: string, decision: UserDecisionV2): Promise<BuildApplyPlanResult> {
+    const session = await this.findSessionV2(sessionId);
+    if (!session) {
+      return {
+        ok: false,
+        code: "missing-session",
+        message: `Proposal session ${sessionId} was not found.`,
+      };
+    }
+
+    const note = await this.noteFilePort.readNoteByPath(session.notePath);
+    if (!note) {
+      return {
+        ok: false,
+        code: "missing-note",
+        message: `Target note ${session.notePath} was not found.`,
+      };
+    }
+
+    const bBlock = this.blockExtractor.extract(note.content, session.blockConfigSnapshot.bBlock);
+    if (!bBlock.ok) {
+      return {
+        ok: false,
+        code: bBlock.error.code,
+        message: bBlock.error.message,
+      };
+    }
+
+    const acceptedBlockIds = new Set(
+      Object.entries(decision.acceptBlocks)
+        .filter(([, accepted]) => accepted)
+        .map(([id]) => id),
+    );
+
+    for (const block of session.proposal.blocks) {
+      if (!acceptedBlockIds.has(block.id)) continue;
+      if (block.content.includes(bBlock.block.text)) {
+        return {
+          ok: false,
+          code: "accepted-block-contains-b-block",
+          message: `Accepted block ${block.id} contains protected B block content.`,
+        };
+      }
+    }
+
+    return {
+      ok: true,
+      plan: this.planner.buildPlanV2(session, decision),
+    };
+  }
+
+  private async findSessionV2(sessionId: string) {
+    const sessions = await this.sessionCacheV2?.loadAll();
+    return sessions?.find((session) => session.id === sessionId) ?? null;
   }
 }
