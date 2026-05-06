@@ -1157,3 +1157,26 @@ Refine 运行状态已从 Modal 改为非阻塞 Notice，不再阻塞 Obsidian �
   - `src/ui/i18n/zh-CN.ts`、`src/ui/i18n/en.ts`：新增非阻塞运行通知文案
 - Verification: `npm run typecheck` 通过；`npm test -- tests/application/CreateProposalUseCase.test.ts tests/ui/i18n/i18n.test.ts` 通过；`npm run build` 通过
 - Next: 在真实 Obsidian 中观察 Notice 停留阶段；如果仍主要停在“请求模型”，下一步可继续压缩 prompt schema、减少默认生成分块数或为 provider 增加可配置 max_tokens
+
+## D79（v0.2.1）开发日志
+
+### Current status
+
+新增可关闭的 refine 性能排查日志。默认开关 `ENABLE_REFINE_PERFORMANCE_LOGS = false`，不会创建 logger 或写盘；需要排查时可在 `src/main.ts` 打开。打开后，每次 refine 会写 JSONL 到 `.obsidian/plugins/obsidian-refined-layer/logs/`，逐行记录 run-start、stage、attempt-start、attempt-end、run-end。日志只记录阶段、耗时、delta、provider/model、profile、note path/title、字符长度、attempt、response length、token usage、validation status、accepted/rejected 数量和结果摘要，不写 prompt / response 原文、note 正文或 secret。
+
+### Active summary
+- Date: 2026-05-07
+- Scope: refine 性能日志与慢请求排查记录
+- Reason: 真实 DeepSeek 单次成功仍约 30s，仅 Notice 阶段不足以分析细粒度耗时；需要能在插件目录中保留排查日志，且默认关闭避免资源浪费
+- Change:
+  - `src/application/RefineRunLogger.ts`：新增日志事件与 logger port
+  - `src/adapters/obsidian/ObsidianRefineRunLogger.ts`：新增 Obsidian JSONL logger，写入 `.obsidian/plugins/obsidian-refined-layer/logs/`
+  - `src/application/CreateProposalUseCase.ts`：在 eligibility、B block extraction、prompt build、provider request、parse、Zod、normalization、session save、run end 等阶段记录细粒度事件
+  - `src/main.ts`：新增 `ENABLE_REFINE_PERFORMANCE_LOGS` 代码开关，默认 `false`
+  - `tests/application/CreateProposalUseCase.test.ts`：新增 logger 注入回归测试，确认 requestChars、provider response、token usage 与 run-end 会被记录
+- Verification: `npm run typecheck` 通过；`npm test -- tests/application/CreateProposalUseCase.test.ts` 通过；`npm run build` 通过
+- Next: 打开开关后在真实 Obsidian 重跑 DeepSeek refine，查看 `requesting-model` attempt-start 到 attempt-end 的 `deltaMs` 是否占据主要 30s
+
+### D79.1 RunId 对齐修复
+
+发现性能日志文件名中的 runId 与 JSONL 行内 `runId` 不一致：文件名由 `main.ts` 生成，日志事件由 `CreateProposalUseCase` 内部另行生成。已改为由 `main.ts` 生成同一个 `debugRunId`，同时传给 `ObsidianRefineRunLogger` 和 `CreateProposalUseCase`，确保文件名与每行 `runId` 对齐。新增测试断言注入 logger 时所有事件使用同一 runId。验证：`npm run typecheck`、`npm test -- tests/application/CreateProposalUseCase.test.ts`、`npm run build` 均通过。

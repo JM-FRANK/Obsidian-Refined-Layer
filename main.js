@@ -556,6 +556,34 @@ function redactFragment(fragment) {
   return `${(_a5 = fragment[0]) != null ? _a5 : ""}${"*".repeat(Math.max(fragment.length - 1, 0))}`;
 }
 
+// src/adapters/obsidian/ObsidianRefineRunLogger.ts
+var REFINE_RUN_LOG_PATH = ".obsidian/plugins/obsidian-refined-layer/logs";
+var ObsidianRefineRunLogger = class {
+  constructor(plugin, runId) {
+    this.plugin = plugin;
+    this.writeQueue = Promise.resolve();
+    this.filePath = `${REFINE_RUN_LOG_PATH}/${sanitizeFileName(runId)}.jsonl`;
+  }
+  async write(event) {
+    this.writeQueue = this.writeQueue.then(() => this.writeLine(event));
+    await this.writeQueue;
+  }
+  async writeLine(event) {
+    const adapter = this.plugin.app.vault.adapter;
+    const safeEvent = redactSensitiveStrings(event);
+    const nextLine = `${JSON.stringify(safeEvent)}
+`;
+    if (!await adapter.exists(REFINE_RUN_LOG_PATH)) {
+      await adapter.mkdir(REFINE_RUN_LOG_PATH);
+    }
+    const current = await adapter.exists(this.filePath) ? await adapter.read(this.filePath).catch(() => "") : "";
+    await adapter.write(this.filePath, current + nextLine);
+  }
+};
+function sanitizeFileName(value) {
+  return value.replace(/[<>:"/\\|?*\s]/g, "-");
+}
+
 // src/adapters/obsidian/ObsidianSessionCacheV2Store.ts
 var SESSION_CACHE_PATH = ".obsidian/plugins/obsidian-refined-layer/session-cache";
 var SESSION_FILE_NAME = "sessions.v2.json";
@@ -17767,7 +17795,7 @@ var RetryAttemptRunner = class {
 // src/application/CreateProposalUseCase.ts
 var ERROR_SESSION_CACHE_DISPLAY_PATH = ".obsidian/plugins/obsidian-refined-layer/error-session-cache/";
 var CreateProposalUseCase = class {
-  constructor(noteRepository, profile, llmProvider, sessionStore, settings, promptOverride, errorSessionCache, sessionCacheV2, promptObservationStore, statusReporter) {
+  constructor(noteRepository, profile, llmProvider, sessionStore, settings, promptOverride, errorSessionCache, sessionCacheV2, promptObservationStore, statusReporter, runLogger, runId) {
     this.noteRepository = noteRepository;
     this.profile = profile;
     this.llmProvider = llmProvider;
@@ -17776,8 +17804,12 @@ var CreateProposalUseCase = class {
     this.promptOverride = promptOverride;
     this.promptObservationStore = promptObservationStore;
     this.statusReporter = statusReporter;
+    this.runLogger = runLogger;
     this.tokenUsageReporter = new TokenUsageReporter();
     this.blockExtractor = new BlockExtractor();
+    this.runStartedAt = Date.now();
+    this.lastLogAt = this.runStartedAt;
+    this.runId = runId != null ? runId : createSessionId().replace("proposal-session", "refine-run");
     this.eligibilityUseCase = new CheckEligibilityUseCase(noteRepository, profile, settings);
     this.proposalValidator = new ProposalValidator(profile);
     this.protectedRegionExtractor = new ProtectedRegionExtractor();
@@ -17893,23 +17925,48 @@ ${userPrompt}`,
   }
   // ── v0.2.0 pipeline (retry + session/error cache) ──
   async executeV2() {
+    var _a5, _b, _c, _d, _e;
+    await this.logEvent("run-start", {
+      resultKind: "started"
+    });
     this.reportStatus("checking-eligibility");
+    await this.logEvent("stage", { stage: "checking-eligibility" });
     const activeNote = await this.eligibilityUseCase.execute();
     if (!activeNote.hasActiveMarkdownNote || !activeNote.eligible) {
       this.reportStatus("failed");
+      await this.logEvent("run-end", {
+        stage: "failed",
+        resultKind: "eligibility-failed",
+        errorSummary: (_c = (_b = (_a5 = activeNote.failureReasons) == null ? void 0 : _a5.join(", ")) != null ? _b : activeNote.reason) != null ? _c : "not eligible"
+      });
       return { kind: "eligibility-failed", eligibility: activeNote };
     }
     const lookup = await this.noteRepository.getActiveNote();
     if (lookup.kind !== "markdown") {
       this.reportStatus("failed");
+      await this.logEvent("run-end", {
+        stage: "failed",
+        resultKind: "eligibility-failed",
+        errorSummary: lookup.kind
+      });
       return { kind: "eligibility-failed", eligibility: activeNote };
     }
+    await this.logEvent("stage", {
+      notePath: lookup.note.path,
+      noteTitle: lookup.note.title,
+      noteContentChars: lookup.note.content.length
+    });
     const bBlockExtract = this.blockExtractor.extract(
       lookup.note.content,
       this.settings.bBlock
     );
     if (!bBlockExtract.ok) {
       this.reportStatus("failed");
+      await this.logEvent("run-end", {
+        stage: "failed",
+        resultKind: "validation-failed",
+        errorSummary: `${bBlockExtract.error.code}: ${bBlockExtract.error.message}`
+      });
       return {
         kind: "validation-failed",
         errors: [{
@@ -17921,6 +17978,11 @@ ${userPrompt}`,
     }
     if (!this.llmProvider.generateProposalV2) {
       this.reportStatus("failed");
+      await this.logEvent("run-end", {
+        stage: "failed",
+        resultKind: "validation-failed",
+        errorSummary: "v2-not-supported"
+      });
       return {
         kind: "validation-failed",
         errors: [{
@@ -17932,6 +17994,12 @@ ${userPrompt}`,
     }
     const promptBuilder = new PromptBuilder();
     this.reportStatus("building-prompt");
+    await this.logEvent("stage", {
+      stage: "building-prompt",
+      protectedBlockChars: bBlockExtract.block.text.length,
+      enabledABlockCount: this.settings.aBlocks.filter((b) => b.enabled).length,
+      tagWhitelistCount: this.settings.tagWhitelist.length
+    });
     const { request, debugSnapshot } = promptBuilder.build({
       provider: this.llmProvider.providerId,
       model: this.llmProvider.model,
@@ -17952,18 +18020,36 @@ ${userPrompt}`,
       bBlockText: bBlockExtract.block.text,
       errorSessionId
     };
+    await this.logEvent("stage", {
+      stage: "building-prompt",
+      requestChars: request.messages.reduce((sum, message) => sum + message.content.length, 0),
+      systemPromptChars: (_d = request.messages.find((message) => message.role === "system")) == null ? void 0 : _d.content.length,
+      userPromptChars: (_e = request.messages.find((message) => message.role === "user")) == null ? void 0 : _e.content.length
+    });
     const retryResult = await this.retryRunner.run(async (attemptIndex) => {
       return this.runSingleAttempt(ctx, attemptIndex);
     });
     if (retryResult.status === "success") {
       this.reportStatus("saving-session");
+      await this.logEvent("stage", { stage: "saving-session" });
       return this.handleRetrySuccess(retryResult.session, retryResult.failedAttempts, retryResult.attemptsUsed);
     }
     this.reportStatus("failed");
+    await this.logEvent("run-end", {
+      stage: "failed",
+      resultKind: "exhausted",
+      errorSummary: "all retry attempts exhausted"
+    });
     return this.handleRetryExhausted(retryResult.failedAttempts);
   }
   async runSingleAttempt(ctx, attemptIndex) {
     this.reportStatus("requesting-model", attemptIndex);
+    await this.logEvent("attempt-start", {
+      stage: "requesting-model",
+      attemptIndex,
+      maxAttempts: 3,
+      requestChars: ctx.request.messages.reduce((sum, message) => sum + message.content.length, 0)
+    });
     let llmResponse;
     try {
       llmResponse = await this.llmProvider.generateProposalV2(ctx.request);
@@ -17981,10 +18067,41 @@ ${userPrompt}`,
           errorSummary: failedAttempt.errorSummary
         }
       });
+      await this.logEvent("attempt-end", {
+        stage: "failed",
+        attemptIndex,
+        maxAttempts: 3,
+        resultKind: "provider-failed",
+        errorSummary: failedAttempt.errorSummary
+      });
       return { success: false, attempt: failedAttempt };
     }
+    await this.logEvent("attempt-end", {
+      stage: "requesting-model",
+      attemptIndex,
+      maxAttempts: 3,
+      responseChars: llmResponse.rawText.length,
+      tokenUsage: llmResponse.usage ? {
+        inputTokens: llmResponse.usage.inputTokens,
+        outputTokens: llmResponse.usage.outputTokens,
+        totalTokens: llmResponse.usage.totalTokens,
+        countingMode: llmResponse.usage.countingMode
+      } : void 0,
+      resultKind: "provider-response"
+    });
     this.reportStatus("parsing-response", attemptIndex);
+    await this.logEvent("stage", {
+      stage: "parsing-response",
+      attemptIndex,
+      maxAttempts: 3,
+      responseChars: llmResponse.rawText.length
+    });
     this.reportStatus("validating-proposal", attemptIndex);
+    await this.logEvent("stage", {
+      stage: "validating-proposal",
+      attemptIndex,
+      maxAttempts: 3
+    });
     const zodValidation = this.proposalValidator.validateV2Output(llmResponse.rawText);
     if (!zodValidation.ok) {
       const failedAttempt = this.buildFailedAttempt(
@@ -18006,9 +18123,22 @@ ${userPrompt}`,
           errorSummary: failedAttempt.errorSummary
         }
       });
+      await this.logEvent("attempt-end", {
+        stage: "validating-proposal",
+        attemptIndex,
+        maxAttempts: 3,
+        resultKind: "zod-failed",
+        errorSummary: failedAttempt.errorSummary
+      });
       return { success: false, attempt: failedAttempt };
     }
     this.reportStatus("normalizing-proposal", attemptIndex);
+    await this.logEvent("stage", {
+      stage: "normalizing-proposal",
+      attemptIndex,
+      maxAttempts: 3,
+      acceptedBlockCount: zodValidation.proposal.blocks.length
+    });
     const normalizer = new ProposalNormalizer();
     const normalized = normalizer.normalize(zodValidation.proposal, this.settings);
     if (normalized.validation.status === "invalid") {
@@ -18030,6 +18160,16 @@ ${userPrompt}`,
           normalizationReport: normalized.validation,
           errorSummary: failedAttempt.errorSummary
         }
+      });
+      await this.logEvent("attempt-end", {
+        stage: "normalizing-proposal",
+        attemptIndex,
+        maxAttempts: 3,
+        validationStatus: normalized.validation.status,
+        acceptedBlockCount: normalized.blocks.length,
+        rejectedFieldCount: normalized.validation.rejectedFields.length,
+        resultKind: "normalization-invalid",
+        errorSummary: failedAttempt.errorSummary
       });
       return { success: false, attempt: failedAttempt };
     }
@@ -18080,6 +18220,21 @@ ${userPrompt}`,
         attemptsUsed: attemptIndex
       }
     };
+    await this.logEvent("attempt-end", {
+      stage: "normalizing-proposal",
+      attemptIndex,
+      maxAttempts: 3,
+      validationStatus: normalized.validation.status,
+      acceptedBlockCount: normalized.blocks.length,
+      rejectedFieldCount: normalized.validation.rejectedFields.length,
+      tokenUsage: session.tokenUsage ? {
+        inputTokens: session.tokenUsage.inputTokens,
+        outputTokens: session.tokenUsage.outputTokens,
+        totalTokens: session.tokenUsage.totalTokens,
+        countingMode: session.tokenUsage.countingMode
+      } : void 0,
+      resultKind: "attempt-success"
+    });
     this.observePrompt(ctx, {
       responseSnapshot: {
         rawText: llmResponse.rawText,
@@ -18162,6 +18317,15 @@ ${userPrompt}`,
       errorCacheDisabled: !this.errorSessionCache,
       errorCachePath: this.errorSessionCache ? ERROR_SESSION_CACHE_DISPLAY_PATH : void 0
     };
+    await this.logEvent("run-end", {
+      resultKind: "created-v2",
+      tokenUsage: session.tokenUsage ? {
+        inputTokens: session.tokenUsage.inputTokens,
+        outputTokens: session.tokenUsage.outputTokens,
+        totalTokens: session.tokenUsage.totalTokens,
+        countingMode: session.tokenUsage.countingMode
+      } : void 0
+    });
     return { kind: "created-v2", session, noticePlan };
   }
   async handleRetryExhausted(failedAttempts) {
@@ -18189,6 +18353,24 @@ ${userPrompt}`,
       profileId: this.settings.id,
       profileName: this.settings.name,
       ...attemptIndex !== void 0 ? { attemptIndex, maxAttempts: 3 } : {}
+    });
+  }
+  async logEvent(event, details = {}) {
+    if (!this.runLogger) return;
+    const now = Date.now();
+    const deltaMs = now - this.lastLogAt;
+    this.lastLogAt = now;
+    await this.runLogger.write({
+      runId: this.runId,
+      timestamp: new Date(now).toISOString(),
+      event,
+      elapsedMs: now - this.runStartedAt,
+      deltaMs,
+      provider: this.llmProvider.providerId,
+      model: this.llmProvider.model,
+      profileId: this.settings.id,
+      profileName: this.settings.name,
+      ...details
     });
   }
 };
@@ -18452,7 +18634,7 @@ var SaveDraftUseCase = class {
         message: `Proposal session ${sessionId} was not found.`
       };
     }
-    const fileName = `${sanitizeFileName(session.noteTitle)}-${session.id}.md`;
+    const fileName = `${sanitizeFileName2(session.noteTitle)}-${session.id}.md`;
     const draftPath = `${this.settings.draftFolder}/${fileName}`;
     const refinedSections = editedRefinedSections != null ? editedRefinedSections : session.proposal.refinedSections;
     const content = [
@@ -18490,7 +18672,7 @@ var SaveDraftUseCase = class {
         message: `Proposal session ${sessionId} was not found.`
       };
     }
-    const fileName = `${sanitizeFileName(session.noteTitle)}-${session.id}.md`;
+    const fileName = `${sanitizeFileName2(session.noteTitle)}-${session.id}.md`;
     const draftPath = `${this.settings.draftFolder}/${fileName}`;
     const content = redactSensitiveText(buildV2DraftContent(session, decision));
     await this.noteFilePort.writeDraft(draftPath, content);
@@ -18508,7 +18690,7 @@ var SaveDraftUseCase = class {
     return (_b = sessions == null ? void 0 : sessions.find((session) => session.id === sessionId)) != null ? _b : null;
   }
 };
-function sanitizeFileName(value) {
+function sanitizeFileName2(value) {
   return value.replace(/[<>:"/\\|?*]/g, "-");
 }
 function buildV2DraftContent(session, decision) {
@@ -20541,6 +20723,7 @@ var REFINE_COMMAND_ID = "refine-current-note";
 var REFINE_WITH_PROFILE_COMMAND_ID = "refine-current-note-with-profile";
 var REOPEN_LAST_PROPOSAL_COMMAND_ID = "reopen-last-proposal-for-current-note";
 var OPEN_CACHED_PROPOSAL_SESSION_COMMAND_ID = "open-cached-proposal-session";
+var ENABLE_REFINE_PERFORMANCE_LOGS = true;
 var ObsidianRefinedLayerPlugin = class extends import_obsidian8.Plugin {
   constructor() {
     super(...arguments);
@@ -20741,6 +20924,7 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian8.Plugin {
     const statusNotice = new RefineRunStatusNotice(this.settings.language, profile);
     statusNotice.start();
     const noteRepository = new ObsidianNoteRepository(this.app);
+    const debugRunId = `refine-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const createProposalUseCase = new CreateProposalUseCase(
       noteRepository,
       rawRefinedProfile,
@@ -20751,7 +20935,9 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian8.Plugin {
       this.settings.errorSessionCache.enabled ? new ObsidianErrorSessionCacheStore(this, this.settings.errorSessionCache.limit) : void 0,
       this.sessionCacheV2,
       this.promptObservationStore,
-      (status) => statusNotice.updateStatus(status)
+      (status) => statusNotice.updateStatus(status),
+      ENABLE_REFINE_PERFORMANCE_LOGS ? new ObsidianRefineRunLogger(this, debugRunId) : void 0,
+      debugRunId
     );
     const result = await createProposalUseCase.executeV2();
     if (result.kind === "created-v2") {

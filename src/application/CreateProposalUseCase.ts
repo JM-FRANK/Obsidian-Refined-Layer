@@ -25,6 +25,7 @@ import type { ErrorSessionCacheStore } from "../runtime/ErrorSessionCacheStore";
 import type { SessionCacheV2Store } from "../runtime/SessionCacheV2Store";
 import type { TokenUsageReport } from "../core/proposal/TokenUsageReport";
 import type { PromptObservationStore } from "../runtime/PromptObservationStore";
+import type { RefineRunLogger } from "./RefineRunLogger";
 import type { RefineRunStatusReporter, RefineRunStage } from "./RefineRunStatus";
 
 export interface V2NoticePlan {
@@ -100,6 +101,9 @@ export class CreateProposalUseCase {
   private readonly retryRunner: RetryAttemptRunner;
   private readonly errorSessionCache?: ErrorSessionCacheStore;
   private readonly sessionCacheV2?: SessionCacheV2Store;
+  private readonly runId: string;
+  private readonly runStartedAt = Date.now();
+  private lastLogAt = this.runStartedAt;
 
   constructor(
     private readonly noteRepository: ActiveNoteRepository,
@@ -112,7 +116,10 @@ export class CreateProposalUseCase {
     sessionCacheV2?: SessionCacheV2Store,
     private readonly promptObservationStore?: PromptObservationStore,
     private readonly statusReporter?: RefineRunStatusReporter,
+    private readonly runLogger?: RefineRunLogger,
+    runId?: string,
   ) {
+    this.runId = runId ?? createSessionId().replace("proposal-session", "refine-run");
     this.eligibilityUseCase = new CheckEligibilityUseCase(noteRepository, profile, settings);
     this.proposalValidator = new ProposalValidator(profile);
     this.protectedRegionExtractor = new ProtectedRegionExtractor();
@@ -247,27 +254,52 @@ export class CreateProposalUseCase {
   // ── v0.2.0 pipeline (retry + session/error cache) ──
 
   async executeV2(): Promise<CreateProposalV2Result> {
+    await this.logEvent("run-start", {
+      resultKind: "started",
+    });
+
     // 1. Eligibility check (not retried)
     this.reportStatus("checking-eligibility");
+    await this.logEvent("stage", { stage: "checking-eligibility" });
     const activeNote = await this.eligibilityUseCase.execute();
     if (!activeNote.hasActiveMarkdownNote || !activeNote.eligible) {
       this.reportStatus("failed");
+      await this.logEvent("run-end", {
+        stage: "failed",
+        resultKind: "eligibility-failed",
+        errorSummary: activeNote.failureReasons?.join(", ") ?? activeNote.reason ?? "not eligible",
+      });
       return { kind: "eligibility-failed", eligibility: activeNote };
     }
 
     const lookup = await this.noteRepository.getActiveNote();
     if (lookup.kind !== "markdown") {
       this.reportStatus("failed");
+      await this.logEvent("run-end", {
+        stage: "failed",
+        resultKind: "eligibility-failed",
+        errorSummary: lookup.kind,
+      });
       return { kind: "eligibility-failed", eligibility: activeNote };
     }
 
     // 2. B block extraction (not retried — configuration issue)
+    await this.logEvent("stage", {
+      notePath: lookup.note.path,
+      noteTitle: lookup.note.title,
+      noteContentChars: lookup.note.content.length,
+    });
     const bBlockExtract = this.blockExtractor.extract(
       lookup.note.content,
       this.settings.bBlock,
     );
     if (!bBlockExtract.ok) {
       this.reportStatus("failed");
+      await this.logEvent("run-end", {
+        stage: "failed",
+        resultKind: "validation-failed",
+        errorSummary: `${bBlockExtract.error.code}: ${bBlockExtract.error.message}`,
+      });
       return {
         kind: "validation-failed",
         errors: [{
@@ -281,6 +313,11 @@ export class CreateProposalUseCase {
     // 3. Build prompt (once — reused across retries)
     if (!this.llmProvider.generateProposalV2) {
       this.reportStatus("failed");
+      await this.logEvent("run-end", {
+        stage: "failed",
+        resultKind: "validation-failed",
+        errorSummary: "v2-not-supported",
+      });
       return {
         kind: "validation-failed",
         errors: [{
@@ -293,6 +330,12 @@ export class CreateProposalUseCase {
 
     const promptBuilder = new PromptBuilder();
     this.reportStatus("building-prompt");
+    await this.logEvent("stage", {
+      stage: "building-prompt",
+      protectedBlockChars: bBlockExtract.block.text.length,
+      enabledABlockCount: this.settings.aBlocks.filter((b) => b.enabled).length,
+      tagWhitelistCount: this.settings.tagWhitelist.length,
+    });
     const { request, debugSnapshot } = promptBuilder.build({
       provider: this.llmProvider.providerId,
       model: this.llmProvider.model,
@@ -316,6 +359,12 @@ export class CreateProposalUseCase {
       bBlockText: bBlockExtract.block.text,
       errorSessionId,
     };
+    await this.logEvent("stage", {
+      stage: "building-prompt",
+      requestChars: request.messages.reduce((sum, message) => sum + message.content.length, 0),
+      systemPromptChars: request.messages.find((message) => message.role === "system")?.content.length,
+      userPromptChars: request.messages.find((message) => message.role === "user")?.content.length,
+    });
 
     // 4. Retry loop
     const retryResult = await this.retryRunner.run(async (attemptIndex) => {
@@ -325,10 +374,16 @@ export class CreateProposalUseCase {
     // 5. Persist and return based on retry outcome
     if (retryResult.status === "success") {
       this.reportStatus("saving-session");
+      await this.logEvent("stage", { stage: "saving-session" });
       return this.handleRetrySuccess(retryResult.session, retryResult.failedAttempts, retryResult.attemptsUsed);
     }
 
     this.reportStatus("failed");
+    await this.logEvent("run-end", {
+      stage: "failed",
+      resultKind: "exhausted",
+      errorSummary: "all retry attempts exhausted",
+    });
     return this.handleRetryExhausted(retryResult.failedAttempts);
   }
 
@@ -338,6 +393,12 @@ export class CreateProposalUseCase {
   ): Promise<SingleAttemptResult> {
     // 4a. Call provider
     this.reportStatus("requesting-model", attemptIndex);
+    await this.logEvent("attempt-start", {
+      stage: "requesting-model",
+      attemptIndex,
+      maxAttempts: 3,
+      requestChars: ctx.request.messages.reduce((sum, message) => sum + message.content.length, 0),
+    });
     let llmResponse: LlmResponse;
     try {
       llmResponse = await this.llmProvider.generateProposalV2!(ctx.request);
@@ -354,12 +415,45 @@ export class CreateProposalUseCase {
           errorSummary: failedAttempt.errorSummary,
         },
       });
+      await this.logEvent("attempt-end", {
+        stage: "failed",
+        attemptIndex,
+        maxAttempts: 3,
+        resultKind: "provider-failed",
+        errorSummary: failedAttempt.errorSummary,
+      });
       return { success: false, attempt: failedAttempt };
     }
+    await this.logEvent("attempt-end", {
+      stage: "requesting-model",
+      attemptIndex,
+      maxAttempts: 3,
+      responseChars: llmResponse.rawText.length,
+      tokenUsage: llmResponse.usage
+        ? {
+            inputTokens: llmResponse.usage.inputTokens,
+            outputTokens: llmResponse.usage.outputTokens,
+            totalTokens: llmResponse.usage.totalTokens,
+            countingMode: llmResponse.usage.countingMode,
+          }
+        : undefined,
+      resultKind: "provider-response",
+    });
 
     // 4b. JSON extraction + Zod validation
     this.reportStatus("parsing-response", attemptIndex);
+    await this.logEvent("stage", {
+      stage: "parsing-response",
+      attemptIndex,
+      maxAttempts: 3,
+      responseChars: llmResponse.rawText.length,
+    });
     this.reportStatus("validating-proposal", attemptIndex);
+    await this.logEvent("stage", {
+      stage: "validating-proposal",
+      attemptIndex,
+      maxAttempts: 3,
+    });
     const zodValidation = this.proposalValidator.validateV2Output(llmResponse.rawText);
     if (!zodValidation.ok) {
       const failedAttempt = this.buildFailedAttempt(
@@ -380,11 +474,24 @@ export class CreateProposalUseCase {
           errorSummary: failedAttempt.errorSummary,
         },
       });
+      await this.logEvent("attempt-end", {
+        stage: "validating-proposal",
+        attemptIndex,
+        maxAttempts: 3,
+        resultKind: "zod-failed",
+        errorSummary: failedAttempt.errorSummary,
+      });
       return { success: false, attempt: failedAttempt };
     }
 
     // 4c. Normalization
     this.reportStatus("normalizing-proposal", attemptIndex);
+    await this.logEvent("stage", {
+      stage: "normalizing-proposal",
+      attemptIndex,
+      maxAttempts: 3,
+      acceptedBlockCount: zodValidation.proposal.blocks.length,
+    });
     const normalizer = new ProposalNormalizer();
     const normalized = normalizer.normalize(zodValidation.proposal, this.settings);
 
@@ -406,6 +513,16 @@ export class CreateProposalUseCase {
           normalizationReport: normalized.validation,
           errorSummary: failedAttempt.errorSummary,
         },
+      });
+      await this.logEvent("attempt-end", {
+        stage: "normalizing-proposal",
+        attemptIndex,
+        maxAttempts: 3,
+        validationStatus: normalized.validation.status,
+        acceptedBlockCount: normalized.blocks.length,
+        rejectedFieldCount: normalized.validation.rejectedFields.length,
+        resultKind: "normalization-invalid",
+        errorSummary: failedAttempt.errorSummary,
       });
       return { success: false, attempt: failedAttempt };
     }
@@ -463,6 +580,23 @@ export class CreateProposalUseCase {
         attemptsUsed: attemptIndex,
       },
     };
+    await this.logEvent("attempt-end", {
+      stage: "normalizing-proposal",
+      attemptIndex,
+      maxAttempts: 3,
+      validationStatus: normalized.validation.status,
+      acceptedBlockCount: normalized.blocks.length,
+      rejectedFieldCount: normalized.validation.rejectedFields.length,
+      tokenUsage: session.tokenUsage
+        ? {
+            inputTokens: session.tokenUsage.inputTokens,
+            outputTokens: session.tokenUsage.outputTokens,
+            totalTokens: session.tokenUsage.totalTokens,
+            countingMode: session.tokenUsage.countingMode,
+          }
+        : undefined,
+      resultKind: "attempt-success",
+    });
 
     this.observePrompt(ctx, {
       responseSnapshot: {
@@ -583,6 +717,18 @@ export class CreateProposalUseCase {
       errorCachePath: this.errorSessionCache ? ERROR_SESSION_CACHE_DISPLAY_PATH : undefined,
     };
 
+    await this.logEvent("run-end", {
+      resultKind: "created-v2",
+      tokenUsage: session.tokenUsage
+        ? {
+            inputTokens: session.tokenUsage.inputTokens,
+            outputTokens: session.tokenUsage.outputTokens,
+            totalTokens: session.tokenUsage.totalTokens,
+            countingMode: session.tokenUsage.countingMode,
+          }
+        : undefined,
+    });
+
     return { kind: "created-v2", session, noticePlan };
   }
 
@@ -616,6 +762,30 @@ export class CreateProposalUseCase {
       profileId: this.settings.id,
       profileName: this.settings.name,
       ...(attemptIndex !== undefined ? { attemptIndex, maxAttempts: 3 } : {}),
+    });
+  }
+
+  private async logEvent(
+    event: "run-start" | "stage" | "attempt-start" | "attempt-end" | "run-end",
+    details: Partial<Parameters<RefineRunLogger["write"]>[0]> = {},
+  ): Promise<void> {
+    if (!this.runLogger) return;
+
+    const now = Date.now();
+    const deltaMs = now - this.lastLogAt;
+    this.lastLogAt = now;
+
+    await this.runLogger.write({
+      runId: this.runId,
+      timestamp: new Date(now).toISOString(),
+      event,
+      elapsedMs: now - this.runStartedAt,
+      deltaMs,
+      provider: this.llmProvider.providerId,
+      model: this.llmProvider.model,
+      profileId: this.settings.id,
+      profileName: this.settings.name,
+      ...details,
     });
   }
 }

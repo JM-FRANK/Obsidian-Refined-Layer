@@ -326,6 +326,43 @@ describe("CreateProposalUseCase v0.2 (executeV2)", () => {
     expect(userPrompt).not.toContain("old generated next step");
   });
 
+  it("writes fine-grained run log events when a logger is injected", async () => {
+    const repository = createMarkdownRepository(content);
+    const provider = new MockLlmProvider();
+    const events: any[] = [];
+    const useCase = new CreateProposalUseCase(
+      repository,
+      rawRefinedProfile,
+      provider,
+      new ProposalSessionStore(5),
+      mockV2Settings,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        async write(event) {
+          events.push(event);
+        },
+      },
+      "refine-run-test",
+    );
+
+    const result = await useCase.executeV2();
+
+    expect(result.kind).toBe("created-v2");
+    expect(events.every((event) => event.runId === "refine-run-test")).toBe(true);
+    expect(events.map((event) => event.event)).toContain("run-start");
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: "attempt-start", stage: "requesting-model", attemptIndex: 1 }),
+      expect.objectContaining({ event: "attempt-end", resultKind: "provider-response", responseChars: expect.any(Number) }),
+      expect.objectContaining({ event: "run-end", resultKind: "created-v2" }),
+    ]));
+    expect(events.some((event) => event.requestChars > 0)).toBe(true);
+    expect(events.some((event) => event.tokenUsage?.totalTokens === 200)).toBe(true);
+  });
+
   it("includes tagNormalizationApplied and warnings when tags need normalization", async () => {
     const repository = createMarkdownRepository(content);
     const provider: LlmProvider = {

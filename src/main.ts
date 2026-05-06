@@ -11,6 +11,7 @@ import {
   ObsidianErrorSessionCacheStore,
 } from "./adapters/obsidian/ObsidianErrorSessionCacheStore";
 import { ObsidianSecretStore, type SecretStorageDiagnostics } from "./adapters/obsidian/ObsidianSecretStore";
+import { ObsidianRefineRunLogger } from "./adapters/obsidian/ObsidianRefineRunLogger";
 import { ObsidianSessionCacheV2Store } from "./adapters/obsidian/ObsidianSessionCacheV2Store";
 import { ObsidianSessionStore } from "./adapters/obsidian/ObsidianSessionStore";
 import { ObsidianSettingsStore } from "./adapters/obsidian/ObsidianSettingsStore";
@@ -52,6 +53,7 @@ const REFINE_COMMAND_ID = "refine-current-note";
 const REFINE_WITH_PROFILE_COMMAND_ID = "refine-current-note-with-profile";
 const REOPEN_LAST_PROPOSAL_COMMAND_ID = "reopen-last-proposal-for-current-note";
 const OPEN_CACHED_PROPOSAL_SESSION_COMMAND_ID = "open-cached-proposal-session";
+const ENABLE_REFINE_PERFORMANCE_LOGS = false;
 
 export default class ObsidianRefinedLayerPlugin extends Plugin {
   private settings: PluginSettings = DEFAULT_PLUGIN_SETTINGS;
@@ -279,6 +281,7 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     const statusNotice = new RefineRunStatusNotice(this.settings.language, profile);
     statusNotice.start();
     const noteRepository = new ObsidianNoteRepository(this.app);
+    const debugRunId = `refine-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const createProposalUseCase = new CreateProposalUseCase(
       noteRepository,
       rawRefinedProfile,
@@ -292,6 +295,10 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
       this.sessionCacheV2,
       this.promptObservationStore,
       (status) => statusNotice.updateStatus(status),
+      ENABLE_REFINE_PERFORMANCE_LOGS
+        ? new ObsidianRefineRunLogger(this, debugRunId)
+        : undefined,
+      debugRunId,
     );
     const result = await createProposalUseCase.executeV2();
 
