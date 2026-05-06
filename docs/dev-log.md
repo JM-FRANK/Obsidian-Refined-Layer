@@ -979,3 +979,25 @@ npm run build
 ```
 
 结果：typecheck 通过；全量 Vitest 35 files / 321 tests 通过；production build 通过。
+
+---
+
+# Phase 16：真实 Obsidian / Prompt 调试与修复
+
+## D70 开发日志
+
+### Current status
+
+Phase 16 已作为真实 Obsidian / prompt 调试与修复阶段开启。根据真实 vault 的 `error-session-cache/attempts.v1.json` 分析，DeepSeek 三次返回均为合法 v0.2 JSON，但 `scope` block 在无明确适用边界时返回 `content: ""`；本地 Zod schema 要求 A block content 非空，导致三次均失败在 `blocks[4].content too_small`。这暴露出默认 prompt（“如无明确边界，可留空”）与 schema（非空 string）不一致。已按修复方案 1 放宽 schema：A block `content` 允许空字符串，保持 block id 仍必须非空、root/schema 仍 strict。日计划书与架构书仅补充 Phase 16 阶段定位说明，不展开特定修复细节。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: Phase 16 首个真实 Obsidian / prompt 调试修复：允许 A block content 为空字符串
+- Reason: 真实 provider 按 prompt 合理返回空 `scope.content`，但本地 Zod schema 将其判为 fatal，导致可审核 proposal 无法进入 Review UI
+- Change:
+  - `src/core/proposal/ProposalSchema.ts`：`aBlockProposalSchema.content` 从 non-empty string 放宽为 string，允许空内容 block 进入后续 normalization/review
+  - `tests/core/proposal/ProposalSchema.test.ts`：将空 content 断言从 reject 改为 accept
+  - `docs/obsidian-refined-layer-v0.2.0-daily-plan.md`：新增 Phase 16 简要说明，用于真实 Obsidian / prompt 调试与修复
+  - `docs/obsidian-refined-layer-architecture-v0.2.0-agent.md`：新增 P6 简要说明，限定 Phase 16 为真实 Obsidian / prompt 调试与小步修复，不扩大 v0.2 workflow scope
+- Verification: `npm run typecheck` 通过；`npm test -- tests/core/proposal/ProposalSchema.test.ts tests/core/proposal/ProposalValidator.test.ts tests/application/CreateProposalUseCase.retry.test.ts` 通过（3 files / 37 tests）
+- Next: 重新在真实 Obsidian vault 中执行 `Refine current note`，确认空 `scope.content` 不再触发 Zod failure

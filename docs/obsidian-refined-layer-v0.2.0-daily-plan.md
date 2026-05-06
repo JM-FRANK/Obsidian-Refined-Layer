@@ -1578,6 +1578,14 @@ README / 测试矩阵 / dev-log 完整。
 
 ---
 
+# Phase 16：真实 Obsidian / Prompt 调试与修复
+
+目标：记录真实 Obsidian vault、真实 provider、prompt 输出与本地校验之间暴露出的调试问题，并以小步修复方式补齐实现、测试和文档。
+
+执行方式：按实际问题逐项记录到 `docs/dev-log.md` 的 Phase 16 条目；日计划书仅保留阶段说明，不预设固定 Day 列表。
+
+---
+
 # 总体工期估算
 
 ```text
@@ -1588,6 +1596,7 @@ Phase 12：5 天，约 20 小时
 Phase 13：6 天，约 24 小时
 Phase 14：6 天，约 24 小时
 Phase 15：5 天，约 20 小时
+Phase 16：按真实 Obsidian / prompt 调试问题滚动追加
 ```
 
 合计：

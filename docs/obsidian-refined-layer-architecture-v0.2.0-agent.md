@@ -86,6 +86,10 @@ P5：Apply 与端到端验证
 - tags 只增加不覆盖不删除。
 - B 类分块逐字保留。
 - cached session 只允许 Save as Draft，Apply 灰色。
+
+P6：真实 Obsidian / Prompt 调试与修复
+- 记录真实 Obsidian vault、真实 provider、prompt 输出与本地校验之间暴露出的调试问题。
+- 以小步修复方式补齐实现、测试和文档，不扩大 v0.2.0 的 workflow scope。
 ```
 
 ---

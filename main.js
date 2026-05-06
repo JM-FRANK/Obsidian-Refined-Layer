@@ -16822,7 +16822,7 @@ config(en_default());
 // src/core/proposal/ProposalSchema.ts
 var aBlockProposalSchema = external_exports.object({
   id: external_exports.string().min(1, "Block id must be a non-empty string"),
-  content: external_exports.string().min(1, "Block content must be a non-empty string"),
+  content: external_exports.string(),
   warnings: external_exports.array(external_exports.string()).optional()
 }).strict();
 var frontmatterSuggestionSchema = external_exports.object({

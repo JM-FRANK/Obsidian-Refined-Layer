@@ -112,13 +112,13 @@ describe("rawRefinedProposalV2Schema", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects block with empty content string", () => {
+  it("accepts block with empty content string", () => {
     const result = rawRefinedProposalV2Schema.safeParse({
       ...validProposal,
       blocks: [{ id: "summary", content: "" }],
     });
 
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 
   // ── Invalid workflowProfileId / schemaVersion ──

@@ -8,7 +8,7 @@ import { z } from "zod";
 
 export const aBlockProposalSchema = z.object({
   id: z.string().min(1, "Block id must be a non-empty string"),
-  content: z.string().min(1, "Block content must be a non-empty string"),
+  content: z.string(),
   warnings: z.array(z.string()).optional(),
 }).strict();
 
