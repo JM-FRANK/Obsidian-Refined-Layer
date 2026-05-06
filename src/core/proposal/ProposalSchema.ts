@@ -10,7 +10,7 @@ export const aBlockProposalSchema = z.object({
   id: z.string().min(1, "Block id must be a non-empty string"),
   content: z.string().min(1, "Block content must be a non-empty string"),
   warnings: z.array(z.string()).optional(),
-});
+}).strict();
 
 export const frontmatterSuggestionSchema = z
   .object({
@@ -18,6 +18,7 @@ export const frontmatterSuggestionSchema = z
     source: z.array(z.enum(["self", "external", "practice"])).optional(),
     context: z.array(z.string()).optional(),
   })
+  .strict()
   .optional();
 
 export const tagSuggestionSchema = z
@@ -25,17 +26,20 @@ export const tagSuggestionSchema = z
     selectedTags: z.array(z.string()).optional(),
     newTagSuggestions: z.array(z.string()).optional(),
   })
+  .strict()
   .optional();
 
-export const rawRefinedProposalV2Schema = z.object({
-  workflowProfileId: z.literal("raw-refined"),
-  schemaVersion: z.literal("0.2"),
-  blocks: z
-    .array(aBlockProposalSchema)
-    .min(1, "At least one block is required"),
-  frontmatterSuggestion: frontmatterSuggestionSchema,
-  tagSuggestion: tagSuggestionSchema,
-  warnings: z.array(z.string()).optional(),
-});
+export const rawRefinedProposalV2Schema = z
+  .object({
+    workflowProfileId: z.literal("raw-refined"),
+    schemaVersion: z.literal("0.2"),
+    blocks: z
+      .array(aBlockProposalSchema)
+      .min(1, "At least one block is required"),
+    frontmatterSuggestion: frontmatterSuggestionSchema,
+    tagSuggestion: tagSuggestionSchema,
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict();
 
 export type RawRefinedProposalV2Parsed = z.infer<typeof rawRefinedProposalV2Schema>;

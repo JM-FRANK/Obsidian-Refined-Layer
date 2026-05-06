@@ -860,3 +860,122 @@ npm run build
 结果：typecheck 通过；全量 Vitest 34 files / 322 tests 通过；production build 通过。`ProposalSessionStore` persistence failure 测试仍会输出预期 stderr：`disk full`，不代表失败。
 
 Next: D65 — v0.1 → v0.2 自动测试迁移与旧测试清理（Phase 15，需用户显式要求后再继续）
+
+---
+
+## D65 开发日志
+
+### Current status
+
+v0.1 → v0.2 自动测试迁移与旧测试清理已完成第一轮。`ProposalValidator.test.ts` 已从 fixed `refinedSections` / unknown-tag fatal 语义迁到 `RawRefinedProposalV2`：v2 validator 现在测试 blocks schema、fenced JSON 提取、Zod failure、unknown selectedTags 不导致整份 proposal 失败，以及 forbidden legacy capability fields 会被拒绝。为配合该测试，v2 Zod schema 改为 strict，避免 `linkOperations` 等外部能力字段被静默丢弃。append-tags / newTagSuggestions / no remove-tags 的 v2 apply-plan 测试已保持通过。尚未执行 D66 v0.2 mock 端到端 happy path。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: v0.1 → v0.2 自动测试迁移与旧测试清理（Phase 15 首任务）
+- Reason: v0.2 的 proposal schema 已从固定 `refinedSections` 迁到 configurable `blocks`；unknown selectedTags 应由 normalization 移入 newTagSuggestions，而不是在 validator 阶段整体失败
+- Change:
+  - `tests/core/proposal/ProposalValidator.test.ts`：重写为 v0.2 validator 测试，覆盖 `RawRefinedProposalV2` blocks、fenced JSON、Zod errors、unknown selectedTags 可通过结构校验、legacy capability fields 被拒绝
+  - `src/core/proposal/ProposalSchema.ts`：v2 root schema、A block schema、frontmatterSuggestion、tagSuggestion 改为 `.strict()`，防止 rename/move/link/MOC 等外部能力字段被静默接受
+  - 保持 `tests/application/BuildApplyPlanUseCase.test.ts` 中 v2 append-tags / no remove-tags / newTagSuggestions 不应用测试通过
+- Verification: `npm run typecheck` 通过；`npm test -- tests/core/proposal/ProposalSchema.test.ts tests/core/proposal/ProposalValidator.test.ts tests/core/proposal/ProposalNormalizer.test.ts tests/application/BuildApplyPlanUseCase.test.ts tests/application/ApplyDecisionUseCase.test.ts` 通过（5 files / 64 tests）
+- Next: D66 — v0.2 端到端 mock happy path
+
+---
+
+## D66 开发日志
+
+### Current status
+
+v0.2 mock happy path 已跑通。主 `Refine current note` 命令已从 v0.1 `execute()` 路径切到 `executeV2()`，并注入 v2 session-cache、error-session-cache 与 prompt observation store。生成成功后打开 `ReviewModalV2`；Apply 走 `BuildApplyPlanUseCase.executeV2()` 与 `ApplyDecisionUseCase.executeV2()`；Save as Draft 走 `SaveDraftUseCase.executeV2()`。新增 E2E-style application test，覆盖 raw note → A/B eligibility → prompt/Zod/normalization → session-cache → ReviewViewModel → UserDecisionV2 → ApplyPlan → safe apply → draft → cached session list。验证 B 类分块逐字保留、selectedTags 只追加到 YAML tags、newTagSuggestions 不写入原 note、cached session 可 Save as Draft。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: v0.2 端到端 mock happy path（Phase 15 第二任务）
+- Reason: v0.2 的核心闭环需要从 mock provider 开始证明：configurable A/B blocks、selectedTags/newTagSuggestions、ApplyPlan-only write、B block preservation、draft/cached session 行为能一起工作
+- Change:
+  - `src/main.ts`：`Refine current note` 改为调用 `CreateProposalUseCase.executeV2()`；接入 v2 retry/error-cache notices；新增 `openReviewForSessionV2()` 和 `applySelectedChangesV2()`，正常新生成 session 可进入可 Apply 的 v2 Review UI
+  - `src/main.ts`：v2 create flow 注入 `ObsidianErrorSessionCacheStore`、`sessionCacheV2`、`promptObservationStore`
+  - 新增 `tests/application/V2MockHappyPath.test.ts`：使用 mock v2 provider 和内存 note/cache，覆盖 v0.2 生成、review decision、safe apply、B block 保留、YAML append-tags、newTagSuggestions 不写入、SaveDraft v2 和 cached session list
+- Verification: `npm run typecheck` 通过；`npm test -- tests/application/V2MockHappyPath.test.ts tests/application/CreateProposalUseCase.retry.test.ts tests/application/BuildApplyPlanUseCase.test.ts tests/application/ApplyDecisionUseCase.test.ts tests/application/SaveDraftUseCase.test.ts` 通过（5 files / 31 tests）
+- Next: D67 — 真实 provider 手动验证与 error-session-cache 验证
+
+---
+
+## D67 开发日志
+
+### Current status
+
+真实 provider 手动验证在当前 Codex 工作区未执行：这里没有可交互的真实 Obsidian runtime、SecretStorage 配置和真实 DeepSeek/OpenAI-compatible API Key，无法完成一次真实 provider happy path。已完成可自动验证的等价风险路径：模型连接测试 use case 覆盖 mock success、SecretStorage unavailable、Key ID missing、D35 polluted value、防 provider error 泄密；OpenAI-compatible provider 测试覆盖真实 key 从 SecretStorage 进入 Authorization header 且不使用 Key ID 作为 bearer token；retry/error-session-cache 测试覆盖第 1 次成功、第 2/3 次成功、3 次失败、成功 session 与 failed attempt 分离；error-session-cache adapter 测试覆盖递归 redaction 和 secret-pattern 阻断。真实 provider 手动验证缺口已明确留到真实 Obsidian 环境。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: 真实 provider 手动验证与 error-session-cache 验证（Phase 15 第三任务）
+- Reason: release 前必须确认 provider 连接、retry、session-cache/error-session-cache 分离、失败 attempt 脱敏和 D35 Bearer 污染防御；当前环境无法手动连接真实 provider，因此记录明确缺口并跑自动化风险验证
+- Change:
+  - 未新增代码；执行并记录 D67 focused verification
+  - 自动验证覆盖：第 1 次成功不写 error-cache；第 2/3 次成功只保存失败 attempts 到 error-cache；3 次失败不创建 session；FailedAttemptRecord 与 ProposalSessionV2 分离；error-session-cache 写入前递归脱敏；含 Authorization/Bearer/API key 形态字符串不会明文保留
+  - 明确缺口：未在真实 Obsidian 中配置 DeepSeek/OpenAI-compatible provider，未完成真实 provider happy path 手动运行
+- Verification: `npm test -- tests/application/CreateProposalUseCase.retry.test.ts tests/adapters/obsidian/ObsidianErrorSessionCacheStore.test.ts tests/adapters/obsidian/ObsidianSessionCacheV2Store.test.ts tests/application/TestModelConnectionUseCase.test.ts tests/adapters/llm/OpenAICompatibleProvider.test.ts` 通过（5 files / 39 tests）
+- Next: D68 — 更新 README 与测试矩阵
+
+---
+
+## D68 开发日志
+
+### Current status
+
+README 与 v0.2 测试矩阵已更新。README 已从 v0.1 固定 section 说明改为 v0.2 review-first 单篇笔记 workflow，补充 A/B 分块配置、tagWhitelist / selectedTags / newTagSuggestions、缓存记录 / 错误会话缓存、密钥 ID / SecretStorage、模型连接性测试、Prompt 可观测和安全边界说明。新增 `docs/test-matrix-v0.2.md`，列出自动化覆盖、手动验证项、真实 provider 缺口和 release checks。尚未执行 D69 v0.2.0 交付检查。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: 更新 README 与测试矩阵（Phase 15 第四任务）
+- Reason: v0.2 行为已经从 fixed `refinedSections` 迁到 configurable A/B blocks；用户文档需要解释密钥 ID、缓存记录不是历史记录、selectedTags/newTagSuggestions 分工和测试覆盖
+- Change:
+  - `README.md`：重写为 v0.2 使用说明，覆盖安装、基本流程、A/B 分块、tag 模型、缓存记录、Provider 与密钥 ID、Prompt 可观测、安全边界和开发命令
+  - 新增 `docs/test-matrix-v0.2.md`：记录自动化测试矩阵、手动验证矩阵、真实 provider 未在当前 Codex workspace 手动运行的缺口，以及 release checks
+  - README 测试矩阵链接改为 `docs/test-matrix-v0.2.md`
+- Verification: `npm run typecheck` 通过；文档搜索确认 README 不再引用旧 `docs/TEST-MATRIX.md`，并包含 newTagSuggestions / remove-tags 边界说明
+- Next: D69 — v0.2.0 交付检查
+
+---
+
+## D69 开发日志
+
+### Current status
+
+v0.2.0 交付检查已完成。新增 `docs/delivery-checklist-v0.2.md`，记录完成项、scope freeze、安全检查、验证命令和真实 provider 手动验证缺口。按 v0.2 架构边界执行了源码搜索和 ApplyPlan 检查：v2 apply operation 限定为 `replace-refined-blocks` / `update-frontmatter` / `append-tags`；未引入 rename/move/archive/delete/remove-tags/batch refine/MOC/link 写入；UI 不直接写 note，写入仍经 Application/ApplyPlan/NoteFilePort；session-cache / error-session-cache / draft / prompt observation 均有 redaction 或 secret scan 覆盖。Phase 15 验收通过，唯一明确缺口是真实 DeepSeek/OpenAI-compatible provider 未在当前 Codex workspace 手动运行。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: v0.2.0 交付检查（Phase 15 第五任务）
+- Reason: release 前需要确认 v0.2 架构边界、scope freeze、ApplyOperation 集合、UI 写入边界、cache secret scan、文档与测试矩阵完整，并跑最终 typecheck/test/build
+- Change:
+  - 新增 `docs/delivery-checklist-v0.2.md`：完成项、scope freeze、安全检查、最终验证、真实 provider 手动验证缺口和真实 Obsidian release smoke 建议
+  - 执行 D69 搜索检查：out-of-scope capabilities、UI write boundaries、ApplyOperation set、redaction/secret scan anchors
+  - 确认 v0.1 compatibility 类型仍保留 `replace-refined-body` / `update-tags`，但 v2 flow 使用并测试 `replace-refined-blocks` / `update-frontmatter` / `append-tags`
+- Verification: `npm run typecheck` 通过；`npm test` 全量通过（35 files / 321 tests）；`npm run build` 通过。`ProposalSessionStore` persistence failure 测试仍会输出预期 stderr：`disk full`，不代表失败
+- Next: v0.2.0 代码交付完成；真实 provider release smoke 需在真实 Obsidian vault + SecretStorage/API key 环境执行
+
+### Phase 15 Verification notes
+
+Phase 15（端到端迁移、测试矩阵与交付检查）验收通过：
+
+```text
+[x] 旧测试已迁移到 v0.2 模型。
+[x] mock happy path 完整通过。
+[x] 真实 provider 路径完成自动化风险验证，真实手动运行缺口已明确记录。
+[x] error-session-cache 验证通过。
+[x] README 更新。
+[x] TEST-MATRIX 更新：新增 docs/test-matrix-v0.2.md。
+[x] v0.2.0 delivery checklist 输出：docs/delivery-checklist-v0.2.md。
+```
+
+Final verification:
+
+```text
+npm run typecheck
+npm test
+npm run build
+```
+
+结果：typecheck 通过；全量 Vitest 35 files / 321 tests 通过；production build 通过。

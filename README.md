@@ -1,108 +1,119 @@
 # Obsidian Refined Layer
 
-Obsidian Refined Layer 是一个面向 Obsidian 的安全型笔记整理插件，用于将 raw 笔记转换为经过审核的 refined 笔记。它通过 LLM 生成整理建议，但不会直接改写原文；所有修改都需要用户在 Review UI 中确认后，才会通过受控的 ApplyPlan 写入。
+Obsidian Refined Layer 是一个 review-first 的 Obsidian 插件。它把当前 raw Markdown 笔记整理成可审核的 refined proposal，但不会让 LLM 直接写文件；所有修改都必须先进入 Review UI，由用户明确勾选后，再通过 ApplyPlan 写入。
 
-插件重点保护 ## 原始内容 及其后文，确保原始记录被逐字保留。同时支持 session 恢复、草稿保存、token usage 展示、tag整理、API key 安全存储与日志脱敏，适合用于构建长期可追溯的 Obsidian 知识库。
+v0.2.0 使用可配置的单篇笔记 `raw-refined` workflow：
+
+```text
+raw note -> A/B block parsing -> structured prompt -> LLM JSON -> Zod -> normalization -> review -> ApplyPlan -> safe write / draft
+```
 
 ## 安装
 
-### 本地加载
+1. 下载本仓库或发布包。
+2. 将 `main.js`、`manifest.json`、`styles.css` 放入 vault 的 `.obsidian/plugins/obsidian-refined-layer/`。
+3. 在 Obsidian 设置 -> 第三方插件中启用 **Obsidian Refined Layer**。
 
-1. 下载本仓库或解压发布包
-2. 将 `main.js`、`manifest.json`、`styles.css` 放入 vault 的 `.obsidian/plugins/obsidian-refined-layer/`
-3. 在 Obsidian 设置 → 第三方插件中启用 **Obsidian Refined Layer**
-
-### 开发构建
+开发构建：
 
 ```bash
 npm install
 npm run build
 ```
 
-构建产物：
-- `main.js` — 插件入口
-- `styles.css` — 样式
-- `manifest.json` — 插件声明
+## 基本使用
 
-## 使用
+打开一篇 Markdown raw note，执行命令：
 
-### 基本流程
-
-```
-打开 raw 笔记 → 执行 Refine current note → 审核 proposal → 选择要应用的修改 → Apply
+```text
+Refine current note
 ```
 
-### 命令
+插件会解析当前笔记的 A/B 分块，构造 prompt，调用 mock 或真实 provider，生成 proposal session，然后打开 Review UI。你可以逐块勾选要应用的 A 类分块、YAML 建议和 selectedTags；未勾选的内容不会写入原笔记。
 
-| 命令 | 说明 |
-|------|------|
-| **Refine current note** | 对当前打开的 Markdown 笔记生成 refined proposal |
-| **Reopen last proposal for current note** | 恢复当前笔记最近一次的 proposal 审核界面 |
+## A/B 分块
 
-### 审核界面
+v0.2.0 使用可配置的 A/B block 模型。
 
-生成 proposal 后会自动打开审核弹窗，包含：
+- **A 类分块**：由 LLM 生成或整理，可按块独立审核和应用。每个 A block 有 `name / headingLevel / prompt / enabled / order`。
+- **B 类分块**：唯一的受保护原始内容块，不是 LLM 输出目标，Apply 时从当前文件重新提取并逐字保留。
+- **保护一级标题**：开启后，第一个 H1 被视为笔记标题，A/B 分块必须使用 H2 或更深层级。
 
-- **正文预览**：refined 各 section（摘要、核心问题、当前结论、依据与推理等），可直接编辑
-- **YAML 建议**：status / source / context 修改建议，逐项勾选
-- **Tag 建议**：新增/移除标签建议，逐项勾选
-- **Token 用量**：显示本次生成的 token 消耗
+在 Settings 中可以配置 A 类分块列表、B 类分块名称和层级、以及“保护一级标题”。保存配置前会经过 core validator；非法配置不会写入 settings。
 
-### 部分应用
+## Tags
 
-你可以只应用 proposal 中的部分修改：
-- 勾选正文 → 只替换正文
-- 勾选 status → 只更新 status
-- 全部不勾选 → 不修改文件
+Settings 中可以维护 `tagWhitelist` 和 `tag prompt`。
 
-### Save as Draft
+- `selectedTags`：必须来自白名单，Review UI 中可勾选，Apply 时只追加到 YAML `tags`。
+- `newTagSuggestions`：不在白名单的新标签建议，只展示和可复制，永远不会直接写入 YAML。
+- tag 保存会自动补 `#`、按逗号/空格/换行/顿号等分隔、去重，但不会改变大小写。
 
-将 proposal 保存为独立草稿文件（不修改原笔记），默认保存在 `80_Runtime/refine-drafts/`。
+Apply 只会追加用户勾选且仍在白名单中的 selectedTags；不会删除现有 tags，也不会写入 newTagSuggestions。
 
-### 冲突处理
+## 缓存记录
 
-如果 proposal 生成后原笔记被手动修改，apply 会被阻止。可选择：
-- **Save as Draft**：保存草稿
-- **Regenerate**：重新生成 proposal
-- **Manual copy**：手动复制 review
-- **Discard**：放弃本次 proposal
+v0.2.0 使用两类缓存：
 
-## Provider 配置
+- `session-cache`：保存成功 proposal session，用于查看最近缓存记录和 Save as Draft。默认上限 5。
+- `error-session-cache`：保存失败 attempts，用于调试 retry / JSON / Zod / normalization 问题。默认开启，上限 30。
 
-| 类型 | 说明 | 需要 API Key |
-|------|------|-------------|
-| Mock LLM | 返回固定样例 proposal，用于测试 | 否 |
-| OpenAI-compatible | 标准 OpenAI API 格式 | 是 |
-| DeepSeek | DeepSeek API | 是 |
-| 自定义 OpenAI-compatible | 自定义 endpoint | 是 |
-| 本地 OpenAI-compatible | 本地模型服务（如 Ollama） | 否 |
+缓存记录不是长期历史，也不是用户可见笔记。Settings 会显示缓存位置：
 
-## 隐私说明
+```text
+.obsidian/plugins/obsidian-refined-layer/session-cache
+.obsidian/plugins/obsidian-refined-layer/error-session-cache
+```
 
-- **API Key 存储**：使用 Obsidian SecretStorage 加密保存，不写入 `data.json`
-- **日志脱敏**：所有错误和调试输出不包含 API key、token、Authorization header
-- **Session 不保存 secret**：提案历史不存储 provider secret
-- **SecretStorage 不可用时**：自动降级为 mock-llm 模式，拒绝保存任何 API key
+缓存记录不保存 API key、Authorization header 或 provider secret。cached session 可以查看和保存草稿，但 v0.2.0 不允许直接 Apply cached session。
 
-## v0.1.0 范围
+## Provider 与密钥 ID
 
-仅实现单篇笔记 `raw → refined` 最小闭环：
-- 内置 `raw-refined` 工作流 profile
-- 四层 proposal 校验（JSON → Schema → Policy → Content）
-- Protected region（`## 原始内容`）逐字节保护
-- Apply 前 freshness check 与冲突流转
-- 仅允许 body / frontmatter / tag 写入
+支持 provider：
 
-不包含：批量 refine、MOC 写入、关系链接写入、rename/move、外部 Tool API、完整 Prompt 编辑器。
+| 类型 | 说明 | 需要 API key |
+| --- | --- | --- |
+| Mock LLM | 本地固定样例，用于测试 | 否 |
+| OpenAI-compatible | 标准 OpenAI Chat Completions 格式 | 是 |
+| DeepSeek | DeepSeek OpenAI-compatible API | 是 |
+| 自定义 OpenAI-compatible | 自定义远程 endpoint | 是 |
+| 本地 OpenAI-compatible | Ollama、LM Studio、vLLM 等 | 通常否 |
+
+用户界面统一使用 **密钥 ID / Key ID**。密钥 ID 会保存到插件 settings 中，用于从 Obsidian SecretStorage 读取真实 API key；真实 API key 不会写入 `data.json`。
+
+Settings 中提供：
+
+- **测试模型连接**：发送不包含真实 note 内容的最小请求，不创建 ProposalSession，不写缓存。
+- **SecretStorage 诊断**：只读、可复制、脱敏，可显示密钥 ID 是否配置、是否能读取、读取值是否等于密钥 ID、读取值长度和脱敏前后缀。
+
+## Prompt 可观测
+
+Settings 可开启 Prompt 可观测。开启后，最近一次 v0.2 prompt debug snapshot 保存在内存中，可复制查看：
+
+- final system / user prompt
+- tag whitelist
+- schema instruction
+- raw response / parsed JSON
+- Zod result / normalization report
+
+默认不会把成功请求的完整 prompt/response 写入磁盘；所有 snapshot 保存前都会脱敏。
+
+## 安全边界
+
+- LLM output 永远不直接写文件。
+- 所有写入都通过 ApplyPlan。
+- Apply 前重读当前文件并做 freshness / B block 检查。
+- B block 从当前文件提取，不信任 proposal/session/cache。
+- 不实现 rename/move/archive/delete/remove-tags/link/MOC/batch refine。
+- SecretStorage 不可用时，真实 provider API key 保存被禁用，mock/local provider 仍可用。
 
 ## 开发
 
 ```bash
-npm install          # 安装依赖
-npm run typecheck    # TypeScript 类型检查
-npm run build        # 构建插件
-npm test             # 运行自动测试
+npm install
+npm run typecheck
+npm test
+npm run build
 ```
 
-测试 vault: `Obsidian-Refined-Layer-TestVault/`  
-手动测试矩阵: `docs/TEST-MATRIX.md`
+测试矩阵见 [docs/test-matrix-v0.2.md](docs/test-matrix-v0.2.md)。

@@ -3,53 +3,52 @@ import { describe, expect, it } from "vitest";
 import { rawRefinedProfile } from "../../../src/core/profile/rawRefinedProfile";
 import { ProposalValidator } from "../../../src/core/proposal/ProposalValidator";
 
-describe("ProposalValidator", () => {
+describe("ProposalValidator v0.2", () => {
   const validator = new ProposalValidator(rawRefinedProfile);
+
   const validProposal = JSON.stringify({
     workflowProfileId: "raw-refined",
-    refinedSections: {
-      summary: "summary",
-      coreQuestion: "question",
-      currentConclusion: "conclusion",
-      reasoning: "reasoning",
-    },
+    schemaVersion: "0.2",
+    blocks: [
+      { id: "summary", content: "summary" },
+      { id: "reasoning", content: "reasoning" },
+    ],
     frontmatterSuggestion: {
       status: "refined",
       source: ["self"],
       context: ["context/a"],
     },
     tagSuggestion: {
-      add: ["#ai/generated"],
-      remove: ["#todo/refine"],
+      selectedTags: ["#ai/generated"],
+      newTagSuggestions: ["#custom/idea"],
     },
     warnings: ["warn"],
   });
 
-  it("accepts valid raw-refined proposal json", () => {
-    const result = validator.validateModelOutput(validProposal);
+  it("accepts valid RawRefinedProposalV2 JSON", () => {
+    const result = validator.validateV2Output(validProposal);
 
     expect(result).toMatchObject({
       ok: true,
       proposal: {
         workflowProfileId: "raw-refined",
-        refinedSections: {
-          summary: "summary",
-          coreQuestion: "question",
-          currentConclusion: "conclusion",
-          reasoning: "reasoning",
-        },
+        schemaVersion: "0.2",
+        blocks: [
+          { id: "summary", content: "summary" },
+          { id: "reasoning", content: "reasoning" },
+        ],
       },
     });
   });
 
-  it("extracts JSON from a fenced code block", () => {
-    const result = validator.validateModelOutput(`Here is the proposal:\n\`\`\`json\n${validProposal}\n\`\`\``);
+  it("extracts v0.2 JSON from a fenced code block", () => {
+    const result = validator.validateV2Output(`Here is the proposal:\n\`\`\`json\n${validProposal}\n\`\`\``);
 
     expect(result).toMatchObject({ ok: true });
   });
 
   it("returns a JSON parse error for non-JSON output", () => {
-    expect(validator.validateModelOutput("not json")).toEqual({
+    expect(validator.validateV2Output("not json")).toEqual({
       ok: false,
       errors: [
         {
@@ -61,169 +60,83 @@ describe("ProposalValidator", () => {
     });
   });
 
-  it("fails when a required refined section is missing", () => {
-    const result = validator.validateModelOutput(JSON.stringify({
+  it("returns zod-validation-failed when required v0.2 blocks are missing", () => {
+    const result = validator.validateV2Output(JSON.stringify({
       workflowProfileId: "raw-refined",
-      refinedSections: {
-        summary: "summary",
-        coreQuestion: "question",
-        currentConclusion: "conclusion",
-      },
+      schemaVersion: "0.2",
     }));
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ok: false,
       errors: [
         {
           layer: "schema",
-          code: "missing-required-section-reasoning",
-          message: "refinedSections.reasoning must be a non-empty string.",
+          code: "zod-validation-failed",
+          message: "Proposal does not match v0.2 schema.",
         },
       ],
     });
+    if (result.ok) {
+      throw new Error("expected validation failure");
+    }
+    expect(result.zodError).toBeDefined();
   });
 
-  it("fails when a field type is invalid", () => {
-    const result = validator.validateModelOutput(JSON.stringify({
+  it("rejects invalid v0.2 field types through zod", () => {
+    const result = validator.validateV2Output(JSON.stringify({
       workflowProfileId: "raw-refined",
-      refinedSections: {
-        summary: "summary",
-        coreQuestion: "question",
-        currentConclusion: "conclusion",
-        reasoning: "reasoning",
-      },
+      schemaVersion: "0.2",
+      blocks: [{ id: "summary", content: "summary" }],
       warnings: "bad",
     }));
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ok: false,
       errors: [
         {
           layer: "schema",
-          code: "invalid-warnings",
-          message: "warnings must be an array of strings.",
+          code: "zod-validation-failed",
         },
       ],
     });
   });
 
-  it("rejects readonly or unknown frontmatter fields", () => {
-    const result = validator.validateModelOutput(JSON.stringify({
+  it("does not fail the whole v0.2 proposal for unknown selectedTags", () => {
+    const result = validator.validateV2Output(JSON.stringify({
       workflowProfileId: "raw-refined",
-      refinedSections: {
-        summary: "summary",
-        coreQuestion: "question",
-        currentConclusion: "conclusion",
-        reasoning: "reasoning",
-      },
-      frontmatterSuggestion: {
-        created: "yesterday",
-        topic: "illegal",
-      },
-    }));
-
-    expect(result).toEqual({
-      ok: false,
-      errors: [
-        {
-          layer: "policy",
-          code: "readonly-frontmatter-field",
-          message: "frontmatterSuggestion.created is readonly.",
-        },
-        {
-          layer: "policy",
-          code: "unknown-frontmatter-field",
-          message: "frontmatterSuggestion.topic is not allowed.",
-        },
-      ],
-    });
-  });
-
-  it("rejects unknown or blocked tags", () => {
-    const result = validator.validateModelOutput(JSON.stringify({
-      workflowProfileId: "raw-refined",
-      refinedSections: {
-        summary: "summary",
-        coreQuestion: "question",
-        currentConclusion: "conclusion",
-        reasoning: "reasoning",
-      },
+      schemaVersion: "0.2",
+      blocks: [{ id: "summary", content: "summary" }],
       tagSuggestion: {
-        add: ["#rel/test", "#custom"],
+        selectedTags: ["#custom/idea", "#rel/test"],
+        newTagSuggestions: [],
       },
     }));
 
-    expect(result).toEqual({
-      ok: false,
-      errors: [
-        {
-          layer: "policy",
-          code: "unknown-tag",
-          message: "Tag #rel/test is not allowed by the active profile.",
+    expect(result).toMatchObject({
+      ok: true,
+      proposal: {
+        tagSuggestion: {
+          selectedTags: ["#custom/idea", "#rel/test"],
+          newTagSuggestions: [],
         },
-        {
-          layer: "policy",
-          code: "blocked-tag",
-          message: "Tag #rel/test is blocked by the active profile.",
-        },
-        {
-          layer: "policy",
-          code: "unknown-tag",
-          message: "Tag #custom is not allowed by the active profile.",
-        },
-      ],
+      },
     });
   });
 
-  it("rejects forbidden capability fields", () => {
-    const result = validator.validateModelOutput(JSON.stringify({
+  it("rejects forbidden legacy capability fields through the v0.2 schema", () => {
+    const result = validator.validateV2Output(JSON.stringify({
       workflowProfileId: "raw-refined",
-      refinedSections: {
-        summary: "summary",
-        coreQuestion: "question",
-        currentConclusion: "conclusion",
-        reasoning: "reasoning",
-      },
+      schemaVersion: "0.2",
+      blocks: [{ id: "summary", content: "summary" }],
       linkOperations: [{ from: "a", to: "b" }],
     }));
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ok: false,
       errors: [
         {
-          layer: "policy",
-          code: "forbidden-capability",
-          message: "Proposal field linkOperations is forbidden because links capability is disabled.",
-        },
-      ],
-    });
-  });
-
-  it("rejects protected-region leakage", () => {
-    const result = validator.validateModelOutput(JSON.stringify({
-      workflowProfileId: "raw-refined",
-      refinedSections: {
-        summary: "summary",
-        coreQuestion: "question",
-        currentConclusion: "conclusion",
-        reasoning: "## 原始内容\nraw text",
-      },
-    }), {
-      protectedRegionText: "## 原始内容\nraw text",
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      errors: [
-        {
-          layer: "content",
-          code: "protected-region-leakage",
-          message: "Proposal must not include protected region text.",
-        },
-        {
-          layer: "content",
-          code: "protected-heading-in-proposal",
-          message: "Proposal must not include the protected heading ## 原始内容.",
+          layer: "schema",
+          code: "zod-validation-failed",
         },
       ],
     });

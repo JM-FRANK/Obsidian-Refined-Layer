@@ -8,6 +8,7 @@ import {
   DEFAULT_ERROR_SESSION_CACHE_LIMIT,
   ERROR_SESSION_CACHE_FILE_PATH,
   ERROR_SESSION_CACHE_PATH,
+  ObsidianErrorSessionCacheStore,
 } from "./adapters/obsidian/ObsidianErrorSessionCacheStore";
 import { ObsidianSecretStore, type SecretStorageDiagnostics } from "./adapters/obsidian/ObsidianSecretStore";
 import { ObsidianSessionCacheV2Store } from "./adapters/obsidian/ObsidianSessionCacheV2Store";
@@ -41,6 +42,7 @@ import { CachedSessionPickerModal } from "./ui/review/CachedSessionPickerModal";
 import { ReviewModalV2 } from "./ui/review/ReviewModal";
 import { createReviewViewModelV2 } from "./ui/review/ReviewViewModel";
 import { SessionPickerModal } from "./ui/review/SessionPickerModal";
+import { buildV2NoticeMessages } from "./ui/review/V2NoticeMessages";
 import { SettingsTab } from "./ui/settings/SettingsTab";
 
 const REFINE_COMMAND_ID = "refine-current-note";
@@ -86,11 +88,26 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
           this.sessionStore,
           this.settings.rawRefined,
           this.settings.promptOverrides?.["raw-refined"],
+          this.settings.errorSessionCache.enabled
+            ? new ObsidianErrorSessionCacheStore(this, this.settings.errorSessionCache.limit)
+            : undefined,
+          this.sessionCacheV2,
+          this.promptObservationStore,
         );
-        const result = await createProposalUseCase.execute();
+        const result = await createProposalUseCase.executeV2();
 
-        if (result.kind === "created") {
-          await this.openReviewForSession(result.session.id);
+        if (result.kind === "created-v2") {
+          for (const message of buildV2NoticeMessages(this.settings.language, result)) {
+            new Notice(message, 6000);
+          }
+          await this.openReviewForSessionV2(result.session.id);
+          return;
+        }
+
+        if (result.kind === "exhausted") {
+          for (const message of buildV2NoticeMessages(this.settings.language, result)) {
+            new Notice(message, 8000);
+          }
           return;
         }
 
@@ -392,6 +409,35 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     await requestReviewUseCase.execute(session);
   }
 
+  private async openReviewForSessionV2(sessionId: string): Promise<void> {
+    const session = await this.findSessionV2(sessionId);
+    if (!session) {
+      new Notice(t(this.settings.language, "notice.cachedSession.notFound"), 6000);
+      return;
+    }
+
+    session.status = "reviewing";
+    session.updatedAt = new Date().toISOString();
+    await this.sessionCacheV2.save(session);
+
+    new ReviewModalV2(
+      this.app,
+      createReviewViewModelV2(session),
+      this.settings.language,
+      {
+        onApply: async (decision) => {
+          await this.applySelectedChangesV2(session.id, decision);
+        },
+        onSaveDraft: async (decision) => {
+          await this.saveCachedDraft(session.id, decision);
+        },
+        onCloseWithoutDecision: () => {
+          new Notice(t(this.settings.language, "review.placeholder.cancel"), 4000);
+        },
+      },
+    ).open();
+  }
+
   private async recoverAndOpenReview(sessionId: string): Promise<void> {
     const noteRepository = new ObsidianNoteRepository(this.app);
     const recoverUseCase = new RecoverProposalSessionUseCase(this.sessionStore, noteRepository);
@@ -499,6 +545,49 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     }
 
     new Notice(`Refined Layer: apply failed (${applyResult.code}) - ${applyResult.message}`, 8000);
+  }
+
+  private async applySelectedChangesV2(sessionId: string, decision: UserDecisionV2): Promise<void> {
+    const noteRepository = new ObsidianNoteRepository(this.app);
+    const buildApplyPlanUseCase = new BuildApplyPlanUseCase(
+      rawRefinedProfile,
+      this.sessionStore,
+      noteRepository,
+      this.sessionCacheV2,
+    );
+    const planResult = await buildApplyPlanUseCase.executeV2(sessionId, decision);
+
+    if (!planResult.ok) {
+      new Notice(`Refined Layer: apply plan failed (${planResult.code}) - ${planResult.message}`, 8000);
+      return;
+    }
+
+    const applyDecisionUseCase = new ApplyDecisionUseCase(
+      rawRefinedProfile,
+      this.sessionStore,
+      noteRepository,
+      this.sessionCacheV2,
+    );
+    const applyResult = await applyDecisionUseCase.executeV2(planResult.plan);
+
+    if (applyResult.kind === "applied") {
+      new Notice(`Refined Layer: applied selected changes to ${applyResult.notePath}.`, 6000);
+      return;
+    }
+
+    if (applyResult.kind === "conflict") {
+      new Notice(
+        `Refined Layer: apply blocked by conflict (${applyResult.reason}). Options: ${applyResult.options.join(", ")}.`,
+        8000,
+      );
+      return;
+    }
+
+    new Notice(`Refined Layer: apply failed (${applyResult.code}) - ${applyResult.message}`, 8000);
+  }
+
+  private async findSessionV2(sessionId: string) {
+    return (await this.sessionCacheV2.loadAll()).find((session) => session.id === sessionId) ?? null;
   }
 
   private async saveDraft(sessionId: string, conflictReason?: string, decision?: UserDecision): Promise<void> {
@@ -636,7 +725,7 @@ function normalizePositiveInteger(value: number | undefined, fallback: number): 
 
 function formatCreateProposalMessage(
   language: PluginSettings["language"],
-  result: Awaited<ReturnType<CreateProposalUseCase["execute"]>>,
+  result: Awaited<ReturnType<CreateProposalUseCase["execute"]>> | Awaited<ReturnType<CreateProposalUseCase["executeV2"]>>,
 ): string {
   if (result.kind === "eligibility-failed") {
     return formatEligibilityMessage(result.eligibility);
@@ -651,6 +740,15 @@ function formatCreateProposalMessage(
   if (result.kind === "validation-failed") {
     const detail = result.errors.map((error) => `${error.layer}:${error.code}`).join(", ");
     return `Refined Layer: proposal validation failed (${detail}).`;
+  }
+
+  if (result.kind === "exhausted") {
+    return "Refined Layer: proposal generation exhausted all retry attempts.";
+  }
+
+  if (result.kind === "created-v2") {
+    const tokenUsage = result.session.tokenUsage?.totalTokens ?? t(language, "review.token.unavailable");
+    return `Refined Layer: proposal created for ${result.session.noteTitle}, session ${result.session.id}, tokens ${tokenUsage}.`;
   }
 
   const tokenUsage = result.session.tokenUsage?.totalTokens ?? t(language, "review.token.unavailable");
