@@ -282,7 +282,7 @@ describe("CreateProposalUseCase v0.2 (executeV2)", () => {
     expect(result.session.validation.status).toBe("valid"); // body blocks valid
   });
 
-  it("returns provider-failed when provider does not support generateProposalV2", async () => {
+  it("returns validation-failed when provider does not support generateProposalV2", async () => {
     const repository = createMarkdownRepository(content);
     const provider: LlmProvider = {
       providerId: "old-mock",
@@ -297,7 +297,9 @@ describe("CreateProposalUseCase v0.2 (executeV2)", () => {
 
     const result = await useCase.executeV2();
 
-    expect(result.kind).toBe("provider-failed");
+    expect(result.kind).toBe("validation-failed");
+    if (result.kind !== "validation-failed") return;
+    expect(result.errors[0].code).toBe("v2-not-supported");
   });
 
   it("returns eligibility-failed for notes without frontmatter", async () => {
@@ -313,7 +315,7 @@ describe("CreateProposalUseCase v0.2 (executeV2)", () => {
     expect(result.kind).toBe("eligibility-failed");
   });
 
-  it("returns validation-failed when all blocks are rejected during normalization", async () => {
+  it("returns exhausted after 3 retries when all blocks are rejected during normalization", async () => {
     const repository = createMarkdownRepository(content);
     const provider: LlmProvider = {
       providerId: "mock-llm",
@@ -343,9 +345,12 @@ describe("CreateProposalUseCase v0.2 (executeV2)", () => {
 
     const result = await useCase.executeV2();
 
-    expect(result.kind).toBe("validation-failed");
-    if (result.kind !== "validation-failed") return;
-    expect(result.errors[0].code).toBe("normalization-invalid");
+    expect(result.kind).toBe("exhausted");
+    if (result.kind !== "exhausted") return;
+    expect(result.failedAttempts).toHaveLength(3);
+    expect(result.failedAttempts[2].errorSummary).toBe("Normalization invalid: no acceptable blocks after filtering.");
+    expect(result.noticePlan.attemptsUsed).toBe(3);
+    expect(result.noticePlan.errorCacheDisabled).toBe(true); // no error cache injected
   });
 
   it("returns partial status when some blocks are missing", async () => {

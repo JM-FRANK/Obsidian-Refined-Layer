@@ -452,3 +452,42 @@ ErrorSessionCache 适配器已实现。`ErrorSessionCacheStore` 接口定义 sav
   - 新增 `tests/adapters/obsidian/ObsidianErrorSessionCacheStore.test.ts`（10 tests）：InMemory 适配器（save/load 单条/完整 snapshot 保留/limit=3 自动 trim/多 errorSessionId 并存/空存储）；`containsSecretPattern` scan（apiKey/auth/server/嵌套 responseSnapshot 阻断/safe payload 放行/token counting 白名单 key 放行）
 - Verification: `npm run typecheck` 通过；`npm test` 27 files / 275 tests 全部通过（+10 tests）；`npm run build` 通过
 - Next: D50 — CreateProposalUseCase 接入 retry + session/error cache
+
+---
+
+## D50 开发日志
+
+### Current status
+
+`CreateProposalUseCase.executeV2` 已接入 `RetryAttemptRunner`，实现最多 3 次 LLM 调用 + Zod + Normalization 重试。成功 session 写入 `SessionCacheV2Store`（新增接口+适配器），失败 attempt 写入 `ErrorSessionCacheStore`。返回 `V2NoticePlan` 供 D51 弹 Notice。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: CreateProposalUseCase 接入 retry + session/error cache（Phase 12 第三任务）
+- Reason: v0.2.0 要求 provider → zod → normalization 循环最多 3 次，成功 ProposalSessionV2 写 session-cache，失败 attempt 写 error-session-cache，3 次失败不创建 session，结果包含 notice plan 但不弹 Notice
+- Change:
+  - **新增** `src/runtime/SessionCacheV2Store.ts`：`SessionCacheV2Store` 接口（save/loadAll/getLatestForNote）
+  - **新增** `src/adapters/obsidian/ObsidianSessionCacheV2Store.ts`：实现 `SessionCacheV2Store`，路径 `.obsidian/plugins/obsidian-refined-layer/session-cache/sessions.v2.json`，默认 limit=5，按 notePath 去重，secret 扫描，corrupt JSON 容错；`PersistedProposalSessionV2` ↔ `ProposalSessionV2` 互转
+  - **修改** `src/application/CreateProposalUseCase.ts`：
+    - 新增 `V2NoticePlan` 类型（attemptsUsed/maxAttempts/errorCacheWritten/errorCacheDisabled）
+    - `CreateProposalV2Result` 增加 `kind: "exhausted"` 分支和 `noticePlan` 字段；`kind: "provider-failed"` 不再出现（provider 失败现在被 retry 捕获）
+    - 构造函数新增可选参数 `errorSessionCache?: ErrorSessionCacheStore` 和 `sessionCacheV2?: SessionCacheV2Store`
+    - `executeV2` 通过 `AttemptContext` 闭包传递 notePath/noteTitle/noteContent/bBlockText/request/errorSessionId 给 `runSingleAttempt`
+    - `runSingleAttempt`：provider 调用 → Zod 验证 → Normalization → 成功返回 `ProposalSessionV2`，失败构建 `FailedAttemptRecord`（含 requestSnapshot/responseSnapshot/validationSnapshot）
+    - `buildFailedAttempt`：三类失败（provider 异常/Zod 失败/Normalization invalid）各自保留对应 validationSnapshot
+    - `handleRetrySuccess`：失败 attempt 写 error-cache，成功 session 写 session-cache，构建 noticePlan
+    - `handleRetryExhausted`：3 次全部失败写 error-cache，不创建 session
+  - **修改** `tests/application/CreateProposalUseCase.test.ts`：两处现有测试更新——provider 不支持 V2 改为 `validation-failed`（code: v2-not-supported）；normalization invalid 改为 `exhausted`（含 3 个 failedAttempts 和 noticePlan）
+  - **新增** `tests/application/CreateProposalUseCase.retry.test.ts`（9 tests）：
+    - InMemory SessionCacheV2Store / ErrorSessionCacheStore 测试替身
+    - attempt 1 成功：session-cache 有 session/error-cache 空/noticePlan 正确
+    - attempt 1 成功无缓存注入：errorCacheDisabled=true
+    - attempt 2 成功：1 个 failedAttempt 写 error-cache，session.attemptsUsed=2
+    - attempt 3 成功：2 个 failedAttempt 写 error-cache，同 errorSessionId，session.attemptsUsed=3
+    - 3 次全失败：3 个 failedAttempt 写 error-cache，session-cache 空，kind=exhausted
+    - error-cache 禁用：exhausted 时 errorCacheDisabled=true
+    - Zod 失败重试：attempt 1 zodError 记录，attempt 2 成功
+    - Normalization invalid 重试：3 次 normalizationReport，exhausted
+    - FailedAttemptRecord 完整结构验证（identity/requestSnapshot/blockConfigSnapshot）
+- Verification: `npm run typecheck` 通过；`npm test` 28 files / 284 tests 全部通过（+9 tests）；`npm run build` 通过
+- Next: D51 — 请求次数提醒与错误缓存位置提示

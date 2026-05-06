@@ -3,11 +3,12 @@ import { BlockExtractor } from "../core/markdown/BlockExtractor";
 import { parseFrontmatter } from "../core/profile/FrontmatterParser";
 import type { WorkflowProfile } from "../core/profile/WorkflowProfile";
 import { PromptBuilder } from "../core/prompt/PromptBuilder";
+import type { LlmRequestV2 } from "../core/prompt/PromptDebugSnapshot";
 import { ProposalNormalizer } from "../core/proposal/ProposalNormalizer";
 import { ProposalValidator } from "../core/proposal/ProposalValidator";
 import { hashText } from "../core/protected-region/hash";
 import { ProtectedRegionExtractor } from "../core/protected-region/ProtectedRegionExtractor";
-import type { ProposalSession, ProposalSessionV2 } from "../runtime/ProposalSession";
+import type { ProposalSession, ProposalSessionV2, FailedAttemptRecord } from "../runtime/ProposalSession";
 import { ProposalSessionStore } from "../runtime/ProposalSessionStore";
 import { toSafeErrorMessage } from "../runtime/redaction";
 import { TokenUsageReporter } from "../runtime/TokenUsageReporter";
@@ -15,6 +16,21 @@ import type { RawRefinedWorkflowSettings } from "../settings/PluginSettings";
 import type { ActiveNoteRepository } from "./CheckEligibilityUseCase";
 import { CheckEligibilityUseCase, type CheckEligibilityResult } from "./CheckEligibilityUseCase";
 import type { ProposalValidationError } from "../core/proposal/ProposalValidator";
+import {
+  RetryAttemptRunner,
+  type AttemptIndex,
+  type SingleAttemptResult,
+} from "./RetryAttemptRunner";
+import type { ErrorSessionCacheStore } from "../runtime/ErrorSessionCacheStore";
+import type { SessionCacheV2Store } from "../runtime/SessionCacheV2Store";
+import type { TokenUsageReport } from "../core/proposal/TokenUsageReport";
+
+export interface V2NoticePlan {
+  attemptsUsed: number;
+  maxAttempts: number;
+  errorCacheWritten: boolean;
+  errorCacheDisabled: boolean;
+}
 
 export type CreateProposalResult =
   | {
@@ -40,16 +56,18 @@ export type CreateProposalV2Result =
       eligibility: CheckEligibilityResult;
     }
   | {
-      kind: "provider-failed";
-      message: string;
-    }
-  | {
       kind: "validation-failed";
       errors: ProposalValidationError[];
     }
   | {
+      kind: "exhausted";
+      failedAttempts: FailedAttemptRecord[];
+      noticePlan: V2NoticePlan;
+    }
+  | {
       kind: "created-v2";
       session: ProposalSessionV2;
+      noticePlan: V2NoticePlan;
     };
 
 interface PromptOverride {
@@ -58,12 +76,24 @@ interface PromptOverride {
   userPrompt?: string;
 }
 
+interface AttemptContext {
+  request: LlmRequestV2;
+  noteContent: string;
+  notePath: string;
+  noteTitle: string;
+  bBlockText: string;
+  errorSessionId: string;
+}
+
 export class CreateProposalUseCase {
   private readonly eligibilityUseCase: CheckEligibilityUseCase;
   private readonly proposalValidator: ProposalValidator;
   private readonly protectedRegionExtractor: ProtectedRegionExtractor;
   private readonly tokenUsageReporter = new TokenUsageReporter();
   private readonly blockExtractor = new BlockExtractor();
+  private readonly retryRunner: RetryAttemptRunner;
+  private readonly errorSessionCache?: ErrorSessionCacheStore;
+  private readonly sessionCacheV2?: SessionCacheV2Store;
 
   constructor(
     private readonly noteRepository: ActiveNoteRepository,
@@ -72,10 +102,15 @@ export class CreateProposalUseCase {
     private readonly sessionStore: ProposalSessionStore,
     private readonly settings: RawRefinedWorkflowSettings,
     private readonly promptOverride?: PromptOverride,
+    errorSessionCache?: ErrorSessionCacheStore,
+    sessionCacheV2?: SessionCacheV2Store,
   ) {
     this.eligibilityUseCase = new CheckEligibilityUseCase(noteRepository, profile, settings);
     this.proposalValidator = new ProposalValidator(profile);
     this.protectedRegionExtractor = new ProtectedRegionExtractor();
+    this.retryRunner = new RetryAttemptRunner();
+    this.errorSessionCache = errorSessionCache;
+    this.sessionCacheV2 = sessionCacheV2;
   }
 
   // ── v0.1.0 compat path ──
@@ -201,10 +236,10 @@ export class CreateProposalUseCase {
     };
   }
 
-  // ── v0.2.0 pipeline ──
+  // ── v0.2.0 pipeline (retry + session/error cache) ──
 
   async executeV2(): Promise<CreateProposalV2Result> {
-    // 1. Eligibility check
+    // 1. Eligibility check (not retried)
     const activeNote = await this.eligibilityUseCase.execute();
     if (!activeNote.hasActiveMarkdownNote || !activeNote.eligible) {
       return { kind: "eligibility-failed", eligibility: activeNote };
@@ -215,7 +250,7 @@ export class CreateProposalUseCase {
       return { kind: "eligibility-failed", eligibility: activeNote };
     }
 
-    // 2. Extract B block for hash and boundary info
+    // 2. B block extraction (not retried — configuration issue)
     const bBlockExtract = this.blockExtractor.extract(
       lookup.note.content,
       this.settings.bBlock,
@@ -231,7 +266,18 @@ export class CreateProposalUseCase {
       };
     }
 
-    // 3. Build structured prompt via PromptBuilder
+    // 3. Build prompt (once — reused across retries)
+    if (!this.llmProvider.generateProposalV2) {
+      return {
+        kind: "validation-failed",
+        errors: [{
+          layer: "schema",
+          code: "v2-not-supported",
+          message: "Provider does not support v0.2 proposal generation.",
+        }],
+      };
+    }
+
     const promptBuilder = new PromptBuilder();
     const { request, debugSnapshot: _debug } = promptBuilder.build({
       provider: this.llmProvider.providerId,
@@ -243,46 +289,82 @@ export class CreateProposalUseCase {
       tagWhitelist: this.settings.tagWhitelist,
       tagPrompt: this.settings.tagPrompt,
     });
-    void _debug; // available for observability in future phases
+    void _debug;
 
-    // 4. Call provider (v0.2 path)
-    if (!this.llmProvider.generateProposalV2) {
-      return { kind: "provider-failed", message: "Provider does not support v0.2 proposal generation." };
+    // Error session ID groups all failed attempts from this run
+    const errorSessionId = `error-session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const ctx: AttemptContext = {
+      request,
+      noteContent: lookup.note.content,
+      notePath: lookup.note.path,
+      noteTitle: lookup.note.title,
+      bBlockText: bBlockExtract.block.text,
+      errorSessionId,
+    };
+
+    // 4. Retry loop
+    const retryResult = await this.retryRunner.run(async (attemptIndex) => {
+      return this.runSingleAttempt(ctx, attemptIndex);
+    });
+
+    // 5. Persist and return based on retry outcome
+    if (retryResult.status === "success") {
+      return this.handleRetrySuccess(retryResult.session, retryResult.failedAttempts, retryResult.attemptsUsed);
     }
 
+    return this.handleRetryExhausted(retryResult.failedAttempts);
+  }
+
+  private async runSingleAttempt(
+    ctx: AttemptContext,
+    attemptIndex: AttemptIndex,
+  ): Promise<SingleAttemptResult> {
+    // 4a. Call provider
     let llmResponse: LlmResponse;
     try {
-      llmResponse = await this.llmProvider.generateProposalV2(request);
+      llmResponse = await this.llmProvider.generateProposalV2!(ctx.request);
     } catch (error) {
-      return { kind: "provider-failed", message: toSafeErrorMessage(error) };
+      const failedAttempt = this.buildFailedAttempt(
+        ctx, attemptIndex,
+        `Provider call failed: ${toSafeErrorMessage(error)}`,
+        undefined,
+        undefined,
+        {},
+      );
+      return { success: false, attempt: failedAttempt };
     }
 
-    // 5. JSON extraction + Zod validation
+    // 4b. JSON extraction + Zod validation
     const zodValidation = this.proposalValidator.validateV2Output(llmResponse.rawText);
     if (!zodValidation.ok) {
-      return { kind: "validation-failed", errors: zodValidation.errors };
+      const failedAttempt = this.buildFailedAttempt(
+        ctx, attemptIndex,
+        "Zod validation failed: proposal does not match v0.2 schema.",
+        llmResponse,
+        llmResponse.usage,
+        { zodError: zodValidation.zodError },
+      );
+      return { success: false, attempt: failedAttempt };
     }
 
-    // 6. Normalization (A block ordering, unknown id rejection, tag normalization)
+    // 4c. Normalization
     const normalizer = new ProposalNormalizer();
     const normalized = normalizer.normalize(zodValidation.proposal, this.settings);
 
     if (normalized.validation.status === "invalid") {
-      return {
-        kind: "validation-failed",
-        errors: [{
-          layer: "schema",
-          code: "normalization-invalid",
-          message: "Proposal normalization resulted in invalid status: no acceptable blocks.",
-        }],
-      };
+      const failedAttempt = this.buildFailedAttempt(
+        ctx, attemptIndex,
+        "Normalization invalid: no acceptable blocks after filtering.",
+        llmResponse,
+        llmResponse.usage,
+        { normalizationReport: normalized.validation },
+      );
+      return { success: false, attempt: failedAttempt };
     }
 
-    // 7. Build ProposalSessionV2
-    // Note: session storage (session-cache) will be wired in Phase 12.
-    // For now, the session is returned directly without persisting to the
-    // v0.1 ProposalSessionStore.
-    const parsedFrontmatter = parseFrontmatter(lookup.note.content);
+    // 4d. Build successful ProposalSessionV2
+    const parsedFrontmatter = parseFrontmatter(ctx.noteContent);
     const now = new Date().toISOString();
 
     const session: ProposalSessionV2 = {
@@ -291,13 +373,13 @@ export class CreateProposalUseCase {
       schemaVersion: "0.2",
       createdAt: now,
       updatedAt: now,
-      notePath: lookup.note.path,
-      noteTitle: lookup.note.title,
-      baseFileHash: hashText(lookup.note.content),
+      notePath: ctx.notePath,
+      noteTitle: ctx.noteTitle,
+      baseFileHash: hashText(ctx.noteContent),
       ...(parsedFrontmatter.hasFrontmatter
         ? { baseFrontmatterHash: hashText(JSON.stringify(parsedFrontmatter.frontmatter)) }
         : {}),
-      baseBBlockHash: bBlockExtract.block.hash,
+      baseBBlockHash: hashText(ctx.bBlockText),
       blockConfigSnapshot: {
         protectH1: this.settings.protectH1,
         aBlocks: this.settings.aBlocks,
@@ -317,7 +399,7 @@ export class CreateProposalUseCase {
       tokenUsage: this.tokenUsageReporter.resolveUsage({
         provider: this.llmProvider.providerId,
         model: this.llmProvider.model,
-        inputText: request.messages.map((m) => m.content).join("\n"),
+        inputText: ctx.request.messages.map((m) => m.content).join("\n"),
         outputText: llmResponse.rawText,
         providerUsage: llmResponse.usage,
       }),
@@ -325,11 +407,116 @@ export class CreateProposalUseCase {
       source: {
         provider: this.llmProvider.providerId,
         model: this.llmProvider.model,
-        attemptsUsed: 1,
+        attemptsUsed: attemptIndex,
       },
     };
 
-    return { kind: "created-v2", session };
+    return { success: true, session };
+  }
+
+  private buildFailedAttempt(
+    ctx: AttemptContext,
+    attemptIndex: AttemptIndex,
+    errorSummary: string,
+    llmResponse?: LlmResponse,
+    providerUsage?: TokenUsageReport,
+    validationSnapshotOverrides?: Record<string, unknown>,
+  ): FailedAttemptRecord {
+    const responseSnapshot = llmResponse
+      ? {
+          rawText: llmResponse.rawText,
+          extractedJsonText: undefined as string | undefined,
+          parsedJson: llmResponse.parsedJson,
+          usage: providerUsage ?? llmResponse.usage,
+        }
+      : undefined;
+
+    return {
+      id: `${ctx.errorSessionId}-attempt-${attemptIndex}`,
+      errorSessionId: ctx.errorSessionId,
+      attemptIndex,
+      createdAt: new Date().toISOString(),
+      provider: this.llmProvider.providerId,
+      model: this.llmProvider.model,
+      workflowProfileId: "raw-refined",
+      schemaVersion: "0.2",
+      notePath: ctx.notePath,
+      noteTitle: ctx.noteTitle,
+      blockConfigSnapshot: {
+        protectH1: this.settings.protectH1,
+        aBlocks: this.settings.aBlocks,
+        bBlock: this.settings.bBlock,
+        tagWhitelist: this.settings.tagWhitelist,
+      },
+      requestSnapshot: {
+        messages: ctx.request.messages,
+        schemaName: ctx.request.schemaName,
+        schemaVersion: ctx.request.schemaVersion,
+        metadata: ctx.request.metadata as Record<string, unknown>,
+      },
+      responseSnapshot,
+      validationSnapshot: validationSnapshotOverrides
+        ? {
+            jsonExtractionError: typeof validationSnapshotOverrides.jsonExtractionError === "string"
+              ? validationSnapshotOverrides.jsonExtractionError
+              : undefined,
+            zodError: validationSnapshotOverrides.zodError,
+            normalizationReport: validationSnapshotOverrides.normalizationReport,
+            policyErrors: validationSnapshotOverrides.policyErrors,
+          }
+        : undefined,
+      errorSummary,
+    };
+  }
+
+  private async handleRetrySuccess(
+    session: ProposalSessionV2,
+    failedAttempts: FailedAttemptRecord[],
+    attemptsUsed: AttemptIndex,
+  ): Promise<CreateProposalV2Result> {
+    let errorCacheWritten = false;
+
+    if (failedAttempts.length > 0 && this.errorSessionCache) {
+      for (const attempt of failedAttempts) {
+        await this.errorSessionCache.save(attempt);
+      }
+      errorCacheWritten = true;
+    }
+
+    if (this.sessionCacheV2) {
+      await this.sessionCacheV2.save(session);
+    }
+
+    const noticePlan: V2NoticePlan = {
+      attemptsUsed,
+      maxAttempts: 3,
+      errorCacheWritten,
+      errorCacheDisabled: !this.errorSessionCache,
+    };
+
+    return { kind: "created-v2", session, noticePlan };
+  }
+
+  private async handleRetryExhausted(
+    failedAttempts: FailedAttemptRecord[],
+  ): Promise<CreateProposalV2Result> {
+    let errorCacheWritten = false;
+
+    if (this.errorSessionCache) {
+      for (const attempt of failedAttempts) {
+        await this.errorSessionCache.save(attempt);
+      }
+      errorCacheWritten = true;
+    }
+
+    const noticePlan: V2NoticePlan = {
+      attemptsUsed: 3,
+      maxAttempts: 3,
+      errorCacheWritten,
+      errorCacheDisabled: !this.errorSessionCache,
+    };
+
+    return { kind: "exhausted", failedAttempts, noticePlan };
   }
 }
 

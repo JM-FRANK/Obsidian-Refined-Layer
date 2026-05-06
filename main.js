@@ -16952,9 +16952,34 @@ var CheckEligibilityUseCase = class {
   }
 };
 
+// src/application/RetryAttemptRunner.ts
+var MAX_ATTEMPTS = 3;
+var RetryAttemptRunner = class {
+  constructor(maxAttempts = MAX_ATTEMPTS) {
+    this.maxAttempts = maxAttempts;
+  }
+  async run(runAttempt) {
+    const failedAttempts = [];
+    for (let i = 1; i <= this.maxAttempts; i++) {
+      const index = i;
+      const result = await runAttempt(index);
+      if (result.success) {
+        return {
+          status: "success",
+          session: result.session,
+          attemptsUsed: index,
+          failedAttempts
+        };
+      }
+      failedAttempts.push(result.attempt);
+    }
+    return { status: "exhausted", failedAttempts };
+  }
+};
+
 // src/application/CreateProposalUseCase.ts
 var CreateProposalUseCase = class {
-  constructor(noteRepository, profile, llmProvider, sessionStore, settings, promptOverride) {
+  constructor(noteRepository, profile, llmProvider, sessionStore, settings, promptOverride, errorSessionCache, sessionCacheV2) {
     this.noteRepository = noteRepository;
     this.profile = profile;
     this.llmProvider = llmProvider;
@@ -16966,6 +16991,9 @@ var CreateProposalUseCase = class {
     this.eligibilityUseCase = new CheckEligibilityUseCase(noteRepository, profile, settings);
     this.proposalValidator = new ProposalValidator(profile);
     this.protectedRegionExtractor = new ProtectedRegionExtractor();
+    this.retryRunner = new RetryAttemptRunner();
+    this.errorSessionCache = errorSessionCache;
+    this.sessionCacheV2 = sessionCacheV2;
   }
   // ── v0.1.0 compat path ──
   async execute() {
@@ -17073,7 +17101,7 @@ ${userPrompt}`,
       session
     };
   }
-  // ── v0.2.0 pipeline ──
+  // ── v0.2.0 pipeline (retry + session/error cache) ──
   async executeV2() {
     const activeNote = await this.eligibilityUseCase.execute();
     if (!activeNote.hasActiveMarkdownNote || !activeNote.eligible) {
@@ -17097,6 +17125,16 @@ ${userPrompt}`,
         }]
       };
     }
+    if (!this.llmProvider.generateProposalV2) {
+      return {
+        kind: "validation-failed",
+        errors: [{
+          layer: "schema",
+          code: "v2-not-supported",
+          message: "Provider does not support v0.2 proposal generation."
+        }]
+      };
+    }
     const promptBuilder = new PromptBuilder();
     const { request, debugSnapshot: _debug } = promptBuilder.build({
       provider: this.llmProvider.providerId,
@@ -17109,32 +17147,64 @@ ${userPrompt}`,
       tagPrompt: this.settings.tagPrompt
     });
     void _debug;
-    if (!this.llmProvider.generateProposalV2) {
-      return { kind: "provider-failed", message: "Provider does not support v0.2 proposal generation." };
+    const errorSessionId = `error-session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ctx = {
+      request,
+      noteContent: lookup.note.content,
+      notePath: lookup.note.path,
+      noteTitle: lookup.note.title,
+      bBlockText: bBlockExtract.block.text,
+      errorSessionId
+    };
+    const retryResult = await this.retryRunner.run(async (attemptIndex) => {
+      return this.runSingleAttempt(ctx, attemptIndex);
+    });
+    if (retryResult.status === "success") {
+      return this.handleRetrySuccess(retryResult.session, retryResult.failedAttempts, retryResult.attemptsUsed);
     }
+    return this.handleRetryExhausted(retryResult.failedAttempts);
+  }
+  async runSingleAttempt(ctx, attemptIndex) {
     let llmResponse;
     try {
-      llmResponse = await this.llmProvider.generateProposalV2(request);
+      llmResponse = await this.llmProvider.generateProposalV2(ctx.request);
     } catch (error51) {
-      return { kind: "provider-failed", message: toSafeErrorMessage(error51) };
+      const failedAttempt = this.buildFailedAttempt(
+        ctx,
+        attemptIndex,
+        `Provider call failed: ${toSafeErrorMessage(error51)}`,
+        void 0,
+        void 0,
+        {}
+      );
+      return { success: false, attempt: failedAttempt };
     }
     const zodValidation = this.proposalValidator.validateV2Output(llmResponse.rawText);
     if (!zodValidation.ok) {
-      return { kind: "validation-failed", errors: zodValidation.errors };
+      const failedAttempt = this.buildFailedAttempt(
+        ctx,
+        attemptIndex,
+        "Zod validation failed: proposal does not match v0.2 schema.",
+        llmResponse,
+        llmResponse.usage,
+        { zodError: zodValidation.zodError }
+      );
+      return { success: false, attempt: failedAttempt };
     }
     const normalizer = new ProposalNormalizer();
     const normalized = normalizer.normalize(zodValidation.proposal, this.settings);
     if (normalized.validation.status === "invalid") {
-      return {
-        kind: "validation-failed",
-        errors: [{
-          layer: "schema",
-          code: "normalization-invalid",
-          message: "Proposal normalization resulted in invalid status: no acceptable blocks."
-        }]
-      };
+      const failedAttempt = this.buildFailedAttempt(
+        ctx,
+        attemptIndex,
+        "Normalization invalid: no acceptable blocks after filtering.",
+        llmResponse,
+        llmResponse.usage,
+        { normalizationReport: normalized.validation }
+      );
+      return { success: false, attempt: failedAttempt };
     }
-    const parsedFrontmatter = parseFrontmatter(lookup.note.content);
+    const parsedFrontmatter = parseFrontmatter(ctx.noteContent);
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const session = {
       id: createSessionId(),
@@ -17142,11 +17212,11 @@ ${userPrompt}`,
       schemaVersion: "0.2",
       createdAt: now,
       updatedAt: now,
-      notePath: lookup.note.path,
-      noteTitle: lookup.note.title,
-      baseFileHash: hashText(lookup.note.content),
+      notePath: ctx.notePath,
+      noteTitle: ctx.noteTitle,
+      baseFileHash: hashText(ctx.noteContent),
       ...parsedFrontmatter.hasFrontmatter ? { baseFrontmatterHash: hashText(JSON.stringify(parsedFrontmatter.frontmatter)) } : {},
-      baseBBlockHash: bBlockExtract.block.hash,
+      baseBBlockHash: hashText(ctx.bBlockText),
       blockConfigSnapshot: {
         protectH1: this.settings.protectH1,
         aBlocks: this.settings.aBlocks,
@@ -17164,7 +17234,7 @@ ${userPrompt}`,
       tokenUsage: this.tokenUsageReporter.resolveUsage({
         provider: this.llmProvider.providerId,
         model: this.llmProvider.model,
-        inputText: request.messages.map((m) => m.content).join("\n"),
+        inputText: ctx.request.messages.map((m) => m.content).join("\n"),
         outputText: llmResponse.rawText,
         providerUsage: llmResponse.usage
       }),
@@ -17172,10 +17242,85 @@ ${userPrompt}`,
       source: {
         provider: this.llmProvider.providerId,
         model: this.llmProvider.model,
-        attemptsUsed: 1
+        attemptsUsed: attemptIndex
       }
     };
-    return { kind: "created-v2", session };
+    return { success: true, session };
+  }
+  buildFailedAttempt(ctx, attemptIndex, errorSummary, llmResponse, providerUsage, validationSnapshotOverrides) {
+    const responseSnapshot = llmResponse ? {
+      rawText: llmResponse.rawText,
+      extractedJsonText: void 0,
+      parsedJson: llmResponse.parsedJson,
+      usage: providerUsage != null ? providerUsage : llmResponse.usage
+    } : void 0;
+    return {
+      id: `${ctx.errorSessionId}-attempt-${attemptIndex}`,
+      errorSessionId: ctx.errorSessionId,
+      attemptIndex,
+      createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+      provider: this.llmProvider.providerId,
+      model: this.llmProvider.model,
+      workflowProfileId: "raw-refined",
+      schemaVersion: "0.2",
+      notePath: ctx.notePath,
+      noteTitle: ctx.noteTitle,
+      blockConfigSnapshot: {
+        protectH1: this.settings.protectH1,
+        aBlocks: this.settings.aBlocks,
+        bBlock: this.settings.bBlock,
+        tagWhitelist: this.settings.tagWhitelist
+      },
+      requestSnapshot: {
+        messages: ctx.request.messages,
+        schemaName: ctx.request.schemaName,
+        schemaVersion: ctx.request.schemaVersion,
+        metadata: ctx.request.metadata
+      },
+      responseSnapshot,
+      validationSnapshot: validationSnapshotOverrides ? {
+        jsonExtractionError: typeof validationSnapshotOverrides.jsonExtractionError === "string" ? validationSnapshotOverrides.jsonExtractionError : void 0,
+        zodError: validationSnapshotOverrides.zodError,
+        normalizationReport: validationSnapshotOverrides.normalizationReport,
+        policyErrors: validationSnapshotOverrides.policyErrors
+      } : void 0,
+      errorSummary
+    };
+  }
+  async handleRetrySuccess(session, failedAttempts, attemptsUsed) {
+    let errorCacheWritten = false;
+    if (failedAttempts.length > 0 && this.errorSessionCache) {
+      for (const attempt of failedAttempts) {
+        await this.errorSessionCache.save(attempt);
+      }
+      errorCacheWritten = true;
+    }
+    if (this.sessionCacheV2) {
+      await this.sessionCacheV2.save(session);
+    }
+    const noticePlan = {
+      attemptsUsed,
+      maxAttempts: 3,
+      errorCacheWritten,
+      errorCacheDisabled: !this.errorSessionCache
+    };
+    return { kind: "created-v2", session, noticePlan };
+  }
+  async handleRetryExhausted(failedAttempts) {
+    let errorCacheWritten = false;
+    if (this.errorSessionCache) {
+      for (const attempt of failedAttempts) {
+        await this.errorSessionCache.save(attempt);
+      }
+      errorCacheWritten = true;
+    }
+    const noticePlan = {
+      attemptsUsed: 3,
+      maxAttempts: 3,
+      errorCacheWritten,
+      errorCacheDisabled: !this.errorSessionCache
+    };
+    return { kind: "exhausted", failedAttempts, noticePlan };
   }
 };
 function createSessionId() {
