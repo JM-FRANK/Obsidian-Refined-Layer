@@ -4,6 +4,11 @@ import { MockLlmProvider } from "./adapters/llm/MockLlmProvider";
 import { OpenAICompatibleProvider } from "./adapters/llm/OpenAICompatibleProvider";
 import type { LlmProvider } from "./adapters/llm/LlmProvider";
 import { ObsidianNoteRepository } from "./adapters/obsidian/ObsidianNoteRepository";
+import {
+  DEFAULT_ERROR_SESSION_CACHE_LIMIT,
+  ERROR_SESSION_CACHE_FILE_PATH,
+  ERROR_SESSION_CACHE_PATH,
+} from "./adapters/obsidian/ObsidianErrorSessionCacheStore";
 import { ObsidianSecretStore, type SecretStorageDiagnostics } from "./adapters/obsidian/ObsidianSecretStore";
 import { ObsidianSessionCacheV2Store } from "./adapters/obsidian/ObsidianSessionCacheV2Store";
 import { ObsidianSessionStore } from "./adapters/obsidian/ObsidianSessionStore";
@@ -20,6 +25,7 @@ import { SaveDraftUseCase } from "./application/SaveDraftUseCase";
 import { rawRefinedProfile } from "./core/profile/rawRefinedProfile";
 import type { UserDecision, UserDecisionV2 } from "./core/review/UserDecision";
 import { ProposalSessionStore } from "./runtime/ProposalSessionStore";
+import type { ErrorSessionCacheSettings } from "./runtime/ProposalSession";
 import type { SessionCacheV2Store } from "./runtime/SessionCacheV2Store";
 import { toSafeErrorMessage } from "./runtime/redaction";
 import { getDefaultProviderSettings, getProviderPreset, type ProviderType } from "./settings/ProviderConfig";
@@ -48,7 +54,7 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     this.settings = await this.settingsStore.load();
     this.sessionStore = new ProposalSessionStore(this.settings.historyLimit, new ObsidianSessionStore(this));
     await this.sessionStore.restoreFromDisk();
-    this.sessionCacheV2 = new ObsidianSessionCacheV2Store(this);
+    this.sessionCacheV2 = new ObsidianSessionCacheV2Store(this, this.settings.sessionCache.limit);
     this.secretStore = new ObsidianSecretStore(this.app);
 
     this.addSettingTab(new SettingsTab(this.app, this));
@@ -157,6 +163,25 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     return this.secretStore.getDiagnostics();
   }
 
+  getSessionCacheInfo() {
+    return this.sessionCacheV2.getCacheInfo?.() ?? {
+      cachePath: ".obsidian/plugins/obsidian-refined-layer/session-cache",
+      filePath: ".obsidian/plugins/obsidian-refined-layer/session-cache/sessions.v2.json",
+      legacyFilePath: ".obsidian/plugins/obsidian-refined-layer/session-cache/sessions.v1.json",
+      compatibilityStrategy: "ignore-v1" as const,
+      limit: this.settings.sessionCache.limit,
+    };
+  }
+
+  getErrorSessionCacheInfo() {
+    return {
+      cachePath: ERROR_SESSION_CACHE_PATH,
+      filePath: ERROR_SESSION_CACHE_FILE_PATH,
+      limit: this.settings.errorSessionCache.limit,
+      defaultLimit: DEFAULT_ERROR_SESSION_CACHE_LIMIT,
+    };
+  }
+
   async updateSettings(partial: Partial<PluginSettings>): Promise<void> {
     this.settings = {
       ...this.settings,
@@ -167,7 +192,35 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
       this.sessionStore.setHistoryLimit(this.settings.historyLimit);
     }
 
+    if (partial.sessionCache !== undefined) {
+      await this.sessionCacheV2.setSessionCacheLimit?.(this.settings.sessionCache.limit);
+    }
+
     await this.settingsStore.save(this.settings);
+  }
+
+  async updateSessionCacheSettings(partial: Partial<PluginSettings["sessionCache"]>): Promise<void> {
+    const current = this.settings.sessionCache;
+    const limit = normalizePositiveInteger(partial.limit, current.limit);
+    await this.updateSettings({
+      sessionCache: {
+        ...current,
+        ...partial,
+        limit,
+      },
+    });
+  }
+
+  async updateErrorSessionCacheSettings(partial: Partial<ErrorSessionCacheSettings>): Promise<void> {
+    const current = this.settings.errorSessionCache;
+    const limit = normalizePositiveInteger(partial.limit, current.limit);
+    await this.updateSettings({
+      errorSessionCache: {
+        ...current,
+        ...partial,
+        limit,
+      },
+    });
   }
 
   async updateProviderSettings(partial: Partial<NonNullable<PluginSettings["provider"]>>): Promise<void> {
@@ -306,7 +359,7 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     await this.sessionStore.updateSessionStatus(sessionId, "discarded");
   }
 
-  private async openCachedProposalSessionFlow(): Promise<void> {
+  async openCachedProposalSessionFlow(): Promise<void> {
     const useCase = new OpenCachedSessionUseCase(this.sessionCacheV2);
     const sessions = await useCase.list();
 
@@ -513,6 +566,11 @@ function formatEligibilityMessage(result: CheckEligibilityResult): string {
   }
 
   return `Refined Layer: ${result.noteTitle} (${result.notePath}), raw content length ${result.rawContentLength ?? 0}.`;
+}
+
+function normalizePositiveInteger(value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
 function formatCreateProposalMessage(

@@ -21,6 +21,8 @@ export class SettingsTab extends PluginSettingTab {
     const providerPreset = getProviderPreset(providerType);
     const secretAvailable = this.plugin.hasSecureSecretStorage();
     const secretDiagnostics = this.plugin.getSecretStorageDiagnostics();
+    const sessionCacheInfo = this.plugin.getSessionCacheInfo();
+    const errorSessionCacheInfo = this.plugin.getErrorSessionCacheInfo();
     containerEl.empty();
 
     new Setting(containerEl)
@@ -38,19 +40,71 @@ export class SettingsTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName(t(settings.language, "settings.title.historyLimit"))
-      .setDesc(t(settings.language, "settings.desc.historyLimit"))
+      .setName(t(settings.language, "settings.title.sessionCache"))
+      .setDesc(t(settings.language, "settings.desc.sessionCache"));
+
+    new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.sessionCacheLimit"))
+      .setDesc(t(settings.language, "settings.desc.sessionCacheLimit"))
       .addText((text) => {
         text
           .setPlaceholder("5")
-          .setValue(String(settings.historyLimit))
+          .setValue(String(settings.sessionCache.limit))
           .onChange(async (value) => {
             const parsed = Number.parseInt(value, 10);
-            await this.plugin.updateSettings({
-              historyLimit: Number.isFinite(parsed) && parsed > 0 ? parsed : settings.historyLimit,
-            });
+            await this.plugin.updateSessionCacheSettings({ limit: parsed });
           });
       });
+
+    new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.sessionCacheLocation"))
+      .setDesc(sessionCacheInfo.cachePath);
+
+    new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.openSessionCache"))
+      .setDesc(t(settings.language, "settings.desc.openSessionCache"))
+      .addButton((button) => {
+        button
+          .setButtonText(t(settings.language, "settings.button.openSessionCache"))
+          .onClick(async () => {
+            await this.plugin.openCachedProposalSessionFlow();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.errorSessionCache"))
+      .setDesc(t(settings.language, "settings.desc.errorSessionCache"))
+      .addToggle((toggle) => {
+        toggle
+          .setValue(settings.errorSessionCache.enabled)
+          .onChange(async (enabled) => {
+            await this.plugin.updateErrorSessionCacheSettings({ enabled });
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.errorSessionCacheLimit"))
+      .setDesc(t(settings.language, "settings.desc.errorSessionCacheLimit", {
+        defaultLimit: errorSessionCacheInfo.defaultLimit,
+      }))
+      .addText((text) => {
+        text
+          .setPlaceholder(String(errorSessionCacheInfo.defaultLimit))
+          .setValue(String(settings.errorSessionCache.limit))
+          .onChange(async (value) => {
+            const parsed = Number.parseInt(value, 10);
+            await this.plugin.updateErrorSessionCacheSettings({ limit: parsed });
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(t(settings.language, "settings.title.errorSessionCacheLocation"))
+      .setDesc(errorSessionCacheInfo.cachePath);
+
+    containerEl.createEl("p", {
+      cls: "obsidian-refined-layer-settings-note",
+      text: t(settings.language, "settings.desc.cachePrivacy"),
+    });
 
     new Setting(containerEl)
       .setName(t(settings.language, "settings.title.draftFolder"))

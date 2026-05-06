@@ -296,6 +296,12 @@ async function ensureFolders(app, filePath) {
   }
 }
 
+// src/adapters/obsidian/ObsidianErrorSessionCacheStore.ts
+var ERROR_SESSION_CACHE_PATH = ".obsidian/plugins/obsidian-refined-layer/error-session-cache";
+var ERROR_SESSION_CACHE_FILE_NAME = "attempts.v1.json";
+var ERROR_SESSION_CACHE_FILE_PATH = `${ERROR_SESSION_CACHE_PATH}/${ERROR_SESSION_CACHE_FILE_NAME}`;
+var DEFAULT_ERROR_SESSION_CACHE_LIMIT = 30;
+
 // src/adapters/obsidian/ObsidianSecretStore.ts
 var SECRET_ID_PATTERN = /^[a-z0-9-]+$/;
 var ObsidianSecretStore = class {
@@ -18386,13 +18392,26 @@ var enStrings = {
   "settings.title.apiKey": "API key",
   "settings.title.secretDiagnostics": "SecretStorage diagnostics",
   "settings.title.language": "Language",
-  "settings.title.historyLimit": "History limit",
+  "settings.title.historyLimit": "Cache record limit",
+  "settings.title.sessionCache": "Cache records",
+  "settings.title.sessionCacheLimit": "Cache record limit",
+  "settings.title.sessionCacheLocation": "Cache content location",
+  "settings.title.openSessionCache": "View cache records",
+  "settings.title.errorSessionCache": "Error session cache",
+  "settings.title.errorSessionCacheLimit": "Error session cache limit",
+  "settings.title.errorSessionCacheLocation": "Error session cache location",
   "settings.title.draftFolder": "Draft folder",
   "settings.title.promptProfile": "Prompt Override Profile",
   "settings.title.systemPrompt": "System Prompt Override",
   "settings.title.userPrompt": "User Prompt Override",
   "settings.desc.language": "Switch the plugin UI language.",
-  "settings.desc.historyLimit": "Maximum saved proposal sessions per note.",
+  "settings.desc.historyLimit": "Maximum saved cache records.",
+  "settings.desc.sessionCache": "Cache records restore recent proposal review state. They are not long-term history or user-visible notes.",
+  "settings.desc.sessionCacheLimit": "Maximum saved cache records.",
+  "settings.desc.openSessionCache": "Open the cache record viewer. Cached sessions can be viewed and saved as drafts, but not applied directly.",
+  "settings.desc.errorSessionCache": "Save failed generation attempts for debugging. Error session cache is separate from proposal cache records.",
+  "settings.desc.errorSessionCacheLimit": "Maximum failed attempts to keep. Default: {defaultLimit}.",
+  "settings.desc.cachePrivacy": "Cache records do not save API keys, Authorization headers, or provider secrets.",
   "settings.desc.draftFolder": "Output folder for Save as Draft.",
   "settings.desc.promptProfile": "Only raw-refined prompt override is supported.",
   "settings.desc.promptVariables": "Available variables: {{notePath}} {{noteTitle}} {{noteContent}}",
@@ -18427,6 +18446,7 @@ var enStrings = {
   "settings.option.provider.deepseek": "DeepSeek",
   "settings.option.provider.custom": "Custom compatible service",
   "settings.option.provider.local": "Local compatible service",
+  "settings.button.openSessionCache": "View cache records",
   "notice.review.reopened": "Reopened last proposal: {sessionId} \xB7 {title} \xB7 token usage {mode}",
   "notice.review.noSession": "No saved proposal session for the current note: {path}",
   "notice.provider.downgradedMock": "Secure secret storage is unavailable. Falling back to mock-llm.",
@@ -18506,13 +18526,26 @@ var zhCNStrings = {
   "settings.title.apiKey": "API Key",
   "settings.title.secretDiagnostics": "SecretStorage \u8BCA\u65AD",
   "settings.title.language": "\u754C\u9762\u8BED\u8A00",
-  "settings.title.historyLimit": "\u5386\u53F2\u8BB0\u5F55\u4E0A\u9650",
+  "settings.title.historyLimit": "\u7F13\u5B58\u8BB0\u5F55\u6570\u91CF\u4E0A\u9650",
+  "settings.title.sessionCache": "\u7F13\u5B58\u8BB0\u5F55",
+  "settings.title.sessionCacheLimit": "\u7F13\u5B58\u8BB0\u5F55\u6570\u91CF\u4E0A\u9650",
+  "settings.title.sessionCacheLocation": "\u7F13\u5B58\u5185\u5BB9\u4F4D\u7F6E",
+  "settings.title.openSessionCache": "\u67E5\u770B\u7F13\u5B58\u8BB0\u5F55",
+  "settings.title.errorSessionCache": "\u9519\u8BEF\u4F1A\u8BDD\u7F13\u5B58",
+  "settings.title.errorSessionCacheLimit": "\u9519\u8BEF\u4F1A\u8BDD\u7F13\u5B58\u6570\u91CF\u4E0A\u9650",
+  "settings.title.errorSessionCacheLocation": "\u9519\u8BEF\u4F1A\u8BDD\u7F13\u5B58\u4F4D\u7F6E",
   "settings.title.draftFolder": "\u8349\u7A3F\u76EE\u5F55",
   "settings.title.promptProfile": "Prompt Override Profile",
   "settings.title.systemPrompt": "System Prompt Override",
   "settings.title.userPrompt": "User Prompt Override",
   "settings.desc.language": "\u5207\u6362\u63D2\u4EF6\u754C\u9762\u8BED\u8A00\u3002",
-  "settings.desc.historyLimit": "\u6BCF\u7BC7\u7B14\u8BB0\u6700\u591A\u4FDD\u7559\u591A\u5C11\u6761 proposal \u5386\u53F2\u3002",
+  "settings.desc.historyLimit": "\u6700\u591A\u4FDD\u7559\u591A\u5C11\u6761\u7F13\u5B58\u8BB0\u5F55\u3002",
+  "settings.desc.sessionCache": "\u7F13\u5B58\u8BB0\u5F55\u7528\u4E8E\u6062\u590D\u6700\u8FD1 proposal \u7684\u67E5\u770B\u72B6\u6001\uFF0C\u4E0D\u662F\u957F\u671F\u5386\u53F2\uFF0C\u4E5F\u4E0D\u662F\u6B63\u5F0F\u7B14\u8BB0\u3002",
+  "settings.desc.sessionCacheLimit": "\u6700\u591A\u4FDD\u7559\u591A\u5C11\u6761\u7F13\u5B58\u8BB0\u5F55\u3002",
+  "settings.desc.openSessionCache": "\u6253\u5F00\u7F13\u5B58\u8BB0\u5F55\u67E5\u770B\u5668\u3002\u7F13\u5B58\u8BB0\u5F55\u4EC5\u53EF\u67E5\u770B\u548C\u4FDD\u5B58\u8349\u7A3F\uFF0C\u4E0D\u80FD\u76F4\u63A5 Apply\u3002",
+  "settings.desc.errorSessionCache": "\u4FDD\u5B58\u5931\u8D25\u751F\u6210\u5C1D\u8BD5\uFF0C\u65B9\u4FBF\u6392\u67E5\u95EE\u9898\u3002\u9519\u8BEF\u4F1A\u8BDD\u7F13\u5B58\u4E0E proposal \u7F13\u5B58\u8BB0\u5F55\u5206\u5F00\u4FDD\u5B58\u3002",
+  "settings.desc.errorSessionCacheLimit": "\u6700\u591A\u4FDD\u7559\u591A\u5C11\u6761\u5931\u8D25\u5C1D\u8BD5\u3002\u9ED8\u8BA4\uFF1A{defaultLimit}\u3002",
+  "settings.desc.cachePrivacy": "\u7F13\u5B58\u8BB0\u5F55\u4E0D\u4FDD\u5B58 API key\u3001Authorization header \u6216 provider secret\u3002",
   "settings.desc.draftFolder": "Save as Draft \u7684\u8F93\u51FA\u76EE\u5F55\u3002",
   "settings.desc.promptProfile": "\u5F53\u524D\u53EA\u652F\u6301 raw-refined \u7684 prompt \u8986\u76D6\u3002",
   "settings.desc.promptVariables": "\u53EF\u7528\u53D8\u91CF\uFF1A{{notePath}} {{noteTitle}} {{noteContent}}",
@@ -18547,6 +18580,7 @@ var zhCNStrings = {
   "settings.option.provider.deepseek": "DeepSeek",
   "settings.option.provider.custom": "\u81EA\u5B9A\u4E49\u517C\u5BB9\u670D\u52A1",
   "settings.option.provider.local": "\u672C\u5730\u517C\u5BB9\u670D\u52A1",
+  "settings.button.openSessionCache": "\u67E5\u770B\u7F13\u5B58\u8BB0\u5F55",
   "notice.review.reopened": "\u5DF2\u6062\u590D\u6700\u8FD1 proposal\uFF1A{sessionId} \xB7 {title} \xB7 token usage {mode}",
   "notice.review.noSession": "\u5F53\u524D\u7B14\u8BB0\u6CA1\u6709\u53EF\u6062\u590D\u7684 proposal session\uFF1A{path}",
   "notice.provider.downgradedMock": "\u5F53\u524D\u73AF\u5883\u4E0D\u652F\u6301\u5B89\u5168 secret \u5B58\u50A8\uFF0C\u5DF2\u964D\u7EA7\u4E3A mock-llm\u3002",
@@ -19358,6 +19392,8 @@ var SettingsTab = class extends import_obsidian5.PluginSettingTab {
     const providerPreset = getProviderPreset(providerType);
     const secretAvailable = this.plugin.hasSecureSecretStorage();
     const secretDiagnostics = this.plugin.getSecretStorageDiagnostics();
+    const sessionCacheInfo = this.plugin.getSessionCacheInfo();
+    const errorSessionCacheInfo = this.plugin.getErrorSessionCacheInfo();
     containerEl.empty();
     new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.language")).setDesc(t(settings.language, "settings.desc.language")).addDropdown((dropdown) => {
       dropdown.addOption("zh-CN", t(settings.language, "settings.option.language.zh-CN")).addOption("en", t(settings.language, "settings.option.language.en")).setValue(settings.language).onChange(async (value) => {
@@ -19365,13 +19401,36 @@ var SettingsTab = class extends import_obsidian5.PluginSettingTab {
         this.display();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.historyLimit")).setDesc(t(settings.language, "settings.desc.historyLimit")).addText((text) => {
-      text.setPlaceholder("5").setValue(String(settings.historyLimit)).onChange(async (value) => {
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.sessionCache")).setDesc(t(settings.language, "settings.desc.sessionCache"));
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.sessionCacheLimit")).setDesc(t(settings.language, "settings.desc.sessionCacheLimit")).addText((text) => {
+      text.setPlaceholder("5").setValue(String(settings.sessionCache.limit)).onChange(async (value) => {
         const parsed = Number.parseInt(value, 10);
-        await this.plugin.updateSettings({
-          historyLimit: Number.isFinite(parsed) && parsed > 0 ? parsed : settings.historyLimit
-        });
+        await this.plugin.updateSessionCacheSettings({ limit: parsed });
       });
+    });
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.sessionCacheLocation")).setDesc(sessionCacheInfo.cachePath);
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.openSessionCache")).setDesc(t(settings.language, "settings.desc.openSessionCache")).addButton((button) => {
+      button.setButtonText(t(settings.language, "settings.button.openSessionCache")).onClick(async () => {
+        await this.plugin.openCachedProposalSessionFlow();
+      });
+    });
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.errorSessionCache")).setDesc(t(settings.language, "settings.desc.errorSessionCache")).addToggle((toggle) => {
+      toggle.setValue(settings.errorSessionCache.enabled).onChange(async (enabled) => {
+        await this.plugin.updateErrorSessionCacheSettings({ enabled });
+      });
+    });
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.errorSessionCacheLimit")).setDesc(t(settings.language, "settings.desc.errorSessionCacheLimit", {
+      defaultLimit: errorSessionCacheInfo.defaultLimit
+    })).addText((text) => {
+      text.setPlaceholder(String(errorSessionCacheInfo.defaultLimit)).setValue(String(settings.errorSessionCache.limit)).onChange(async (value) => {
+        const parsed = Number.parseInt(value, 10);
+        await this.plugin.updateErrorSessionCacheSettings({ limit: parsed });
+      });
+    });
+    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.errorSessionCacheLocation")).setDesc(errorSessionCacheInfo.cachePath);
+    containerEl.createEl("p", {
+      cls: "obsidian-refined-layer-settings-note",
+      text: t(settings.language, "settings.desc.cachePrivacy")
     });
     new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.draftFolder")).setDesc(t(settings.language, "settings.desc.draftFolder")).addText((text) => {
       text.setValue(settings.draftFolder).onChange(async (value) => {
@@ -19505,7 +19564,7 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian6.Plugin {
     this.settings = await this.settingsStore.load();
     this.sessionStore = new ProposalSessionStore(this.settings.historyLimit, new ObsidianSessionStore(this));
     await this.sessionStore.restoreFromDisk();
-    this.sessionCacheV2 = new ObsidianSessionCacheV2Store(this);
+    this.sessionCacheV2 = new ObsidianSessionCacheV2Store(this, this.settings.sessionCache.limit);
     this.secretStore = new ObsidianSecretStore(this.app);
     this.addSettingTab(new SettingsTab(this.app, this));
     this.addCommand({
@@ -19599,7 +19658,26 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian6.Plugin {
   getSecretStorageDiagnostics() {
     return this.secretStore.getDiagnostics();
   }
+  getSessionCacheInfo() {
+    var _a5, _b, _c;
+    return (_c = (_b = (_a5 = this.sessionCacheV2).getCacheInfo) == null ? void 0 : _b.call(_a5)) != null ? _c : {
+      cachePath: ".obsidian/plugins/obsidian-refined-layer/session-cache",
+      filePath: ".obsidian/plugins/obsidian-refined-layer/session-cache/sessions.v2.json",
+      legacyFilePath: ".obsidian/plugins/obsidian-refined-layer/session-cache/sessions.v1.json",
+      compatibilityStrategy: "ignore-v1",
+      limit: this.settings.sessionCache.limit
+    };
+  }
+  getErrorSessionCacheInfo() {
+    return {
+      cachePath: ERROR_SESSION_CACHE_PATH,
+      filePath: ERROR_SESSION_CACHE_FILE_PATH,
+      limit: this.settings.errorSessionCache.limit,
+      defaultLimit: DEFAULT_ERROR_SESSION_CACHE_LIMIT
+    };
+  }
   async updateSettings(partial2) {
+    var _a5, _b;
     this.settings = {
       ...this.settings,
       ...partial2
@@ -19607,7 +19685,32 @@ var ObsidianRefinedLayerPlugin = class extends import_obsidian6.Plugin {
     if (partial2.historyLimit !== void 0) {
       this.sessionStore.setHistoryLimit(this.settings.historyLimit);
     }
+    if (partial2.sessionCache !== void 0) {
+      await ((_b = (_a5 = this.sessionCacheV2).setSessionCacheLimit) == null ? void 0 : _b.call(_a5, this.settings.sessionCache.limit));
+    }
     await this.settingsStore.save(this.settings);
+  }
+  async updateSessionCacheSettings(partial2) {
+    const current = this.settings.sessionCache;
+    const limit = normalizePositiveInteger(partial2.limit, current.limit);
+    await this.updateSettings({
+      sessionCache: {
+        ...current,
+        ...partial2,
+        limit
+      }
+    });
+  }
+  async updateErrorSessionCacheSettings(partial2) {
+    const current = this.settings.errorSessionCache;
+    const limit = normalizePositiveInteger(partial2.limit, current.limit);
+    await this.updateSettings({
+      errorSessionCache: {
+        ...current,
+        ...partial2,
+        limit
+      }
+    });
   }
   async updateProviderSettings(partial2) {
     var _a5;
@@ -19906,6 +20009,10 @@ function formatEligibilityMessage(result) {
     return `Refined Layer: note is not eligible (${reasons}) - ${result.notePath}`;
   }
   return `Refined Layer: ${result.noteTitle} (${result.notePath}), raw content length ${(_e = result.rawContentLength) != null ? _e : 0}.`;
+}
+function normalizePositiveInteger(value, fallback) {
+  if (value === void 0) return fallback;
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 function formatCreateProposalMessage(language, result) {
   var _a5, _b;

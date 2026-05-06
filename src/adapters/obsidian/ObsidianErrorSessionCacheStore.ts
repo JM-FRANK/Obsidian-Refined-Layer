@@ -4,10 +4,10 @@ import type { FailedAttemptRecord, PersistedFailedAttemptRecord } from "../../ru
 import type { ErrorSessionCacheStore } from "../../runtime/ErrorSessionCacheStore";
 import { redactSensitiveStrings } from "../../runtime/redaction";
 
-const ERROR_CACHE_PATH = ".obsidian/plugins/obsidian-refined-layer/error-session-cache";
-const ERROR_CACHE_FILE = "attempts.v1.json";
-const ERROR_CACHE_FILE_PATH = `${ERROR_CACHE_PATH}/${ERROR_CACHE_FILE}`;
-const DEFAULT_LIMIT = 30;
+export const ERROR_SESSION_CACHE_PATH = ".obsidian/plugins/obsidian-refined-layer/error-session-cache";
+export const ERROR_SESSION_CACHE_FILE_NAME = "attempts.v1.json";
+export const ERROR_SESSION_CACHE_FILE_PATH = `${ERROR_SESSION_CACHE_PATH}/${ERROR_SESSION_CACHE_FILE_NAME}`;
+export const DEFAULT_ERROR_SESSION_CACHE_LIMIT = 30;
 
 const SECRET_KEYWORDS = new Set([
   "apikey",
@@ -29,7 +29,7 @@ const SAFE_TOKEN_KEYS = new Set(["inputtokens", "outputtokens", "totaltokens", "
 export class ObsidianErrorSessionCacheStore implements ErrorSessionCacheStore {
   constructor(
     private readonly plugin: Plugin,
-    private readonly limit: number = DEFAULT_LIMIT,
+    private readonly limit: number = DEFAULT_ERROR_SESSION_CACHE_LIMIT,
   ) {}
 
   async save(attempt: FailedAttemptRecord): Promise<void> {
@@ -58,11 +58,11 @@ export class ObsidianErrorSessionCacheStore implements ErrorSessionCacheStore {
 
     const adapter = this.plugin.app.vault.adapter;
 
-    if (!(await adapter.exists(ERROR_CACHE_PATH))) {
-      await adapter.mkdir(ERROR_CACHE_PATH);
+    if (!(await adapter.exists(ERROR_SESSION_CACHE_PATH))) {
+      await adapter.mkdir(ERROR_SESSION_CACHE_PATH);
     }
 
-    await adapter.write(ERROR_CACHE_FILE_PATH, json);
+    await adapter.write(ERROR_SESSION_CACHE_FILE_PATH, json);
   }
 
   async loadAll(): Promise<FailedAttemptRecord[]> {
@@ -78,13 +78,13 @@ export class ObsidianErrorSessionCacheStore implements ErrorSessionCacheStore {
   private async loadPersisted(): Promise<PersistedFailedAttemptRecord[]> {
     const adapter = this.plugin.app.vault.adapter;
 
-    if (!(await adapter.exists(ERROR_CACHE_FILE_PATH))) {
+    if (!(await adapter.exists(ERROR_SESSION_CACHE_FILE_PATH))) {
       return [];
     }
 
     let raw: string;
     try {
-      raw = await adapter.read(ERROR_CACHE_FILE_PATH);
+      raw = await adapter.read(ERROR_SESSION_CACHE_FILE_PATH);
     } catch {
       return [];
     }

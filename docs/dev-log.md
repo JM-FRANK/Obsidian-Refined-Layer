@@ -708,3 +708,24 @@ npm run build
 结果：typecheck 通过；全量 Vitest 31 files / 312 tests 通过；production build 通过。`ProposalSessionStore` persistence failure 测试仍会输出预期 stderr：`disk full`，不代表失败。
 
 Next: D59 — Settings UI 文案迁移与缓存记录设置（Phase 14，需用户显式要求后再继续）
+
+---
+
+## D59 开发日志
+
+### Current status
+
+Settings UI 文案迁移与缓存记录设置已实现。用户可见的 session-cache 设置入口从“历史记录”语义迁移为“缓存记录”，并在 Settings 中显示缓存记录数量上限、缓存内容位置、查看缓存记录入口、错误会话缓存开关、错误会话缓存数量上限和错误会话缓存位置。D59 不改 session-cache / error-session-cache 的核心保存读取规则；仅让 Settings 使用现有 v2 cache store info 和已存在的 cached session 查看流程。`PROJECT_REVIEW_RECORD.md` 未更新，遵守本轮不使用 project-review-lifecycle 时不覆盖更新的要求。尚未执行 D60 密钥 ID 文案与 SecretStorage 诊断复制。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: Settings UI 文案迁移与缓存记录设置（Phase 14 首任务）
+- Reason: v0.2.0 要求用户把 session-cache 理解为短期缓存记录，而不是长期历史；Settings UI 需要显示缓存位置和 error-session-cache 开关/上限，方便用户理解成功 session 与失败 attempt 的边界
+- Change:
+  - `src/ui/settings/SettingsTab.ts`：新增缓存记录设置区块，显示/编辑 `sessionCache.limit`，显示 session-cache 位置，提供“查看缓存记录”按钮；新增 error-session-cache 开关、上限输入和位置显示
+  - `src/main.ts`：新增 SettingsTab 可调用的 cache info / cache settings 更新方法；`sessionCacheV2` 初始化时使用 `settings.sessionCache.limit`；“查看缓存记录”流程从 private 改为 Settings 可调用
+  - `src/adapters/obsidian/ObsidianErrorSessionCacheStore.ts`：导出 error-session-cache 路径和默认上限常量，供 Settings UI 展示；不改变保存/读取逻辑
+  - `src/ui/i18n/zh-CN.ts`、`src/ui/i18n/en.ts`：新增缓存记录、缓存内容位置、错误会话缓存、查看缓存记录等文案；旧 historyLimit 用户文案改为 cache record 语义
+  - `tests/ui/i18n/i18n.test.ts`：新增回归测试，确认 Settings session-cache 文案使用“缓存记录”而非“历史记录”
+- Verification: `npm run typecheck` 通过；focused tests 通过（3 files / 22 tests）；`npm test` 全量通过（31 files / 313 tests）；`npm run build` 通过
+- Next: D60 — Settings UI：密钥 ID 文案与 SecretStorage 诊断复制
