@@ -260,51 +260,6 @@ export class SettingsTab extends PluginSettingTab {
       `reason: ${secretDiagnostics.reason}`,
     ].join("\n");
 
-    new Setting(containerEl)
-      .setName(t(settings.language, "settings.title.promptProfile"))
-      .setDesc(t(settings.language, "settings.desc.promptProfile"));
-
-    this.addPromptOverrideField(
-      containerEl,
-      settings,
-      "systemPrompt",
-      t(settings.language, "settings.title.systemPrompt"),
-      t(settings.language, "settings.desc.systemPrompt"),
-    );
-
-    this.addPromptOverrideField(
-      containerEl,
-      settings,
-      "userPrompt",
-      t(settings.language, "settings.title.userPrompt"),
-      t(settings.language, "settings.desc.userPrompt"),
-    );
-
-    containerEl.createEl("p", {
-      cls: "obsidian-refined-layer-settings-note",
-      text: t(settings.language, "settings.desc.promptVariables"),
-    });
-  }
-
-  private addPromptOverrideField(
-    containerEl: HTMLElement,
-    settings: PluginSettings,
-    field: "systemPrompt" | "userPrompt",
-    title: string,
-    description: string,
-  ): void {
-    const setting = new Setting(containerEl)
-      .setName(title)
-      .setDesc(description);
-
-    setting.controlEl.createDiv();
-    const textArea = new TextAreaComponent(setting.controlEl);
-    textArea.inputEl.rows = 5;
-    textArea.inputEl.cols = 40;
-    textArea.setValue(settings.promptOverrides?.["raw-refined"]?.[field] ?? "");
-    textArea.onChange(async (value) => {
-      await this.plugin.updatePromptOverride(field, value);
-    });
   }
 
   private addBlockConfigSettings(containerEl: HTMLElement, settings: PluginSettings): void {

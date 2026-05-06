@@ -18761,9 +18761,6 @@ var enStrings = {
   "settings.title.promptObservation": "Prompt observation",
   "settings.title.promptObservationSnapshot": "Latest prompt debug snapshot",
   "settings.title.draftFolder": "Draft folder",
-  "settings.title.promptProfile": "Prompt Override Profile",
-  "settings.title.systemPrompt": "System Prompt Override",
-  "settings.title.userPrompt": "User Prompt Override",
   "settings.desc.language": "Switch the plugin UI language.",
   "settings.desc.historyLimit": "Maximum saved cache records.",
   "settings.desc.sessionCache": "Cache records restore recent proposal review state. They are not long-term history or user-visible notes.",
@@ -18784,10 +18781,6 @@ var enStrings = {
   "settings.desc.promptObservation": "When enabled, the latest v0.2 prompt debug snapshot is kept in memory for inspection. It is not written to disk by default.",
   "settings.desc.promptObservationSnapshot": "Copyable, read-only snapshot of request prompts, tag whitelist, response, parsed JSON, Zod result, and normalization report. Values are redacted before storage.",
   "settings.desc.draftFolder": "Output folder for Save as Draft.",
-  "settings.desc.promptProfile": "Only raw-refined prompt override is supported.",
-  "settings.desc.promptVariables": "Available variables: {{notePath}} {{noteTitle}} {{noteContent}}",
-  "settings.desc.systemPrompt": "Advanced override only. No highlighting or advanced validation.",
-  "settings.desc.userPrompt": "Advanced override only. No highlighting or advanced validation.",
   "settings.desc.providerType": "Choose where the model call should go.",
   "settings.desc.providerModel": "Enter the model name to call.",
   "settings.desc.baseUrl": "Only needed for custom or local providers. Usually stop at `/v1`.",
@@ -18936,9 +18929,6 @@ var zhCNStrings = {
   "settings.title.promptObservation": "Prompt \u53EF\u89C2\u6D4B",
   "settings.title.promptObservationSnapshot": "\u6700\u8FD1\u4E00\u6B21 Prompt Debug Snapshot",
   "settings.title.draftFolder": "\u8349\u7A3F\u76EE\u5F55",
-  "settings.title.promptProfile": "Prompt Override Profile",
-  "settings.title.systemPrompt": "System Prompt Override",
-  "settings.title.userPrompt": "User Prompt Override",
   "settings.desc.language": "\u5207\u6362\u63D2\u4EF6\u754C\u9762\u8BED\u8A00\u3002",
   "settings.desc.historyLimit": "\u6700\u591A\u4FDD\u7559\u591A\u5C11\u6761\u7F13\u5B58\u8BB0\u5F55\u3002",
   "settings.desc.sessionCache": "\u7F13\u5B58\u8BB0\u5F55\u7528\u4E8E\u6062\u590D\u6700\u8FD1 proposal \u7684\u67E5\u770B\u72B6\u6001\uFF0C\u4E0D\u662F\u957F\u671F\u5386\u53F2\uFF0C\u4E5F\u4E0D\u662F\u6B63\u5F0F\u7B14\u8BB0\u3002",
@@ -18959,10 +18949,6 @@ var zhCNStrings = {
   "settings.desc.promptObservation": "\u5F00\u542F\u540E\uFF0C\u6700\u8FD1\u4E00\u6B21 v0.2 prompt debug snapshot \u4F1A\u4FDD\u5B58\u5728\u5185\u5B58\u4E2D\u4F9B\u67E5\u770B\uFF1B\u9ED8\u8BA4\u4E0D\u5199\u5165\u78C1\u76D8\u3002",
   "settings.desc.promptObservationSnapshot": "\u53EF\u590D\u5236\u3001\u4E0D\u53EF\u7F16\u8F91\uFF1B\u663E\u793A request prompts\u3001tag whitelist\u3001response\u3001parsed JSON\u3001Zod result \u548C normalization report\u3002\u4FDD\u5B58\u524D\u4F1A\u8131\u654F\u3002",
   "settings.desc.draftFolder": "Save as Draft \u7684\u8F93\u51FA\u76EE\u5F55\u3002",
-  "settings.desc.promptProfile": "\u5F53\u524D\u53EA\u652F\u6301 raw-refined \u7684 prompt \u8986\u76D6\u3002",
-  "settings.desc.promptVariables": "\u53EF\u7528\u53D8\u91CF\uFF1A{{notePath}} {{noteTitle}} {{noteContent}}",
-  "settings.desc.systemPrompt": "\u4EC5\u9650\u9AD8\u7EA7\u7528\u6CD5\uFF1B\u4E0D\u505A\u9AD8\u4EAE\u6216\u590D\u6742\u6821\u9A8C\u3002",
-  "settings.desc.userPrompt": "\u4EC5\u9650\u9AD8\u7EA7\u7528\u6CD5\uFF1B\u4E0D\u505A\u9AD8\u4EAE\u6216\u590D\u6742\u6821\u9A8C\u3002",
   "settings.desc.providerType": "\u9009\u62E9\u8981\u8FDE\u63A5\u7684\u6A21\u578B\u6765\u6E90\u3002",
   "settings.desc.providerModel": "\u586B\u5199\u8981\u8C03\u7528\u7684\u6A21\u578B\u540D\u3002",
   "settings.desc.baseUrl": "\u4EC5\u81EA\u5B9A\u4E49/\u672C\u5730 provider \u9700\u8981\u586B\u5199\uFF1B\u901A\u5E38\u5199\u5230 `/v1` \u5373\u53EF\u3002",
@@ -19979,37 +19965,6 @@ var SettingsTab = class extends import_obsidian5.PluginSettingTab {
       `readValueSuffix: ${secretDiagnostics.readValueSuffix}`,
       `reason: ${secretDiagnostics.reason}`
     ].join("\n");
-    new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.promptProfile")).setDesc(t(settings.language, "settings.desc.promptProfile"));
-    this.addPromptOverrideField(
-      containerEl,
-      settings,
-      "systemPrompt",
-      t(settings.language, "settings.title.systemPrompt"),
-      t(settings.language, "settings.desc.systemPrompt")
-    );
-    this.addPromptOverrideField(
-      containerEl,
-      settings,
-      "userPrompt",
-      t(settings.language, "settings.title.userPrompt"),
-      t(settings.language, "settings.desc.userPrompt")
-    );
-    containerEl.createEl("p", {
-      cls: "obsidian-refined-layer-settings-note",
-      text: t(settings.language, "settings.desc.promptVariables")
-    });
-  }
-  addPromptOverrideField(containerEl, settings, field, title, description) {
-    var _a5, _b, _c;
-    const setting = new import_obsidian5.Setting(containerEl).setName(title).setDesc(description);
-    setting.controlEl.createDiv();
-    const textArea = new import_obsidian5.TextAreaComponent(setting.controlEl);
-    textArea.inputEl.rows = 5;
-    textArea.inputEl.cols = 40;
-    textArea.setValue((_c = (_b = (_a5 = settings.promptOverrides) == null ? void 0 : _a5["raw-refined"]) == null ? void 0 : _b[field]) != null ? _c : "");
-    textArea.onChange(async (value) => {
-      await this.plugin.updatePromptOverride(field, value);
-    });
   }
   addBlockConfigSettings(containerEl, settings) {
     new import_obsidian5.Setting(containerEl).setName(t(settings.language, "settings.title.blockConfig")).setDesc(t(settings.language, "settings.desc.blockConfig"));
