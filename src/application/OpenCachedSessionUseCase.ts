@@ -9,6 +9,7 @@ export interface CachedProposalSessionSummary {
   createdAt: string;
   updatedAt: string;
   status: ProposalSessionV2["status"];
+  profileName?: string;
   provider: string;
   model: string;
   attemptsUsed: number;
@@ -29,6 +30,7 @@ export class OpenCachedSessionUseCase {
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
         status: session.status,
+        profileName: session.profileSnapshot?.name,
         provider: session.source.provider,
         model: session.source.model,
         attemptsUsed: session.source.attemptsUsed,

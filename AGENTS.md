@@ -4,12 +4,12 @@
 
 **Obsidian Refined Layer** is a review-first Obsidian plugin. It turns the current raw Markdown note into a refined proposal, shows the proposal for human review, and applies only explicitly confirmed changes.
 
-It is **not** an autonomous Agent and must not become a general workflow platform in v0.2.0.
+It is **not** an autonomous Agent and must not become a general workflow platform in v0.2.1.
 
-v0.2.0 upgrades the v0.1.0 fixed-section `raw-refined` flow into a configurable single-note workflow:
+v0.2.1 continues the configurable single-note `raw-refined` workflow and adds RefineProfile templates plus run-status feedback:
 
 ```text
-raw note → configurable A/B blocks → structured prompt → LLM → JSON → Zod → normalization → review → ApplyPlan → safe write / draft
+raw note → RefineProfile → generated/protected blocks → structured prompt → LLM → JSON → Zod → normalization → review → ApplyPlan → safe write / draft
 ```
 
 ## 2. Source documents
@@ -17,9 +17,9 @@ raw note → configurable A/B blocks → structured prompt → LLM → JSON → 
 Use these as the source of truth:
 
 ```text
-docs/obsidian-refined-layer-architecture-v0.2.0-agent.md
-docs/obsidian-refined-layer-v0.2.0-daily-plan.md
-docs/dev-log.md                  # active v0.2.0 log
+docs/obsidian-refined-layer-architecture-v0.2.1-agent.md
+docs/obsidian-refined-layer-v0.2.1-daily-plan.md
+docs/dev-log.md                  # active v0.2.1 log
 docs/achieve/dev-log-achieve.md  # archived D1-D35 log
 ```
 
@@ -84,33 +84,27 @@ After completing a Dn, slide forward. After completing a Phase, drop that Phase 
 Use targeted search:
 
 ```bash
-rg -n "^## D43|^# Phase 11|^## Phase 11 验收" docs/obsidian-refined-layer-v0.2.0-daily-plan.md
-rg -n "PromptBuilder|Zod|tagNormalizationApplied|ProposalNormalizer" docs/obsidian-refined-layer-architecture-v0.2.0-agent.md
+rg -n "^## D70|^# Phase 17|^## Phase 17 验收" docs/obsidian-refined-layer-v0.2.1-daily-plan.md
+rg -n "RefineProfile|RefineRunStatus|生成分块|保护分块" docs/obsidian-refined-layer-architecture-v0.2.1-agent.md
 ```
 
 Only read full documents for full-document review, cross-phase inconsistency analysis, or explicit full-scope verification.
 
 ## 4. Current execution status
 
-v0.1.0 is delivered and archived. v0.2.0 starts from **D36**.
+v0.1.0 and v0.2.0 are delivered and archived. v0.2.1 starts from **Phase 17**.
 
 Current phases:
 
 ```text
-Phase 9   migration baseline and type skeleton
-Phase 10  Markdown heading and A/B block parsing
-Phase 11  PromptBuilder, Zod schema, tag normalization
-Phase 12  retry, session-cache, error-session-cache
-Phase 13  Review UI and cached-session recovery
-Phase 14  Settings UI and observability
-Phase 15  end-to-end migration, test matrix, delivery check
+Phase 17  RefineProfile templates and run-status feedback
 ```
 
 Do not continue into the next Dn unless the user explicitly asks.
 
 ## 5. Scope
 
-### In scope for v0.2.0
+### In scope for v0.2.1
 
 Single-note configurable `raw-refined` workflow:
 
@@ -130,7 +124,7 @@ active Markdown note
 → safe apply or Save as Draft
 ```
 
-Allowed v0.2.0 additions:
+Allowed v0.2.1 additions:
 
 ```text
 A/B block configuration UI
@@ -679,7 +673,7 @@ Use `ReviewGate`, i18n (`zh-CN`, `en`), Obsidian CSS variables, and native UI pa
 
 ## 18. Development log
 
-Active v0.2.0 work goes to:
+Active v0.2.1 work goes to:
 
 ```text
 docs/dev-log.md

@@ -251,6 +251,14 @@ export class ReviewModalV2 extends Modal {
         path: this.viewModel.notePath,
       }),
     });
+    if (this.viewModel.profileName) {
+      contentEl.createEl("p", {
+        cls: "obsidian-refined-layer-meta",
+        text: t(this.language, "review.meta.profile", {
+          profileName: this.viewModel.profileName,
+        }),
+      });
+    }
 
     contentEl.createEl("p", {
       cls: "obsidian-refined-layer-meta",

@@ -108,9 +108,17 @@ export class SettingsTab extends PluginSettingTab {
       text: t(settings.language, "settings.desc.cachePrivacy"),
     });
 
-    this.addBlockConfigSettings(containerEl, settings);
-    this.addTagConfigSettings(containerEl, settings);
-    this.addPromptObservationSettings(containerEl, settings);
+    const profileContainer = this.createSettingsGroup(
+      containerEl,
+      t(settings.language, "settings.title.profileTemplateSettings"),
+      t(settings.language, "settings.desc.profileTemplateSettings"),
+      true,
+      "obsidian-refined-layer-settings-profile-root",
+    );
+    this.addProfileSettings(profileContainer, settings);
+    this.addBlockConfigSettings(profileContainer, settings);
+    this.addTagConfigSettings(profileContainer, settings);
+    this.addPromptObservationSettings(profileContainer, settings);
 
     new Setting(containerEl)
       .setName(t(settings.language, "settings.title.draftFolder"))
@@ -262,29 +270,102 @@ export class SettingsTab extends PluginSettingTab {
 
   }
 
-  private addBlockConfigSettings(containerEl: HTMLElement, settings: PluginSettings): void {
-    new Setting(containerEl)
-      .setName(t(settings.language, "settings.title.blockConfig"))
-      .setDesc(t(settings.language, "settings.desc.blockConfig"));
+  private addProfileSettings(containerEl: HTMLElement, settings: PluginSettings): void {
+    const activeProfile = this.plugin.getActiveRefineProfile();
+    const section = this.createSettingsGroup(
+      containerEl,
+      t(settings.language, "settings.title.profiles"),
+      t(settings.language, "settings.desc.profiles"),
+      true,
+    );
 
-    new Setting(containerEl)
+    new Setting(section)
+      .setName(t(settings.language, "settings.title.activeProfile"))
+      .setDesc(t(settings.language, "settings.desc.activeProfile"))
+      .addDropdown((dropdown) => {
+        for (const profile of settings.rawRefined.profiles) {
+          dropdown.addOption(profile.id, profile.name);
+        }
+        dropdown
+          .setValue(settings.rawRefined.activeProfileId)
+          .onChange(async (activeProfileId) => {
+            await this.plugin.updateActiveProfileId(activeProfileId);
+            this.display();
+          });
+      });
+
+    new Setting(section)
+      .setName(t(settings.language, "settings.title.profileName"))
+      .addText((text) => {
+        text
+          .setValue(activeProfile.name)
+          .onChange(async (value) => {
+            const result = await this.plugin.updateRawRefinedSettings({
+              name: value.trim() || activeProfile.name,
+            });
+            this.handleBlockConfigResult(result);
+          });
+      });
+
+    new Setting(section)
+      .setName(t(settings.language, "settings.title.profileDescription"))
+      .addText((text) => {
+        text
+          .setValue(activeProfile.description ?? "")
+          .onChange(async (value) => {
+            const result = await this.plugin.updateRawRefinedSettings({
+              description: value,
+            });
+            this.handleBlockConfigResult(result);
+          });
+      });
+
+    const actions = section.createDiv({ cls: "obsidian-refined-layer-actions" });
+    actions.createEl("button", { text: t(settings.language, "settings.button.addProfile") })
+      .addEventListener("click", async () => {
+        await this.plugin.addRefineProfile();
+        this.display();
+      });
+    actions.createEl("button", { text: t(settings.language, "settings.button.copyProfile") })
+      .addEventListener("click", async () => {
+        await this.plugin.copyActiveRefineProfile();
+        this.display();
+      });
+    const deleteButton = actions.createEl("button", { text: t(settings.language, "settings.button.deleteProfile") });
+    deleteButton.disabled = settings.rawRefined.profiles.length <= 1;
+    deleteButton.addEventListener("click", async () => {
+      await this.plugin.deleteActiveRefineProfile();
+      this.display();
+    });
+  }
+
+  private addBlockConfigSettings(containerEl: HTMLElement, settings: PluginSettings): void {
+    const profile = this.plugin.getActiveRefineProfile();
+    const section = this.createSettingsGroup(
+      containerEl,
+      t(settings.language, "settings.title.blockConfig"),
+      t(settings.language, "settings.desc.blockConfig"),
+      false,
+    );
+
+    new Setting(section)
       .setName(t(settings.language, "settings.title.protectH1"))
       .setDesc(t(settings.language, "settings.desc.protectH1"))
       .addToggle((toggle) => {
         toggle
-          .setValue(settings.rawRefined.protectH1)
+          .setValue(profile.protectH1)
           .onChange(async (protectH1) => {
             const result = await this.plugin.updateRawRefinedSettings({ protectH1 });
             this.handleBlockConfigResult(result);
           });
       });
 
-    const aBlocksContainer = containerEl.createDiv({ cls: "obsidian-refined-layer-settings-block-list" });
+    const aBlocksContainer = section.createDiv({ cls: "obsidian-refined-layer-settings-block-list" });
     aBlocksContainer.createEl("h3", {
       text: t(settings.language, "settings.title.aBlocks"),
     });
 
-    for (const block of settings.rawRefined.aBlocks.slice().sort((a, b) => a.order - b.order)) {
+    for (const block of profile.aBlocks.slice().sort((a, b) => a.order - b.order)) {
       this.addABlockSettings(aBlocksContainer, settings, block);
     }
 
@@ -295,7 +376,7 @@ export class SettingsTab extends PluginSettingTab {
         button
           .setButtonText(t(settings.language, "settings.button.addABlock"))
           .onClick(async () => {
-            const current = this.plugin.getSettings().rawRefined;
+            const current = this.plugin.getActiveRefineProfile();
             const order = current.aBlocks.reduce((max, item) => Math.max(max, item.order), 0) + 1;
             const nextBlock: ABlockConfig = {
               id: `custom-${Date.now().toString(36)}`,
@@ -313,38 +394,21 @@ export class SettingsTab extends PluginSettingTab {
           });
       });
 
-    const bBlockContainer = containerEl.createDiv({ cls: "obsidian-refined-layer-settings-block-list" });
+    const bBlockContainer = section.createDiv({ cls: "obsidian-refined-layer-settings-block-list" });
     bBlockContainer.createEl("h3", {
       text: t(settings.language, "settings.title.bBlock"),
     });
-    this.addBBlockSettings(bBlockContainer, settings, settings.rawRefined.bBlock);
+    this.addBBlockSettings(bBlockContainer, settings, profile.bBlock);
   }
 
   private addTagConfigSettings(containerEl: HTMLElement, settings: PluginSettings): void {
-    new Setting(containerEl)
-      .setName(t(settings.language, "settings.title.tagConfig"))
-      .setDesc(t(settings.language, "settings.desc.tagConfig"));
-
-    const tagContainer = containerEl.createDiv({ cls: "obsidian-refined-layer-settings-block-list" });
-    tagContainer.createEl("h3", {
-      text: t(settings.language, "settings.title.tagWhitelist"),
-    });
-
-    for (const tag of settings.rawRefined.tagWhitelist) {
-      new Setting(tagContainer)
-        .setName(tag)
-        .addButton((button) => {
-          button
-            .setButtonText(t(settings.language, "settings.button.deleteTag"))
-            .onClick(async () => {
-              const current = this.plugin.getSettings().rawRefined;
-              const result = await this.plugin.updateRawRefinedSettings({
-                tagWhitelist: current.tagWhitelist.filter((item) => item !== tag),
-              });
-              this.handleBlockConfigResult(result, true);
-            });
-        });
-    }
+    const profile = this.plugin.getActiveRefineProfile();
+    const tagContainer = this.createSettingsGroup(
+      containerEl,
+      t(settings.language, "settings.title.tagConfig"),
+      t(settings.language, "settings.desc.tagConfig"),
+      false,
+    );
 
     let pendingTag = "";
     new Setting(tagContainer)
@@ -363,7 +427,7 @@ export class SettingsTab extends PluginSettingTab {
           .onClick(async () => {
             const normalized = normalizeTagList(pendingTag);
             if (normalized.length === 0) return;
-            const current = this.plugin.getSettings().rawRefined;
+            const current = this.plugin.getActiveRefineProfile();
             const result = await this.plugin.updateRawRefinedSettings({
               tagWhitelist: mergeTags(current.tagWhitelist, normalized),
             });
@@ -378,7 +442,7 @@ export class SettingsTab extends PluginSettingTab {
     const whitelistArea = new TextAreaComponent(whitelistSetting.controlEl);
     whitelistArea.inputEl.rows = 5;
     whitelistArea.inputEl.cols = 40;
-    whitelistArea.setValue(settings.rawRefined.tagWhitelist.join("\n"));
+    whitelistArea.setValue(profile.tagWhitelist.join("\n"));
     whitelistArea.onChange(async (value) => {
       const result = await this.plugin.updateRawRefinedSettings({
         tagWhitelist: normalizeTagList(value),
@@ -393,7 +457,7 @@ export class SettingsTab extends PluginSettingTab {
     const tagPromptArea = new TextAreaComponent(tagPromptSetting.controlEl);
     tagPromptArea.inputEl.rows = 4;
     tagPromptArea.inputEl.cols = 40;
-    tagPromptArea.setValue(settings.rawRefined.tagPrompt);
+    tagPromptArea.setValue(profile.tagPrompt);
     tagPromptArea.onChange(async (value) => {
       const result = await this.plugin.updateRawRefinedSettings({
         tagPrompt: value,
@@ -403,12 +467,19 @@ export class SettingsTab extends PluginSettingTab {
   }
 
   private addPromptObservationSettings(containerEl: HTMLElement, settings: PluginSettings): void {
-    new Setting(containerEl)
+    const profile = this.plugin.getActiveRefineProfile();
+    const section = this.createSettingsGroup(
+      containerEl,
+      t(settings.language, "settings.title.promptObservation"),
+      t(settings.language, "settings.desc.promptObservation"),
+      false,
+    );
+
+    new Setting(section)
       .setName(t(settings.language, "settings.title.promptObservation"))
-      .setDesc(t(settings.language, "settings.desc.promptObservation"))
       .addToggle((toggle) => {
         toggle
-          .setValue(settings.rawRefined.promptObservationEnabled)
+          .setValue(profile.promptObservationEnabled)
           .onChange(async (promptObservationEnabled) => {
             const result = await this.plugin.updateRawRefinedSettings({ promptObservationEnabled });
             this.handleBlockConfigResult(result);
@@ -416,7 +487,7 @@ export class SettingsTab extends PluginSettingTab {
       });
 
     const snapshot = this.plugin.getLatestPromptObservation();
-    const snapshotSetting = new Setting(containerEl)
+    const snapshotSetting = new Setting(section)
       .setName(t(settings.language, "settings.title.promptObservationSnapshot"))
       .setDesc(t(settings.language, "settings.desc.promptObservationSnapshot"));
     snapshotSetting.controlEl.createDiv();
@@ -428,6 +499,33 @@ export class SettingsTab extends PluginSettingTab {
     snapshotArea.setValue(snapshot
       ? JSON.stringify(snapshot, null, 2)
       : t(settings.language, "settings.placeholder.promptObservationEmpty"));
+  }
+
+  private createSettingsGroup(
+    containerEl: HTMLElement,
+    title: string,
+    description: string,
+    open: boolean,
+    extraClass?: string,
+  ): HTMLElement {
+    const details = containerEl.createEl("details", {
+      cls: ["obsidian-refined-layer-settings-group", extraClass].filter(Boolean).join(" "),
+    });
+    details.open = open;
+
+    const summary = details.createEl("summary", {
+      cls: "obsidian-refined-layer-settings-group-summary",
+    });
+    summary.createEl("span", {
+      cls: "obsidian-refined-layer-settings-group-title",
+      text: title,
+    });
+    summary.createEl("span", {
+      cls: "obsidian-refined-layer-settings-group-desc",
+      text: description,
+    });
+
+    return details.createDiv({ cls: "obsidian-refined-layer-settings-group-body" });
   }
 
 
@@ -503,7 +601,7 @@ export class SettingsTab extends PluginSettingTab {
         button
           .setButtonText(t(settings.language, "settings.button.deleteABlock"))
           .onClick(async () => {
-            const current = this.plugin.getSettings().rawRefined;
+            const current = this.plugin.getActiveRefineProfile();
             const result = await this.plugin.updateRawRefinedSettings({
               aBlocks: current.aBlocks.filter((item) => item.id !== block.id),
             });
@@ -539,7 +637,7 @@ export class SettingsTab extends PluginSettingTab {
   }
 
   private async updateABlock(id: string, partial: Partial<ABlockConfig>): Promise<void> {
-    const current = this.plugin.getSettings().rawRefined;
+    const current = this.plugin.getActiveRefineProfile();
     const result = await this.plugin.updateRawRefinedSettings({
       aBlocks: current.aBlocks.map((block) => block.id === id ? { ...block, ...partial } : block),
     });
@@ -547,7 +645,7 @@ export class SettingsTab extends PluginSettingTab {
   }
 
   private async updateBBlock(partial: Partial<BBlockConfig>): Promise<void> {
-    const current = this.plugin.getSettings().rawRefined;
+    const current = this.plugin.getActiveRefineProfile();
     const result = await this.plugin.updateRawRefinedSettings({
       bBlock: {
         ...current.bBlock,

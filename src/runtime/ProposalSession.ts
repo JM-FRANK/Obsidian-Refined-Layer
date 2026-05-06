@@ -125,6 +125,13 @@ export interface ProposalSessionV2 {
   baseFrontmatterHash?: string;
   baseBBlockHash: string;
 
+  profileSnapshot?: {
+    id: string;
+    name: string;
+    description?: string;
+    isDefault?: boolean;
+  };
+
   blockConfigSnapshot: {
     protectH1: boolean;
     aBlocks: ABlockConfig[];
@@ -227,6 +234,13 @@ export interface PersistedProposalSessionV2 {
   baseFileHash: string;
   baseFrontmatterHash?: string;
   baseBBlockHash: string;
+
+  profileSnapshot?: {
+    id: string;
+    name: string;
+    description?: string;
+    isDefault?: boolean;
+  };
 
   blockConfigSnapshot: {
     protectH1: boolean;

@@ -59,6 +59,8 @@ export interface ReviewSelectedTagViewModel {
 export interface ReviewViewModelV2 {
   sessionId: string;
   workflowProfileId: "raw-refined";
+  profileId?: string;
+  profileName?: string;
   schemaVersion: "0.2";
   notePath: string;
   noteTitle: string;
@@ -185,6 +187,8 @@ export function createReviewViewModelV2(session: ProposalSessionV2): ReviewViewM
   return {
     sessionId: session.id,
     workflowProfileId: session.workflowProfileId,
+    profileId: session.profileSnapshot?.id,
+    profileName: session.profileSnapshot?.name,
     schemaVersion: session.schemaVersion,
     notePath: session.notePath,
     noteTitle: session.noteTitle,

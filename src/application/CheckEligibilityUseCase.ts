@@ -1,8 +1,8 @@
 import { BlockExtractor } from "../core/markdown/BlockExtractor";
 import { BlockConfigValidator } from "../core/profile/BlockConfigValidator";
 import { parseFrontmatter } from "../core/profile/FrontmatterParser";
+import type { RefineProfile } from "../core/profile/RefineProfile";
 import type { WorkflowProfile } from "../core/profile/WorkflowProfile";
-import type { RawRefinedWorkflowSettings } from "../settings/PluginSettings";
 
 export interface ActiveMarkdownNote {
   path: string;
@@ -60,7 +60,7 @@ export class CheckEligibilityUseCase {
   constructor(
     private readonly noteRepository: ActiveNoteRepository,
     private readonly profile: WorkflowProfile,
-    private readonly settings: RawRefinedWorkflowSettings,
+    private readonly settings: RefineProfile,
   ) {}
 
   async execute(): Promise<CheckEligibilityResult> {

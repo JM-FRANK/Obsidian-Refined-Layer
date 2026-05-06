@@ -1,4 +1,4 @@
-import type { RawRefinedWorkflowSettings } from "../../settings/PluginSettings";
+import type { RefineProfile } from "../profile/RefineProfile";
 import type { RawRefinedProposalV2Parsed } from "./ProposalSchema";
 import type { ABlockProposal } from "./Proposal";
 import type { ProposalValidationResult } from "../../runtime/ProposalSession";
@@ -29,7 +29,7 @@ export class ProposalNormalizer {
    */
   normalize(
     parsed: RawRefinedProposalV2Parsed,
-    settings: RawRefinedWorkflowSettings,
+    settings: RefineProfile,
   ): ProposalNormalizationOutput {
     const warnings: string[] = [];
     const rejectedFields: ProposalValidationResult["rejectedFields"] = [];

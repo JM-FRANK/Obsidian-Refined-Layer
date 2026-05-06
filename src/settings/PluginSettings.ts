@@ -1,15 +1,9 @@
 import type { ABlockConfig, BBlockConfig } from "../core/profile/BlockConfig";
+import type { RawRefinedWorkflowSettings, RefineProfile } from "../core/profile/RefineProfile";
 import type { ErrorSessionCacheSettings, SessionCacheSettings } from "../runtime/ProposalSession";
 import type { ProviderSettings } from "./ProviderConfig";
 
-export interface RawRefinedWorkflowSettings {
-  protectH1: boolean;
-  aBlocks: ABlockConfig[];
-  bBlock: BBlockConfig;
-  tagWhitelist: string[];
-  tagPrompt: string;
-  promptObservationEnabled: boolean;
-}
+export type { RawRefinedWorkflowSettings, RefineProfile };
 
 export interface PluginSettings {
   language: "zh-CN" | "en";
@@ -117,6 +111,19 @@ export const DEFAULT_B_BLOCK: BBlockConfig = {
   required: true,
 };
 
+export const DEFAULT_REFINE_PROFILE: RefineProfile = {
+  id: "default",
+  name: "Default",
+  description: "Default raw-refined template",
+  isDefault: true,
+  protectH1: true,
+  aBlocks: DEFAULT_A_BLOCKS,
+  bBlock: DEFAULT_B_BLOCK,
+  tagWhitelist: DEFAULT_TAG_WHITELIST,
+  tagPrompt: "从 tagWhitelist 中选择合适的标签作为 selectedTags，如有必要建议新标签作为 newTagSuggestions。不要将非白名单标签放入 selectedTags。",
+  promptObservationEnabled: false,
+};
+
 export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   language: "zh-CN",
   historyLimit: 5,
@@ -127,12 +134,8 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   promptOverrides: {},
 
   rawRefined: {
-    protectH1: true,
-    aBlocks: DEFAULT_A_BLOCKS,
-    bBlock: DEFAULT_B_BLOCK,
-    tagWhitelist: DEFAULT_TAG_WHITELIST,
-    tagPrompt: "从 tagWhitelist 中选择合适的标签作为 selectedTags，如有必要建议新标签作为 newTagSuggestions。不要将非白名单标签放入 selectedTags。",
-    promptObservationEnabled: false,
+    activeProfileId: DEFAULT_REFINE_PROFILE.id,
+    profiles: [DEFAULT_REFINE_PROFILE],
   },
   sessionCache: {
     limit: 5,

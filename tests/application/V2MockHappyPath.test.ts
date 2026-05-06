@@ -8,6 +8,7 @@ import { SaveDraftUseCase } from "../../src/application/SaveDraftUseCase";
 import { OpenCachedSessionUseCase } from "../../src/application/OpenCachedSessionUseCase";
 import type { ActiveNoteRepository } from "../../src/application/CheckEligibilityUseCase";
 import type { NoteFilePort } from "../../src/application/ports/NoteFilePort";
+import { resolveRefineProfile } from "../../src/core/profile/RefineProfile";
 import { rawRefinedProfile } from "../../src/core/profile/rawRefinedProfile";
 import type { UserDecisionV2 } from "../../src/core/review/UserDecision";
 import type { ProposalSessionV2 } from "../../src/runtime/ProposalSession";
@@ -84,9 +85,10 @@ describe("v0.2 mock happy path", () => {
       })),
     };
     const sessionCache = new MemorySessionCacheV2();
+    const defaultProfile = resolveRefineProfile(DEFAULT_PLUGIN_SETTINGS.rawRefined);
     const settings = {
-      ...DEFAULT_PLUGIN_SETTINGS.rawRefined,
-      aBlocks: DEFAULT_PLUGIN_SETTINGS.rawRefined.aBlocks.map((block) => ({
+      ...defaultProfile,
+      aBlocks: defaultProfile.aBlocks.map((block) => ({
         ...block,
         enabled: block.id === "summary" || block.id === "reasoning",
       })),

@@ -59,6 +59,13 @@ export class CachedSessionPickerModal extends Modal {
     item.createDiv("obsidian-refined-layer-session-meta").createSpan({
       text: session.notePath,
     });
+    if (session.profileName) {
+      item.createDiv("obsidian-refined-layer-session-meta").createSpan({
+        text: t(this.language, "cachedSessionPicker.profileMeta", {
+          profileName: session.profileName,
+        }),
+      });
+    }
 
     const mode = session.tokenUsage?.countingMode ?? "unavailable";
     item.createDiv("obsidian-refined-layer-session-meta").createSpan({

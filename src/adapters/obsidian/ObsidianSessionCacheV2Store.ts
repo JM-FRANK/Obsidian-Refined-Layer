@@ -168,6 +168,7 @@ function toPersistedV2(session: ProposalSessionV2): PersistedProposalSessionV2 |
     baseFileHash: session.baseFileHash,
     baseFrontmatterHash: session.baseFrontmatterHash,
     baseBBlockHash: session.baseBBlockHash,
+    profileSnapshot: session.profileSnapshot,
     blockConfigSnapshot: session.blockConfigSnapshot,
     proposal: session.proposal,
     validation: session.validation,
@@ -205,6 +206,11 @@ function restoreSessionV2(raw: PersistedProposalSessionV2): ProposalSessionV2 | 
     baseFileHash: raw.baseFileHash,
     baseFrontmatterHash: raw.baseFrontmatterHash,
     baseBBlockHash: raw.baseBBlockHash,
+    profileSnapshot: raw.profileSnapshot ?? {
+      id: "default",
+      name: "Default",
+      isDefault: true,
+    },
     blockConfigSnapshot: raw.blockConfigSnapshot ?? {
       protectH1: true,
       aBlocks: [],

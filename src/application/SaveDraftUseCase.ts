@@ -112,6 +112,8 @@ function buildV2DraftContent(session: ProposalSessionV2, decision?: UserDecision
     ``,
     `- source note path: ${session.notePath}`,
     `- workflow id: ${session.workflowProfileId}`,
+    `- profile id: ${session.profileSnapshot?.id ?? "default"}`,
+    `- profile name: ${session.profileSnapshot?.name ?? "Default"}`,
     `- schema version: ${session.schemaVersion}`,
     `- created time: ${session.createdAt}`,
     `- token usage: ${session.tokenUsage?.countingMode ?? "unavailable"}`,

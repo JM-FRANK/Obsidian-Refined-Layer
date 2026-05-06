@@ -115,6 +115,46 @@
   font-size: var(--font-ui-small);
 }
 
+.obsidian-refined-layer-settings-group {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  margin: 0.9rem 0;
+  padding: 0;
+}
+
+.obsidian-refined-layer-settings-group .obsidian-refined-layer-settings-group {
+  background: var(--background-primary);
+  margin: 0.75rem 0;
+}
+
+.obsidian-refined-layer-settings-group-summary {
+  cursor: pointer;
+  list-style-position: inside;
+  padding: 0.85rem 1rem;
+}
+
+.obsidian-refined-layer-settings-group-title {
+  color: var(--text-normal);
+  display: block;
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+  margin-bottom: 0.25rem;
+}
+
+.obsidian-refined-layer-settings-group-desc {
+  color: var(--text-muted);
+  display: block;
+  font-size: var(--font-ui-small);
+  line-height: 1.4;
+  padding-inline-start: 1.2rem;
+}
+
+.obsidian-refined-layer-settings-group-body {
+  border-top: 1px solid var(--background-modifier-border);
+  padding: 0.25rem 1rem 1rem;
+}
+
 .obsidian-refined-layer-settings-diagnostics {
   background: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);

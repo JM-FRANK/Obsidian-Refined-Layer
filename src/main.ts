@@ -26,6 +26,7 @@ import { SaveDraftUseCase } from "./application/SaveDraftUseCase";
 import { TestModelConnectionUseCase } from "./application/TestModelConnectionUseCase";
 import type { ABlockConfig, BBlockConfig } from "./core/profile/BlockConfig";
 import { BlockConfigValidator, type BlockConfigValidationError } from "./core/profile/BlockConfigValidator";
+import { cloneRefineProfile, createProfileId, resolveRefineProfile, type RefineProfile } from "./core/profile/RefineProfile";
 import { rawRefinedProfile } from "./core/profile/rawRefinedProfile";
 import type { UserDecision, UserDecisionV2 } from "./core/review/UserDecision";
 import { ProposalSessionStore } from "./runtime/ProposalSessionStore";
@@ -39,6 +40,8 @@ import { DEFAULT_PLUGIN_SETTINGS } from "./settings/PluginSettings";
 import { t } from "./ui/i18n";
 import { ObsidianReviewGate } from "./ui/review/ObsidianReviewGate";
 import { CachedSessionPickerModal } from "./ui/review/CachedSessionPickerModal";
+import { RefineProfilePickerModal } from "./ui/refine/RefineProfilePickerModal";
+import { RefineRunStatusNotice } from "./ui/refine/RefineRunStatusModal";
 import { ReviewModalV2 } from "./ui/review/ReviewModal";
 import { createReviewViewModelV2 } from "./ui/review/ReviewViewModel";
 import { SessionPickerModal } from "./ui/review/SessionPickerModal";
@@ -46,6 +49,7 @@ import { buildV2NoticeMessages } from "./ui/review/V2NoticeMessages";
 import { SettingsTab } from "./ui/settings/SettingsTab";
 
 const REFINE_COMMAND_ID = "refine-current-note";
+const REFINE_WITH_PROFILE_COMMAND_ID = "refine-current-note-with-profile";
 const REOPEN_LAST_PROPOSAL_COMMAND_ID = "reopen-last-proposal-for-current-note";
 const OPEN_CACHED_PROPOSAL_SESSION_COMMAND_ID = "open-cached-proposal-session";
 
@@ -70,48 +74,23 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
       id: REFINE_COMMAND_ID,
       name: "Refine current note",
       callback: async () => {
-        const providerSelection = this.selectLlmProvider();
-        if (providerSelection.kind === "error") {
-          new Notice(providerSelection.message, 8000);
-          return;
-        }
+        await this.refineCurrentNote(this.getActiveRefineProfile());
+      },
+    });
 
-        if (providerSelection.warning) {
-          new Notice(providerSelection.warning, 6000);
-        }
-
-        const noteRepository = new ObsidianNoteRepository(this.app);
-        const createProposalUseCase = new CreateProposalUseCase(
-          noteRepository,
-          rawRefinedProfile,
-          providerSelection.provider,
-          this.sessionStore,
-          this.settings.rawRefined,
-          this.settings.promptOverrides?.["raw-refined"],
-          this.settings.errorSessionCache.enabled
-            ? new ObsidianErrorSessionCacheStore(this, this.settings.errorSessionCache.limit)
-            : undefined,
-          this.sessionCacheV2,
-          this.promptObservationStore,
-        );
-        const result = await createProposalUseCase.executeV2();
-
-        if (result.kind === "created-v2") {
-          for (const message of buildV2NoticeMessages(this.settings.language, result)) {
-            new Notice(message, 6000);
-          }
-          await this.openReviewForSessionV2(result.session.id);
-          return;
-        }
-
-        if (result.kind === "exhausted") {
-          for (const message of buildV2NoticeMessages(this.settings.language, result)) {
-            new Notice(message, 8000);
-          }
-          return;
-        }
-
-        new Notice(formatCreateProposalMessage(this.settings.language, result), 8000);
+    this.addCommand({
+      id: REFINE_WITH_PROFILE_COMMAND_ID,
+      name: "Refine current note with profile...",
+      callback: async () => {
+        new RefineProfilePickerModal(this.app, this.settings.rawRefined.profiles, this.settings.language, {
+          onChoose: async (profileId) => {
+            const profile = resolveRefineProfile(this.settings.rawRefined, profileId);
+            await this.refineCurrentNote(profile);
+          },
+          onCancel: () => {
+            // Modal closed; nothing to do.
+          },
+        }).open();
       },
     });
 
@@ -175,6 +154,10 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
 
   getSettings(): PluginSettings {
     return this.settings;
+  }
+
+  getActiveRefineProfile(): RefineProfile {
+    return resolveRefineProfile(this.settings.rawRefined);
   }
 
   hasSecureSecretStorage(): boolean {
@@ -250,19 +233,20 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
   }
 
   async updateRawRefinedSettings(
-    partial: Partial<PluginSettings["rawRefined"]>,
+    partial: Partial<RefineProfile>,
   ): Promise<{ ok: true } | { ok: false; errors: BlockConfigValidationError[] }> {
-    const nextRawRefined = {
-      ...this.settings.rawRefined,
+    const currentProfile = this.getActiveRefineProfile();
+    const nextProfile: RefineProfile = {
+      ...currentProfile,
       ...partial,
-      aBlocks: partial.aBlocks ?? this.settings.rawRefined.aBlocks,
-      bBlock: partial.bBlock ?? this.settings.rawRefined.bBlock,
+      aBlocks: partial.aBlocks ?? currentProfile.aBlocks,
+      bBlock: partial.bBlock ?? currentProfile.bBlock,
     };
 
     const validation = new BlockConfigValidator().validate(
-      nextRawRefined.aBlocks as ABlockConfig[],
-      nextRawRefined.bBlock as BBlockConfig,
-      nextRawRefined.protectH1,
+      nextProfile.aBlocks as ABlockConfig[],
+      nextProfile.bBlock as BBlockConfig,
+      nextProfile.protectH1,
     );
 
     if (!validation.ok) {
@@ -270,10 +254,126 @@ export default class ObsidianRefinedLayerPlugin extends Plugin {
     }
 
     await this.updateSettings({
-      rawRefined: nextRawRefined,
+      rawRefined: {
+        ...this.settings.rawRefined,
+        profiles: this.settings.rawRefined.profiles.map((profile) =>
+          profile.id === currentProfile.id ? nextProfile : profile
+        ),
+      },
     });
 
     return { ok: true };
+  }
+
+  private async refineCurrentNote(profile: RefineProfile): Promise<void> {
+    const providerSelection = this.selectLlmProvider();
+    if (providerSelection.kind === "error") {
+      new Notice(providerSelection.message, 8000);
+      return;
+    }
+
+    if (providerSelection.warning) {
+      new Notice(providerSelection.warning, 6000);
+    }
+
+    const statusNotice = new RefineRunStatusNotice(this.settings.language, profile);
+    statusNotice.start();
+    const noteRepository = new ObsidianNoteRepository(this.app);
+    const createProposalUseCase = new CreateProposalUseCase(
+      noteRepository,
+      rawRefinedProfile,
+      providerSelection.provider,
+      this.sessionStore,
+      profile,
+      this.settings.promptOverrides?.["raw-refined"],
+      this.settings.errorSessionCache.enabled
+        ? new ObsidianErrorSessionCacheStore(this, this.settings.errorSessionCache.limit)
+        : undefined,
+      this.sessionCacheV2,
+      this.promptObservationStore,
+      (status) => statusNotice.updateStatus(status),
+    );
+    const result = await createProposalUseCase.executeV2();
+
+    if (result.kind === "created-v2") {
+      statusNotice.updateStatus({
+        runId: result.session.id,
+        stage: "opening-review",
+        profileId: profile.id,
+        profileName: profile.name,
+      });
+      for (const message of buildV2NoticeMessages(this.settings.language, result)) {
+        new Notice(message, 6000);
+      }
+      statusNotice.finish();
+      await this.openReviewForSessionV2(result.session.id);
+      return;
+    }
+
+    if (result.kind === "exhausted") {
+      for (const message of buildV2NoticeMessages(this.settings.language, result)) {
+        new Notice(message, 8000);
+      }
+      statusNotice.updateStatus({
+        runId: "exhausted",
+        stage: "failed",
+        profileId: profile.id,
+        profileName: profile.name,
+      });
+      statusNotice.finish();
+      return;
+    }
+
+    statusNotice.updateStatus({
+      runId: "failed",
+      stage: "failed",
+      profileId: profile.id,
+      profileName: profile.name,
+    });
+    statusNotice.finish();
+    new Notice(formatCreateProposalMessage(this.settings.language, result), 8000);
+  }
+
+  async updateActiveProfileId(activeProfileId: string): Promise<void> {
+    if (!this.settings.rawRefined.profiles.some((profile) => profile.id === activeProfileId)) return;
+    await this.updateSettings({
+      rawRefined: {
+        ...this.settings.rawRefined,
+        activeProfileId,
+      },
+    });
+  }
+
+  async addRefineProfile(): Promise<void> {
+    const base = this.getActiveRefineProfile();
+    const next = {
+      ...cloneRefineProfile(base),
+      id: createProfileId("profile"),
+      name: `${base.name} Copy`,
+      isDefault: false,
+    };
+    await this.updateSettings({
+      rawRefined: {
+        activeProfileId: next.id,
+        profiles: [...this.settings.rawRefined.profiles, next],
+      },
+    });
+  }
+
+  async copyActiveRefineProfile(): Promise<void> {
+    await this.addRefineProfile();
+  }
+
+  async deleteActiveRefineProfile(): Promise<void> {
+    const current = this.getActiveRefineProfile();
+    if (this.settings.rawRefined.profiles.length <= 1) return;
+    const profiles = this.settings.rawRefined.profiles.filter((profile) => profile.id !== current.id);
+    await this.updateSettings({
+      rawRefined: {
+        activeProfileId: profiles[0].id,
+        profiles,
+      },
+    });
   }
 
   async testModelConnection(): Promise<void> {

@@ -1,6 +1,7 @@
 import type { Plugin } from "obsidian";
 
-import { DEFAULT_PLUGIN_SETTINGS, type PluginSettings } from "../../settings/PluginSettings";
+import { cloneRefineProfile, type RawRefinedWorkflowSettings, type RefineProfile } from "../../core/profile/RefineProfile";
+import { DEFAULT_PLUGIN_SETTINGS, DEFAULT_REFINE_PROFILE, type PluginSettings } from "../../settings/PluginSettings";
 import type { ProviderSettings } from "../../settings/ProviderConfig";
 
 export class ObsidianSettingsStore {
@@ -19,7 +20,7 @@ export class ObsidianSettingsStore {
 function mergeSettings(value: unknown): PluginSettings {
   const loaded = (typeof value === "object" && value !== null ? value : {}) as Partial<PluginSettings>;
 
-  const rawRefined = loaded.rawRefined ?? DEFAULT_PLUGIN_SETTINGS.rawRefined;
+  const rawRefined = migrateRawRefinedSettings(loaded.rawRefined);
 
   // Migrate historyLimit → sessionCache.limit if old field present and sessionCache not explicitly set
   const sessionCache = loaded.sessionCache
@@ -32,13 +33,7 @@ function mergeSettings(value: unknown): PluginSettings {
     ...loaded,
     provider: loaded.provider ?? DEFAULT_PLUGIN_SETTINGS.provider,
     promptOverrides: loaded.promptOverrides ?? DEFAULT_PLUGIN_SETTINGS.promptOverrides,
-    rawRefined: {
-      ...DEFAULT_PLUGIN_SETTINGS.rawRefined,
-      ...rawRefined,
-      aBlocks: rawRefined.aBlocks ?? DEFAULT_PLUGIN_SETTINGS.rawRefined.aBlocks,
-      bBlock: rawRefined.bBlock ?? DEFAULT_PLUGIN_SETTINGS.rawRefined.bBlock,
-      tagWhitelist: rawRefined.tagWhitelist ?? DEFAULT_PLUGIN_SETTINGS.rawRefined.tagWhitelist,
-    },
+    rawRefined,
     sessionCache,
     errorSessionCache: loaded.errorSessionCache ?? DEFAULT_PLUGIN_SETTINGS.errorSessionCache,
   };
@@ -53,22 +48,7 @@ function sanitizeSettings(settings: PluginSettings): PluginSettings {
       ? sanitizeProvider(settings.provider)
       : undefined,
     promptOverrides: settings.promptOverrides ?? {},
-    rawRefined: {
-      protectH1: settings.rawRefined?.protectH1 ?? true,
-      aBlocks: (settings.rawRefined?.aBlocks ?? []).map((b) => ({
-        id: b.id,
-        name: b.name,
-        heading: b.heading,
-        headingLevel: b.headingLevel,
-        prompt: b.prompt,
-        order: b.order,
-        enabled: b.enabled,
-      })),
-      bBlock: settings.rawRefined?.bBlock ?? DEFAULT_PLUGIN_SETTINGS.rawRefined.bBlock,
-      tagWhitelist: settings.rawRefined?.tagWhitelist ?? [],
-      tagPrompt: settings.rawRefined?.tagPrompt ?? "",
-      promptObservationEnabled: settings.rawRefined?.promptObservationEnabled ?? false,
-    },
+    rawRefined: sanitizeRawRefinedSettings(settings.rawRefined),
     sessionCache: {
       limit: settings.sessionCache?.limit ?? 5,
     },
@@ -80,6 +60,76 @@ function sanitizeSettings(settings: PluginSettings): PluginSettings {
 
   // Whitelist-only: must not leak apiKey, token, Authorization, secret
   return sanitized;
+}
+
+function migrateRawRefinedSettings(value: unknown): RawRefinedWorkflowSettings {
+  const raw = (typeof value === "object" && value !== null ? value : {}) as Record<string, unknown>;
+  const maybeProfiles = Array.isArray(raw.profiles) ? raw.profiles : undefined;
+
+  if (maybeProfiles && maybeProfiles.length > 0) {
+    const profiles = maybeProfiles.map((profile) => normalizeRefineProfile(profile)).filter(Boolean) as RefineProfile[];
+    const fallbackProfiles = profiles.length > 0 ? profiles : [cloneRefineProfile(DEFAULT_REFINE_PROFILE)];
+    const activeProfileId = typeof raw.activeProfileId === "string"
+      && fallbackProfiles.some((profile) => profile.id === raw.activeProfileId)
+      ? raw.activeProfileId
+      : fallbackProfiles[0].id;
+
+    return { activeProfileId, profiles: fallbackProfiles };
+  }
+
+  return {
+    activeProfileId: "default",
+    profiles: [
+      normalizeRefineProfile({
+        ...DEFAULT_REFINE_PROFILE,
+        ...raw,
+        id: "default",
+        name: typeof raw.name === "string" ? raw.name : DEFAULT_REFINE_PROFILE.name,
+        isDefault: true,
+      }) ?? cloneRefineProfile(DEFAULT_REFINE_PROFILE),
+    ],
+  };
+}
+
+function sanitizeRawRefinedSettings(settings: RawRefinedWorkflowSettings): RawRefinedWorkflowSettings {
+  const profiles = (settings.profiles.length > 0 ? settings.profiles : [DEFAULT_REFINE_PROFILE])
+    .map((profile) => normalizeRefineProfile(profile))
+    .filter(Boolean) as RefineProfile[];
+  const safeProfiles = profiles.length > 0 ? profiles : [cloneRefineProfile(DEFAULT_REFINE_PROFILE)];
+  const activeProfileId = safeProfiles.some((profile) => profile.id === settings.activeProfileId)
+    ? settings.activeProfileId
+    : safeProfiles[0].id;
+
+  return { activeProfileId, profiles: safeProfiles };
+}
+
+function normalizeRefineProfile(value: unknown): RefineProfile | null {
+  const raw = (typeof value === "object" && value !== null ? value : {}) as Partial<RefineProfile>;
+  const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : "default";
+  const name = typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : DEFAULT_REFINE_PROFILE.name;
+
+  return {
+    id,
+    name,
+    ...(typeof raw.description === "string" ? { description: raw.description } : {}),
+    ...(raw.isDefault !== undefined ? { isDefault: Boolean(raw.isDefault) } : {}),
+    protectH1: raw.protectH1 ?? DEFAULT_REFINE_PROFILE.protectH1,
+    aBlocks: Array.isArray(raw.aBlocks)
+      ? raw.aBlocks.map((b) => ({
+          id: b.id,
+          name: b.name,
+          heading: b.heading,
+          headingLevel: b.headingLevel,
+          prompt: b.prompt,
+          order: b.order,
+          enabled: b.enabled,
+        }))
+      : DEFAULT_REFINE_PROFILE.aBlocks.map((b) => ({ ...b })),
+    bBlock: raw.bBlock ? { ...raw.bBlock } : { ...DEFAULT_REFINE_PROFILE.bBlock },
+    tagWhitelist: Array.isArray(raw.tagWhitelist) ? raw.tagWhitelist.filter((tag): tag is string => typeof tag === "string") : [...DEFAULT_REFINE_PROFILE.tagWhitelist],
+    tagPrompt: typeof raw.tagPrompt === "string" ? raw.tagPrompt : DEFAULT_REFINE_PROFILE.tagPrompt,
+    promptObservationEnabled: raw.promptObservationEnabled ?? DEFAULT_REFINE_PROFILE.promptObservationEnabled,
+  };
 }
 
 function sanitizeProvider(provider: ProviderSettings): ProviderSettings {

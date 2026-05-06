@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import type { RawRefinedWorkflowSettings } from "../../../src/settings/PluginSettings";
+import type { RefineProfile } from "../../../src/core/profile/RefineProfile";
 import type { RawRefinedProposalV2Parsed } from "../../../src/core/proposal/ProposalSchema";
 import { ProposalNormalizer } from "../../../src/core/proposal/ProposalNormalizer";
 
-const defaultSettings: RawRefinedWorkflowSettings = {
+const defaultSettings: RefineProfile = {
+  id: "default",
+  name: "Default",
   protectH1: true,
   bBlock: {
     id: "original-content",
@@ -118,7 +120,7 @@ describe("ProposalNormalizer", () => {
     });
 
     it("ignores disabled A block configs when checking block validity", () => {
-      const settings: RawRefinedWorkflowSettings = {
+      const settings: RefineProfile = {
         ...defaultSettings,
         aBlocks: [
           {

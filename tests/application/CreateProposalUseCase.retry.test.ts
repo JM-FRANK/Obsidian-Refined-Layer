@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { LlmProvider, LlmResponse } from "../../src/adapters/llm/LlmProvider";
 import type { LlmRequestV2 } from "../../src/core/prompt/PromptDebugSnapshot";
+import { resolveRefineProfile } from "../../src/core/profile/RefineProfile";
 import { rawRefinedProfile } from "../../src/core/profile/rawRefinedProfile";
 import type { ErrorSessionCacheStore } from "../../src/runtime/ErrorSessionCacheStore";
 import type { FailedAttemptRecord, ProposalSessionV2 } from "../../src/runtime/ProposalSession";
@@ -11,7 +12,7 @@ import { DEFAULT_PLUGIN_SETTINGS } from "../../src/settings/PluginSettings";
 import type { ActiveNoteRepository } from "../../src/application/CheckEligibilityUseCase";
 import { CreateProposalUseCase } from "../../src/application/CreateProposalUseCase";
 
-const defaultSettings = DEFAULT_PLUGIN_SETTINGS.rawRefined;
+const defaultSettings = resolveRefineProfile(DEFAULT_PLUGIN_SETTINGS.rawRefined);
 
 const mockV2Settings = {
   ...defaultSettings,

@@ -2,10 +2,10 @@
 
 Obsidian Refined Layer 是一个 review-first 的 Obsidian 插件。它把当前 raw Markdown 笔记整理成可审核的 refined proposal，但不会让 LLM 直接写文件；所有修改都必须先进入 Review UI，由用户明确勾选后，再通过 ApplyPlan 写入。
 
-v0.2.0 使用可配置的单篇笔记 `raw-refined` workflow：
+v0.2.1 使用可配置的单篇笔记 `raw-refined` workflow，并在 v0.2.0 主干之上加入 RefineProfile 模板和运行状态反馈：
 
 ```text
-raw note -> A/B block parsing -> structured prompt -> LLM JSON -> Zod -> normalization -> review -> ApplyPlan -> safe write / draft
+raw note -> RefineProfile -> generated/protected block parsing -> structured prompt -> LLM JSON -> Zod -> normalization -> review -> ApplyPlan -> safe write / draft
 ```
 
 ## 安装
@@ -29,17 +29,26 @@ npm run build
 Refine current note
 ```
 
-插件会解析当前笔记的 A/B 分块，构造 prompt，调用 mock 或真实 provider，生成 proposal session，然后打开 Review UI。你可以逐块勾选要应用的 A 类分块、YAML 建议和 selectedTags；未勾选的内容不会写入原笔记。
+插件会使用当前 active RefineProfile 解析笔记的生成分块 / 保护分块，构造 prompt，调用 mock 或真实 provider，生成 proposal session，然后打开 Review UI。你可以逐块勾选要应用的生成分块、YAML 建议和 selectedTags；未勾选的内容不会写入原笔记。
 
-## A/B 分块
+也可以执行：
 
-v0.2.0 使用可配置的 A/B block 模型。
+```text
+Refine current note with profile...
+```
 
-- **A 类分块**：由 LLM 生成或整理，可按块独立审核和应用。每个 A block 有 `name / headingLevel / prompt / enabled / order`。
-- **B 类分块**：唯一的受保护原始内容块，不是 LLM 输出目标，Apply 时从当前文件重新提取并逐字保留。
-- **保护一级标题**：开启后，第一个 H1 被视为笔记标题，A/B 分块必须使用 H2 或更深层级。
+这个命令只为本次 refine 手动选择一个 Profile，不会修改默认 activeProfile。
 
-在 Settings 中可以配置 A 类分块列表、B 类分块名称和层级、以及“保护一级标题”。保存配置前会经过 core validator；非法配置不会写入 settings。
+## RefineProfile 与分块
+
+v0.2.1 使用 RefineProfile 保存一套 raw-refined 模板配置。
+
+- **生成分块**：内部仍为 A block，由 LLM 生成或整理，可按块独立审核和应用。每个 block 有 `name / headingLevel / prompt / enabled / order`。
+- **保护分块**：内部仍为 B block，唯一的受保护原始内容块，不是 LLM 输出目标，Apply 时从当前文件重新提取并逐字保留。
+- **保护一级标题**：开启后，第一个 H1 被视为笔记标题，生成分块 / 保护分块必须使用 H2 或更深层级。
+- **Profile 作用域**：Profile 只包含分块、tagWhitelist、tag prompt、protectH1 和 prompt observation；provider、model、密钥 ID、cache 和 draft 目录仍是全局设置。
+
+在 Settings 中可以选择 activeProfile、新增 / 复制 / 删除 Profile，并编辑生成分块、保护分块、Tag 配置和 prompt observation。保存配置前会经过 core validator；非法配置不会写入 settings。
 
 ## Tags
 
@@ -53,7 +62,7 @@ Apply 只会追加用户勾选且仍在白名单中的 selectedTags；不会删�
 
 ## 缓存记录
 
-v0.2.0 使用两类缓存：
+v0.2.1 使用两类缓存：
 
 - `session-cache`：保存成功 proposal session，用于查看最近缓存记录和 Save as Draft。默认上限 5。
 - `error-session-cache`：保存失败 attempts，用于调试 retry / JSON / Zod / normalization 问题。默认开启，上限 30。
@@ -65,7 +74,11 @@ v0.2.0 使用两类缓存：
 .obsidian/plugins/obsidian-refined-layer/error-session-cache
 ```
 
-缓存记录不保存 API key、Authorization header 或 provider secret。cached session 可以查看和保存草稿，但 v0.2.0 不允许直接 Apply cached session。
+缓存记录不保存 API key、Authorization header 或 provider secret。cached session 可以查看本次使用的 profile，并保存草稿，但 v0.2.1 不允许直接 Apply cached session。
+
+## 运行状态
+
+执行 refine 后会立即显示运行状态窗口，覆盖 eligibility、prompt build、model request、parse、Zod validation、normalization、session save、review open 和 failed 等阶段。请求模型时会显示第 N/3 次。关闭状态窗口只关闭显示层，不会中断请求。
 
 ## Provider 与密钥 ID
 
@@ -88,7 +101,7 @@ Settings 中提供：
 
 ## Prompt 可观测
 
-Settings 可开启 Prompt 可观测。开启后，最近一次 v0.2 prompt debug snapshot 保存在内存中，可复制查看：
+Settings 可在当前 RefineProfile 中开启 Prompt 可观测。开启后，最近一次 v0.2 prompt debug snapshot 保存在内存中，可复制查看：
 
 - final system / user prompt
 - tag whitelist
@@ -116,4 +129,4 @@ npm test
 npm run build
 ```
 
-测试矩阵见 [docs/test-matrix-v0.2.md](docs/test-matrix-v0.2.md)。
+测试矩阵见 [docs/test-matrix-v0.2.1.md](docs/test-matrix-v0.2.1.md)。

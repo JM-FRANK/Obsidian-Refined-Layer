@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { CheckEligibilityUseCase, type ActiveNoteRepository } from "../../src/application/CheckEligibilityUseCase";
+import { resolveRefineProfile } from "../../src/core/profile/RefineProfile";
 import { rawRefinedProfile } from "../../src/core/profile/rawRefinedProfile";
 import { DEFAULT_PLUGIN_SETTINGS } from "../../src/settings/PluginSettings";
 
-const defaultSettings = DEFAULT_PLUGIN_SETTINGS.rawRefined;
+const defaultSettings = resolveRefineProfile(DEFAULT_PLUGIN_SETTINGS.rawRefined);
 
 describe("CheckEligibilityUseCase", () => {
   // ── v0.1.0 retained: no active file, non-markdown ──

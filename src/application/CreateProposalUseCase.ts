@@ -1,6 +1,7 @@
 import type { LlmProvider, LlmResponse } from "../adapters/llm/LlmProvider";
 import { BlockExtractor } from "../core/markdown/BlockExtractor";
 import { parseFrontmatter } from "../core/profile/FrontmatterParser";
+import type { RefineProfile } from "../core/profile/RefineProfile";
 import type { WorkflowProfile } from "../core/profile/WorkflowProfile";
 import { PromptBuilder } from "../core/prompt/PromptBuilder";
 import type { LlmRequestV2, PromptDebugSnapshot } from "../core/prompt/PromptDebugSnapshot";
@@ -12,7 +13,6 @@ import type { ProposalSession, ProposalSessionV2, FailedAttemptRecord } from "..
 import { ProposalSessionStore } from "../runtime/ProposalSessionStore";
 import { toSafeErrorMessage } from "../runtime/redaction";
 import { TokenUsageReporter } from "../runtime/TokenUsageReporter";
-import type { RawRefinedWorkflowSettings } from "../settings/PluginSettings";
 import type { ActiveNoteRepository } from "./CheckEligibilityUseCase";
 import { CheckEligibilityUseCase, type CheckEligibilityResult } from "./CheckEligibilityUseCase";
 import type { ProposalValidationError } from "../core/proposal/ProposalValidator";
@@ -25,6 +25,7 @@ import type { ErrorSessionCacheStore } from "../runtime/ErrorSessionCacheStore";
 import type { SessionCacheV2Store } from "../runtime/SessionCacheV2Store";
 import type { TokenUsageReport } from "../core/proposal/TokenUsageReport";
 import type { PromptObservationStore } from "../runtime/PromptObservationStore";
+import type { RefineRunStatusReporter, RefineRunStage } from "./RefineRunStatus";
 
 export interface V2NoticePlan {
   attemptsUsed: number;
@@ -105,11 +106,12 @@ export class CreateProposalUseCase {
     private readonly profile: WorkflowProfile,
     private readonly llmProvider: LlmProvider,
     private readonly sessionStore: ProposalSessionStore,
-    private readonly settings: RawRefinedWorkflowSettings,
+    private readonly settings: RefineProfile,
     private readonly promptOverride?: PromptOverride,
     errorSessionCache?: ErrorSessionCacheStore,
     sessionCacheV2?: SessionCacheV2Store,
     private readonly promptObservationStore?: PromptObservationStore,
+    private readonly statusReporter?: RefineRunStatusReporter,
   ) {
     this.eligibilityUseCase = new CheckEligibilityUseCase(noteRepository, profile, settings);
     this.proposalValidator = new ProposalValidator(profile);
@@ -246,13 +248,16 @@ export class CreateProposalUseCase {
 
   async executeV2(): Promise<CreateProposalV2Result> {
     // 1. Eligibility check (not retried)
+    this.reportStatus("checking-eligibility");
     const activeNote = await this.eligibilityUseCase.execute();
     if (!activeNote.hasActiveMarkdownNote || !activeNote.eligible) {
+      this.reportStatus("failed");
       return { kind: "eligibility-failed", eligibility: activeNote };
     }
 
     const lookup = await this.noteRepository.getActiveNote();
     if (lookup.kind !== "markdown") {
+      this.reportStatus("failed");
       return { kind: "eligibility-failed", eligibility: activeNote };
     }
 
@@ -262,6 +267,7 @@ export class CreateProposalUseCase {
       this.settings.bBlock,
     );
     if (!bBlockExtract.ok) {
+      this.reportStatus("failed");
       return {
         kind: "validation-failed",
         errors: [{
@@ -274,6 +280,7 @@ export class CreateProposalUseCase {
 
     // 3. Build prompt (once — reused across retries)
     if (!this.llmProvider.generateProposalV2) {
+      this.reportStatus("failed");
       return {
         kind: "validation-failed",
         errors: [{
@@ -285,12 +292,13 @@ export class CreateProposalUseCase {
     }
 
     const promptBuilder = new PromptBuilder();
+    this.reportStatus("building-prompt");
     const { request, debugSnapshot } = promptBuilder.build({
       provider: this.llmProvider.providerId,
       model: this.llmProvider.model,
       notePath: lookup.note.path,
       noteTitle: lookup.note.title,
-      noteContent: lookup.note.content,
+      noteContent: bBlockExtract.block.text,
       aBlocks: this.settings.aBlocks.filter((b) => b.enabled),
       tagWhitelist: this.settings.tagWhitelist,
       tagPrompt: this.settings.tagPrompt,
@@ -316,9 +324,11 @@ export class CreateProposalUseCase {
 
     // 5. Persist and return based on retry outcome
     if (retryResult.status === "success") {
+      this.reportStatus("saving-session");
       return this.handleRetrySuccess(retryResult.session, retryResult.failedAttempts, retryResult.attemptsUsed);
     }
 
+    this.reportStatus("failed");
     return this.handleRetryExhausted(retryResult.failedAttempts);
   }
 
@@ -327,6 +337,7 @@ export class CreateProposalUseCase {
     attemptIndex: AttemptIndex,
   ): Promise<SingleAttemptResult> {
     // 4a. Call provider
+    this.reportStatus("requesting-model", attemptIndex);
     let llmResponse: LlmResponse;
     try {
       llmResponse = await this.llmProvider.generateProposalV2!(ctx.request);
@@ -347,6 +358,8 @@ export class CreateProposalUseCase {
     }
 
     // 4b. JSON extraction + Zod validation
+    this.reportStatus("parsing-response", attemptIndex);
+    this.reportStatus("validating-proposal", attemptIndex);
     const zodValidation = this.proposalValidator.validateV2Output(llmResponse.rawText);
     if (!zodValidation.ok) {
       const failedAttempt = this.buildFailedAttempt(
@@ -371,6 +384,7 @@ export class CreateProposalUseCase {
     }
 
     // 4c. Normalization
+    this.reportStatus("normalizing-proposal", attemptIndex);
     const normalizer = new ProposalNormalizer();
     const normalized = normalizer.normalize(zodValidation.proposal, this.settings);
 
@@ -413,6 +427,12 @@ export class CreateProposalUseCase {
         ? { baseFrontmatterHash: hashText(JSON.stringify(parsedFrontmatter.frontmatter)) }
         : {}),
       baseBBlockHash: hashText(ctx.bBlockText),
+      profileSnapshot: {
+        id: this.settings.id,
+        name: this.settings.name,
+        description: this.settings.description,
+        isDefault: this.settings.isDefault,
+      },
       blockConfigSnapshot: {
         protectH1: this.settings.protectH1,
         aBlocks: this.settings.aBlocks,
@@ -587,6 +607,16 @@ export class CreateProposalUseCase {
     };
 
     return { kind: "exhausted", failedAttempts, noticePlan };
+  }
+
+  private reportStatus(stage: RefineRunStage, attemptIndex?: AttemptIndex): void {
+    this.statusReporter?.({
+      runId: "refine-run",
+      stage,
+      profileId: this.settings.id,
+      profileName: this.settings.name,
+      ...(attemptIndex !== undefined ? { attemptIndex, maxAttempts: 3 } : {}),
+    });
   }
 }
 

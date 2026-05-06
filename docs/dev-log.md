@@ -1001,3 +1001,159 @@ Phase 16 已作为真实 Obsidian / prompt 调试与修复阶段开启。根据�
   - `docs/obsidian-refined-layer-architecture-v0.2.0-agent.md`：新增 P6 简要说明，限定 Phase 16 为真实 Obsidian / prompt 调试与小步修复，不扩大 v0.2 workflow scope
 - Verification: `npm run typecheck` 通过；`npm test -- tests/core/proposal/ProposalSchema.test.ts tests/core/proposal/ProposalValidator.test.ts tests/application/CreateProposalUseCase.retry.test.ts` 通过（3 files / 37 tests）
 - Next: 重新在真实 Obsidian vault 中执行 `Refine current note`，确认空 `scope.content` 不再触发 Zod failure
+
+---
+
+# Phase 17：v0.2.1 Profile 与运行状态增强
+
+## D70（v0.2.1）开发日志
+
+### Current status
+
+v0.2.1 活跃文档已接入。v0.2.0 架构书和日计划已复制归档到 `docs/achieve/`，v0.2.1 架构书和日计划保持为新的活跃入口。README / AGENTS 已更新到 v0.2.1，用户可见术语改为“生成分块 / 保护分块”，内部 ABlockConfig / BBlockConfig 命名保留。
+
+### Active summary
+- Date: 2026-05-07
+- Scope: v0.2.1 文档同步、归档与术语修订
+- Reason: v0.2.1 从 v0.2.0 主干进入 Profile 与运行状态增强，需要明确活跃文档和用户术语
+- Change: 归档 v0.2.0 文档；更新 README / AGENTS；保留 v0.2.1 架构书与日计划
+- Verification: 文档路径检查；后续 D76 执行全量 typecheck/test/build
+- Next: D71 — RefineProfile 类型、默认 profile 与 settings 迁移
+
+## D71（v0.2.1）开发日志
+
+### Current status
+
+RefineProfile 类型与 settings 迁移已完成。`rawRefined` 从单配置迁移为 `activeProfileId + profiles`；旧 v0.2.0 `rawRefined` 配置会自动迁移为 default profile。provider / model / Key ID / cache / draftFolder 仍属于全局设置，不进入 RefineProfile。settings 保存仍使用白名单式 sanitize，不保存真实 API key / token / Authorization / provider secret。
+
+### Active summary
+- Date: 2026-05-07
+- Scope: RefineProfile 类型、默认 profile 与 settings 迁移
+- Reason: v0.2.1 需要在 raw-refined workflow 内支持用户可保存模板，但不能升级为多 workflow 平台
+- Change: 新增 `src/core/profile/RefineProfile.ts`；更新 `PluginSettings`、`ObsidianSettingsStore`、应用层构造参数和相关测试引用
+- Verification: `npm run typecheck` 通过；focused tests 通过
+- Next: D72 — Settings UI 接入 RefineProfile 管理
+
+## D72（v0.2.1）开发日志
+
+### Current status
+
+Settings UI 已接入 RefineProfile 管理。Settings 现在可选择 activeProfile、新增 profile、复制当前 profile、删除当前 profile（最后一个 profile 不可删除），并在 active profile 内编辑生成分块、保护分块、tagWhitelist、tagPrompt、protectH1 与 promptObservationEnabled。保存前仍调用 core `BlockConfigValidator`；配置错误不会写入 settings。
+
+### Active summary
+- Date: 2026-05-07
+- Scope: Settings UI 接入 RefineProfile 管理
+- Reason: v0.2.1 Profile 是模板配置入口，不是 workflow 平台，UI 需要能管理模板并保持核心校验边界
+- Change: 更新 `SettingsTab` 和 zh-CN/en i18n；用户文案改为生成分块 / 保护分块
+- Verification: `npm run typecheck` 通过；`tests/ui/i18n/i18n.test.ts` 通过
+- Next: D73 — refine 命令接入 activeProfile 与 profile 选择器
+
+## D73（v0.2.1）开发日志
+
+### Current status
+
+refine 命令已接入 activeProfile 与手动 profile 选择器。默认 `Refine current note` 使用 `activeProfileId` 解析出的 RefineProfile；新增 `Refine current note with profile...`，本次选择 profile 不修改 activeProfileId。成功 session 保存 `profileSnapshot`，ReviewViewModel / ReviewModal 可显示 profileName。
+
+### Active summary
+- Date: 2026-05-07
+- Scope: refine 命令接入 activeProfile 与 profile 选择器
+- Reason: Profile 选择必须区分默认 profile 与本次临时选择，避免 Settings 被命令侧隐式改写
+- Change: 新增 `RefineProfilePickerModal`；更新 `main.ts`、`CreateProposalUseCase`、`ProposalSessionV2`、ReviewViewModel
+- Verification: `npm run typecheck` 通过；focused CreateProposal / Review tests 通过
+- Next: D74 — RefineRunStatus 运行状态反馈
+
+## D74（v0.2.1）开发日志
+
+### Current status
+
+RefineRunStatus 已接入 refine 执行流程。新增状态类型和运行状态 modal，覆盖 checking eligibility、building prompt、requesting model、parsing response、validating proposal、normalizing proposal、saving session、opening review、failed；model request 阶段显示第 N/3 次。关闭状态 UI 只销毁显示层，不新增 cancelled result 类型，也不改变 retry / success / failure 逻辑。
+
+### Active summary
+- Date: 2026-05-07
+- Scope: RefineRunStatus 运行状态反馈
+- Reason: 真实 provider 请求可能耗时，用户需要看到执行阶段和 retry attempt
+- Change: 新增 `src/application/RefineRunStatus.ts`、`src/ui/refine/RefineRunStatusModal.ts`；`CreateProposalUseCase` 发出状态事件；`main.ts` 显示状态 UI
+- Verification: `npm run typecheck` 通过；focused CreateProposal retry tests 通过
+- Next: D75 — Session / Draft / Cached Session 回归
+
+## D75（v0.2.1）开发日志
+
+### Current status
+
+Session / Draft / Cached Session 已带 profile 信息回归。`ProposalSessionV2` 与持久化 cache 保存 `profileSnapshot`；Review UI、cached session picker、cached session review 均可显示 profileName；Save as Draft 输出 profile id/name；cached session Apply 仍 disabled。profileSnapshot 不包含 provider、model、Key ID、API key、Authorization 或 provider secret。
+
+### Active summary
+- Date: 2026-05-07
+- Scope: v0.2.1 Session / Draft / Cached Session 回归
+- Reason: profile 信息需要进入审查链路，但不能把 provider/key/cache 配置塞入 profile snapshot
+- Change: 更新 `ProposalSessionV2`、`ObsidianSessionCacheV2Store`、`OpenCachedSessionUseCase`、`CachedSessionPickerModal`、`ReviewModalV2`、`SaveDraftUseCase`
+- Verification: `npm run typecheck` 通过；focused session/draft/review tests 通过
+- Next: D76 — v0.2.1 端到端验证与文档更新
+
+## D76（v0.2.1）开发日志
+
+### Current status
+
+v0.2.1 端到端实现与文档更新已完成。README 已解释 RefineProfile、生成分块、保护分块、with profile 命令和运行状态；新增 `docs/test-matrix-v0.2.1.md` 与 `docs/delivery-checklist-v0.2.1.md`。版本号已更新到 0.2.1。真实 provider smoke 仍需在真实 Obsidian vault + SecretStorage/API key 环境手动执行。
+
+### Active summary
+- Date: 2026-05-07
+- Scope: v0.2.1 端到端验证与文档更新
+- Reason: Phase 17 完成后需要确认默认 activeProfile、with profile、运行状态、settings 迁移、cache/draft/review 文档和交付清单
+- Change: 更新 README、测试矩阵、delivery checklist、manifest/package 版本；执行全量验证
+- Verification: `npm run typecheck` 通过；`npm test` 全量通过（35 files / 323 tests）；`npm run build` 通过。`ProposalSessionStore` persistence failure 测试仍会输出预期 stderr：`disk full`，不代表失败
+- Next: v0.2.1 代码层面完成；真实 provider release smoke 仍为手动缺口
+
+### Phase 17 Verification notes
+
+```text
+[x] v0.2.0 文档已归档到 docs/achieve/。
+[x] v0.2.1 架构书与日计划成为活跃文档。
+[x] 用户可见术语切换为生成分块 / 保护分块。
+[x] RefineProfile 类型存在。
+[x] RawRefinedWorkflowSettings 使用 activeProfileId + profiles。
+[x] 旧 v0.2.0 settings 可迁移。
+[x] Settings UI 可管理 profiles。
+[x] 默认 refine 使用 activeProfile。
+[x] with profile refine 可手动选择 profile。
+[x] ProposalSession / Draft / Cached Session 显示 profile 信息。
+[x] RefineRunStatus 可显示运行阶段和第 N/3 次请求。
+[x] 关闭状态 UI 不影响请求完成。
+[x] v0.2.0 安全写入与 cache 行为不回退。
+```
+
+## D77（v0.2.1）开发日志
+
+### Current status
+
+Settings UI 的 RefineProfile 与 Tag 配置层级已收敛。RefineProfile 相关设置现在放入可折叠 `RefineProfile` 面板，并在其中分为 Profile 基本信息、生成/保护分块、Tag 配置、Prompt 可观测四个子面板。Tag 配置删除逐条白名单列表和逐条删除按钮，只保留“新增 tag”和“按文本编辑白名单”，避免重复维护入口。相关说明改为描述 UI 分组关系，不再用“Profile 不包含 provider/model/key/cache/draft”的否定式说明。
+
+### Active summary
+- Date: 2026-05-07
+- Scope: v0.2.1 Settings UI 分组与 Tag 配置去重
+- Reason: 真实 UI 中 Profile、分块、Tag 设置缺少清晰包含关系，且 Tag 白名单同时有逐条列表和文本编辑两套重复入口
+- Change:
+  - `src/ui/settings/SettingsTab.ts`：新增可折叠 settings group helper；将 Profile / 分块 / Tag / Prompt 可观测收进 RefineProfile 分层；移除逐条 tag 列表
+  - `src/ui/i18n/zh-CN.ts`、`src/ui/i18n/en.ts`：调整 Settings 文案为分组说明
+  - `styles.css`：新增 settings group / nested group 样式
+- Verification: `npm run typecheck` 通过；`npm test -- tests/ui/i18n/i18n.test.ts` 通过；`npm run build` 通过
+- Next: 可在真实 Obsidian Settings 中继续视觉微调折叠面板间距、字号和默认展开策略
+
+## D78（v0.2.1）开发日志
+
+### Current status
+
+Refine 运行状态已从 Modal 改为非阻塞 Notice，不再阻塞 Obsidian 操作。Notice 从 refine 开始驻留，随阶段刷新并显示已用秒数，成功打开 Review 或失败提示出现时关闭。针对约 30s 的执行耗时，排查发现本地 pipeline 主要耗时点只可能集中在 provider 请求阶段；同时发现 v0.2 prompt 仍把整篇 note 送入模型，包含已生成分块等无关内容。已将 v2 prompt 的 note content 输入收窄为当前保护分块文本，避免重复发送旧生成分块，减少真实 provider 输入 token 和模型处理时间。
+
+### Active summary
+- Date: 2026-05-07
+- Scope: Refine 运行状态非阻塞化与真实 provider 请求耗时优化
+- Reason: Modal 会阻塞用户查看/操作 Obsidian；真实 refine 约 30s，单次成功时仍过慢
+- Change:
+  - `src/ui/refine/RefineRunStatusModal.ts`：替换为 `RefineRunStatusNotice`，使用驻留 Notice 展示阶段、Profile 与已用秒数
+  - `src/main.ts`：refine flow 接入非阻塞 Notice，并在成功/失败时关闭
+  - `src/application/CreateProposalUseCase.ts`：v2 PromptBuilder 输入从整篇 note 改为当前保护分块文本
+  - `tests/application/CreateProposalUseCase.test.ts`：新增回归测试，确认 v2 request 不再携带旧生成分块内容
+  - `src/ui/i18n/zh-CN.ts`、`src/ui/i18n/en.ts`：新增非阻塞运行通知文案
+- Verification: `npm run typecheck` 通过；`npm test -- tests/application/CreateProposalUseCase.test.ts tests/ui/i18n/i18n.test.ts` 通过；`npm run build` 通过
+- Next: 在真实 Obsidian 中观察 Notice 停留阶段；如果仍主要停在“请求模型”，下一步可继续压缩 prompt schema、减少默认生成分块数或为 provider 增加可配置 max_tokens
