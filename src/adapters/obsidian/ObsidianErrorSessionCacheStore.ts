@@ -2,6 +2,7 @@ import type { Plugin } from "obsidian";
 
 import type { FailedAttemptRecord, PersistedFailedAttemptRecord } from "../../runtime/ProposalSession";
 import type { ErrorSessionCacheStore } from "../../runtime/ErrorSessionCacheStore";
+import { redactSensitiveStrings } from "../../runtime/redaction";
 
 const ERROR_CACHE_PATH = ".obsidian/plugins/obsidian-refined-layer/error-session-cache";
 const ERROR_CACHE_FILE = "attempts.v1.json";
@@ -127,7 +128,7 @@ function toPersistedAttempt(attempt: FailedAttemptRecord): PersistedFailedAttemp
     return null;
   }
 
-  return {
+  return redactSensitiveStrings({
     id: attempt.id,
     errorSessionId: attempt.errorSessionId,
     attemptIndex: attempt.attemptIndex,
@@ -143,7 +144,7 @@ function toPersistedAttempt(attempt: FailedAttemptRecord): PersistedFailedAttemp
     responseSnapshot: attempt.responseSnapshot,
     validationSnapshot: attempt.validationSnapshot,
     errorSummary: attempt.errorSummary,
-  };
+  });
 }
 
 function toAttempt(raw: PersistedFailedAttemptRecord): FailedAttemptRecord | null {

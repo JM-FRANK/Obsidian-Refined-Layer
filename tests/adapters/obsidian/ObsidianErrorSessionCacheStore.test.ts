@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { FailedAttemptRecord } from "../../../src/runtime/ProposalSession";
 import type { ErrorSessionCacheStore } from "../../../src/runtime/ErrorSessionCacheStore";
-import { containsSecretPattern } from "../../../src/adapters/obsidian/ObsidianErrorSessionCacheStore";
+import {
+  containsSecretPattern,
+  ObsidianErrorSessionCacheStore,
+} from "../../../src/adapters/obsidian/ObsidianErrorSessionCacheStore";
 
 // ── In-memory adapter for interface contract testing ──
 
@@ -62,6 +65,37 @@ function makeAttempt(overrides: Partial<FailedAttemptRecord> = {}): FailedAttemp
     validationSnapshot: overrides.validationSnapshot,
     errorSummary: overrides.errorSummary ?? "Mock error.",
   };
+}
+
+class MemoryVaultAdapter {
+  files = new Map<string, string>();
+  directories = new Set<string>();
+
+  async exists(path: string): Promise<boolean> {
+    return this.files.has(path) || this.directories.has(path);
+  }
+
+  async mkdir(path: string): Promise<void> {
+    this.directories.add(path);
+  }
+
+  async write(path: string, content: string): Promise<void> {
+    this.files.set(path, content);
+  }
+
+  async read(path: string): Promise<string> {
+    const content = this.files.get(path);
+    if (content === undefined) throw new Error("File not found");
+    return content;
+  }
+}
+
+function makePlugin(adapter: MemoryVaultAdapter) {
+  return {
+    app: {
+      vault: { adapter },
+    },
+  } as never;
 }
 
 describe("ErrorSessionCacheStore (in-memory)", () => {
@@ -203,5 +237,43 @@ describe("containsSecretPattern (error cache)", () => {
       }],
     });
     expect(containsSecretPattern(json)).toBe(false);
+  });
+});
+
+describe("ObsidianErrorSessionCacheStore redaction", () => {
+  it("redacts secret-like string values before writing error-session-cache", async () => {
+    const adapter = new MemoryVaultAdapter();
+    const store = new ObsidianErrorSessionCacheStore(makePlugin(adapter), 30);
+
+    await store.save(makeAttempt({
+      requestSnapshot: {
+        messages: [
+          { role: "system", content: "Use Authorization: Bearer sk-system-secret carefully." },
+          { role: "user", content: "raw prompt includes sk-user-secret" },
+        ],
+        schemaName: "RawRefinedProposalV2",
+        schemaVersion: "0.2",
+        metadata: { hint: "Bearer sk-metadata-secret" },
+      },
+      responseSnapshot: {
+        rawText: "provider said Authorization: Bearer sk-response-secret",
+        parsedJson: { body: "sk-json-secret" },
+      },
+      validationSnapshot: {
+        zodError: { message: "token='sk-zod-secret'" },
+      },
+      errorSummary: "Provider failed with Bearer sk-error-secret",
+    }));
+
+    const written = adapter.files.get(".obsidian/plugins/obsidian-refined-layer/error-session-cache/attempts.v1.json");
+    expect(written).toBeDefined();
+    expect(written).not.toContain("sk-system-secret");
+    expect(written).not.toContain("sk-user-secret");
+    expect(written).not.toContain("sk-metadata-secret");
+    expect(written).not.toContain("sk-response-secret");
+    expect(written).not.toContain("sk-json-secret");
+    expect(written).not.toContain("sk-zod-secret");
+    expect(written).not.toContain("sk-error-secret");
+    expect(written).toContain("[REDACTED]");
   });
 });

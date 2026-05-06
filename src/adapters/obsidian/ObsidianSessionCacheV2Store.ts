@@ -1,12 +1,14 @@
 import type { Plugin } from "obsidian";
 
-import type { SessionCacheV2Store } from "../../runtime/SessionCacheV2Store";
+import type { SessionCacheV2Info, SessionCacheV2Store } from "../../runtime/SessionCacheV2Store";
 import type { ProposalSessionV2, PersistedProposalSessionV2 } from "../../runtime/ProposalSession";
+import { redactSensitiveStrings } from "../../runtime/redaction";
 
-const SESSION_CACHE_PATH = ".obsidian/plugins/obsidian-refined-layer/session-cache";
-const SESSION_FILE_NAME = "sessions.v2.json";
-const SESSION_FILE_PATH = `${SESSION_CACHE_PATH}/${SESSION_FILE_NAME}`;
-const DEFAULT_LIMIT = 5;
+export const SESSION_CACHE_PATH = ".obsidian/plugins/obsidian-refined-layer/session-cache";
+export const SESSION_FILE_NAME = "sessions.v2.json";
+export const SESSION_FILE_PATH = `${SESSION_CACHE_PATH}/${SESSION_FILE_NAME}`;
+export const LEGACY_SESSION_FILE_PATH = `${SESSION_CACHE_PATH}/sessions.v1.json`;
+export const DEFAULT_SESSION_CACHE_V2_LIMIT = 5;
 
 const VALID_STATUSES: Set<ProposalSessionV2["status"]> = new Set([
   "generated",
@@ -37,7 +39,7 @@ const SAFE_TOKEN_KEYS = new Set(["inputtokens", "outputtokens", "totaltokens", "
 export class ObsidianSessionCacheV2Store implements SessionCacheV2Store {
   constructor(
     private readonly plugin: Plugin,
-    private readonly limit: number = DEFAULT_LIMIT,
+    private limit: number = DEFAULT_SESSION_CACHE_V2_LIMIT,
   ) {}
 
   async save(session: ProposalSessionV2): Promise<void> {
@@ -52,25 +54,7 @@ export class ObsidianSessionCacheV2Store implements SessionCacheV2Store {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .slice(0, this.limit);
 
-    const payload = {
-      version: 2,
-      updatedAt: new Date().toISOString(),
-      sessions: all,
-    };
-
-    const json = JSON.stringify(payload);
-
-    if (containsSecretPattern(json)) {
-      throw new Error("Session cache V2 save blocked: serialized data contains potential secret patterns.");
-    }
-
-    const adapter = this.plugin.app.vault.adapter;
-
-    if (!(await adapter.exists(SESSION_CACHE_PATH))) {
-      await adapter.mkdir(SESSION_CACHE_PATH);
-    }
-
-    await adapter.write(SESSION_FILE_PATH, json);
+    await this.writePersisted(all);
   }
 
   async loadAll(): Promise<ProposalSessionV2[]> {
@@ -83,6 +67,24 @@ export class ObsidianSessionCacheV2Store implements SessionCacheV2Store {
     const forNote = all.filter((s) => s.notePath === notePath);
     forNote.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     return forNote[0] ?? null;
+  }
+
+  async setSessionCacheLimit(limit: number): Promise<void> {
+    this.limit = normalizeLimit(limit);
+    const trimmed = (await this.loadPersisted())
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, this.limit);
+    await this.writePersisted(trimmed);
+  }
+
+  getCacheInfo(): SessionCacheV2Info {
+    return {
+      cachePath: SESSION_CACHE_PATH,
+      filePath: SESSION_FILE_PATH,
+      legacyFilePath: LEGACY_SESSION_FILE_PATH,
+      compatibilityStrategy: "ignore-v1",
+      limit: this.limit,
+    };
   }
 
   private async loadPersisted(): Promise<PersistedProposalSessionV2[]> {
@@ -120,6 +122,28 @@ export class ObsidianSessionCacheV2Store implements SessionCacheV2Store {
 
     return sessions as PersistedProposalSessionV2[];
   }
+
+  private async writePersisted(sessions: PersistedProposalSessionV2[]): Promise<void> {
+    const payload = {
+      version: 2,
+      updatedAt: new Date().toISOString(),
+      sessions,
+    };
+
+    const json = JSON.stringify(payload);
+
+    if (containsSecretPattern(json)) {
+      throw new Error("Session cache V2 save blocked: serialized data contains potential secret patterns.");
+    }
+
+    const adapter = this.plugin.app.vault.adapter;
+
+    if (!(await adapter.exists(SESSION_CACHE_PATH))) {
+      await adapter.mkdir(SESSION_CACHE_PATH);
+    }
+
+    await adapter.write(SESSION_FILE_PATH, json);
+  }
 }
 
 // ── Persistence helpers ──
@@ -133,7 +157,7 @@ function toPersistedV2(session: ProposalSessionV2): PersistedProposalSessionV2 |
   if (session.schemaVersion !== "0.2") return null;
   if (!VALID_STATUSES.has(session.status)) return null;
 
-  return {
+  return redactSensitiveStrings({
     id: session.id,
     workflowProfileId: session.workflowProfileId,
     schemaVersion: session.schemaVersion,
@@ -151,7 +175,7 @@ function toPersistedV2(session: ProposalSessionV2): PersistedProposalSessionV2 |
     status: session.status,
     decision: session.decision,
     source: session.source,
-  };
+  });
 }
 
 function restoreSessionV2(raw: PersistedProposalSessionV2): ProposalSessionV2 | null {
@@ -208,13 +232,18 @@ function restoreSessionV2(raw: PersistedProposalSessionV2): ProposalSessionV2 | 
 
 // ── Secret scanning ──
 
-function containsSecretPattern(json: string): boolean {
+export function containsSecretPattern(json: string): boolean {
   try {
     const obj = JSON.parse(json);
     return scanObjectForSecrets(obj);
   } catch {
     return true;
   }
+}
+
+function normalizeLimit(limit: number): number {
+  if (!Number.isFinite(limit)) return DEFAULT_SESSION_CACHE_V2_LIMIT;
+  return Math.max(1, Math.floor(limit));
 }
 
 function scanObjectForSecrets(obj: unknown, currentKey?: string): boolean {

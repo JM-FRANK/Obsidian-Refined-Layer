@@ -30,7 +30,10 @@ export interface V2NoticePlan {
   maxAttempts: number;
   errorCacheWritten: boolean;
   errorCacheDisabled: boolean;
+  errorCachePath?: string;
 }
+
+const ERROR_SESSION_CACHE_DISPLAY_PATH = ".obsidian/plugins/obsidian-refined-layer/error-session-cache/";
 
 export type CreateProposalResult =
   | {
@@ -492,6 +495,7 @@ export class CreateProposalUseCase {
       maxAttempts: 3,
       errorCacheWritten,
       errorCacheDisabled: !this.errorSessionCache,
+      errorCachePath: this.errorSessionCache ? ERROR_SESSION_CACHE_DISPLAY_PATH : undefined,
     };
 
     return { kind: "created-v2", session, noticePlan };
@@ -514,6 +518,7 @@ export class CreateProposalUseCase {
       maxAttempts: 3,
       errorCacheWritten,
       errorCacheDisabled: !this.errorSessionCache,
+      errorCachePath: this.errorSessionCache ? ERROR_SESSION_CACHE_DISPLAY_PATH : undefined,
     };
 
     return { kind: "exhausted", failedAttempts, noticePlan };

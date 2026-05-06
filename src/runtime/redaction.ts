@@ -15,6 +15,26 @@ export function redactSensitiveText(text: string): string {
   );
 }
 
+export function redactSensitiveStrings<T>(value: T): T {
+  if (typeof value === "string") {
+    return redactSensitiveText(value) as T;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSensitiveStrings(item)) as T;
+  }
+
+  if (value && typeof value === "object") {
+    const redacted: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      redacted[key] = redactSensitiveStrings(item);
+    }
+    return redacted as T;
+  }
+
+  return value;
+}
+
 export function toSafeErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     return redactSensitiveText(error.message);

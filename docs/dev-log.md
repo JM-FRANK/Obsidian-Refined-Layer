@@ -491,3 +491,70 @@ ErrorSessionCache 适配器已实现。`ErrorSessionCacheStore` 接口定义 sav
     - FailedAttemptRecord 完整结构验证（identity/requestSnapshot/blockConfigSnapshot）
 - Verification: `npm run typecheck` 通过；`npm test` 28 files / 284 tests 全部通过（+9 tests）；`npm run build` 通过
 - Next: D51 — 请求次数提醒与错误缓存位置提示
+
+---
+
+## D51 开发日志
+
+### Current status
+
+请求次数提醒与错误缓存位置提示已实现为独立 notice message planner。`CreateProposalUseCase.executeV2` 仍只返回 `noticePlan`，不直接弹 Notice、不进入 core；新增 UI 层纯函数将 v2 result 转为 0 或 2 条独立提示。第 1 次成功不生成请求次数提示；第 2/3 次成功生成请求次数 + error-session-cache 保存位置两条提示；3 次失败生成失败次数 + error-session-cache 保存位置两条提示；error-session-cache 关闭时第二条提示改为未保存。尚未执行 D52 session-cache v2 兼容迁移。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: 请求次数提醒与错误缓存位置提示（Phase 12 第四任务）
+- Reason: v0.2.0 要求 D50 retry/cache result 在 UI/main 编排层产生 Notice，且请求次数提示与错误缓存位置提示必须是两条独立通知；core 不弹 Notice
+- Change:
+  - `src/application/CreateProposalUseCase.ts`：`V2NoticePlan` 新增 `errorCachePath?: string`，成功/失败 retry 结果在 error cache 可用时携带 `.obsidian/plugins/obsidian-refined-layer/error-session-cache/`
+  - `src/ui/i18n/zh-CN.ts`、`src/ui/i18n/en.ts`：新增 v2 retry 成功/失败、error-session-cache 已保存/未保存文案；中文使用“缓存记录”表述
+  - 新增 `src/ui/review/V2NoticeMessages.ts`：`buildV2NoticeMessages(language, result)` 将 `created-v2`/`exhausted` 结果转为 Notice 消息数组；第 1 次成功返回空数组；第 2/3 次成功和 exhausted 返回两条独立消息；error cache disabled 时第二条为未保存
+  - 新增 `tests/ui/review/V2NoticeMessages.test.ts`（5 tests）：覆盖 attempt 1 成功无提示、attempt 2 成功两条、attempt 3 成功两条、3 次失败两条、error cache disabled 未保存文案
+- Verification: `npm run typecheck` 通过；`npm test -- tests/ui/review/V2NoticeMessages.test.ts tests/ui/i18n/i18n.test.ts tests/application/CreateProposalUseCase.retry.test.ts` 通过（3 files / 16 tests）
+- Next: D52 — session-cache v2 持久化与兼容迁移
+
+---
+
+## D52 开发日志
+
+### Current status
+
+session-cache v2 持久化与兼容迁移已完成。`ObsidianSessionCacheV2Store` 明确只读写 `sessions.v2.json`，旧 `sessions.v1.json` 采用 ignore-v1 策略，不迁移、不崩溃。默认上限为 5；保存和 `setSessionCacheLimit()` 都会按 `updatedAt` 保留最近 session 并清理旧记录。缓存路径、v2 文件路径、legacy v1 文件路径和兼容策略可通过 `getCacheInfo()` 供 Settings UI 读取。保存前继续执行递归字符串 redaction 与 secret key scan。
+
+### Active summary
+- Date: 2026-05-06
+- Scope: session-cache v2 持久化与兼容迁移（Phase 12 第五任务）
+- Reason: v0.2.0 要求成功 `ProposalSessionV2` 可落盘恢复，旧 v1 session 不导致插件崩溃，session-cache 默认上限 5，limit 调整后清理旧记录，并向 Settings UI 暴露缓存位置说明
+- Change:
+  - `src/runtime/SessionCacheV2Store.ts`：新增 `SessionCacheV2Info`；接口增加可选 `setSessionCacheLimit(limit)` 与 `getCacheInfo()`，避免影响测试替身和后续未迁移调用方
+  - `src/adapters/obsidian/ObsidianSessionCacheV2Store.ts`：导出 `SESSION_CACHE_PATH`、`SESSION_FILE_PATH`、`LEGACY_SESSION_FILE_PATH`、`DEFAULT_SESSION_CACHE_V2_LIMIT`；limit 改为可调整；新增 `setSessionCacheLimit()` 与 `getCacheInfo()`；抽出 `writePersisted()` 统一保存、redaction 和 secret scan；导出 `containsSecretPattern()` 供适配器测试
+  - `tests/adapters/obsidian/ObsidianSessionCacheV2Store.test.ts` 扩展为 8 tests：v2 session 保存/恢复、旧 `sessions.v1.json` 被 ignore-v1 策略忽略、超过 limit 自动清理旧 session、`setSessionCacheLimit()` 清理旧 session、Settings UI 可读取缓存路径/兼容策略、secret key scan、token usage 白名单、字符串值 redaction
+- Verification: `npm run typecheck` 通过；`npm test -- tests/adapters/obsidian/ObsidianSessionCacheV2Store.test.ts tests/application/CreateProposalUseCase.retry.test.ts` 通过（2 files / 17 tests）
+- Next: Phase 12 验收任务；通过后进入 Phase 13 / D53（需用户显式要求）
+
+### Phase 12 Verification notes
+
+Phase 12（Retry、Session Cache 与 Error Session Cache）验收通过：
+
+```text
+[x] Retry 最多 3 次。
+[x] 成功 session 与失败 attempt 分离。
+[x] error-session-cache 默认开启，上限 30。
+[x] 第 2/3 次成功只保存失败 attempt 到 error cache。
+[x] 3 次失败不创建 session。
+[x] 请求次数提醒规则符合要求。
+[x] session-cache v2 可恢复。
+```
+
+额外安全修复：根据 `PROJECT_REVIEW_RECORD.md` 中 ISSUE-001，已补上 v2 session-cache / error-session-cache 写入前递归字符串 redaction，并添加回归测试，防止 Bearer/API key/sk-* 形态内容进入缓存。
+
+Verification:
+
+```text
+npm run typecheck
+npm test
+npm run build
+```
+
+结果：typecheck 通过；全量 Vitest 30 files / 298 tests 通过；production build 通过。`ProposalSessionStore` persistence failure 测试仍会输出预期 stderr：`disk full`，不代表失败。
+
+Next: D53 — ReviewViewModel v2 映射（Phase 13，需用户显式要求后再继续）

@@ -16978,6 +16978,7 @@ var RetryAttemptRunner = class {
 };
 
 // src/application/CreateProposalUseCase.ts
+var ERROR_SESSION_CACHE_DISPLAY_PATH = ".obsidian/plugins/obsidian-refined-layer/error-session-cache/";
 var CreateProposalUseCase = class {
   constructor(noteRepository, profile, llmProvider, sessionStore, settings, promptOverride, errorSessionCache, sessionCacheV2) {
     this.noteRepository = noteRepository;
@@ -17302,7 +17303,8 @@ ${userPrompt}`,
       attemptsUsed,
       maxAttempts: 3,
       errorCacheWritten,
-      errorCacheDisabled: !this.errorSessionCache
+      errorCacheDisabled: !this.errorSessionCache,
+      errorCachePath: this.errorSessionCache ? ERROR_SESSION_CACHE_DISPLAY_PATH : void 0
     };
     return { kind: "created-v2", session, noticePlan };
   }
@@ -17318,7 +17320,8 @@ ${userPrompt}`,
       attemptsUsed: 3,
       maxAttempts: 3,
       errorCacheWritten,
-      errorCacheDisabled: !this.errorSessionCache
+      errorCacheDisabled: !this.errorSessionCache,
+      errorCachePath: this.errorSessionCache ? ERROR_SESSION_CACHE_DISPLAY_PATH : void 0
     };
     return { kind: "exhausted", failedAttempts, noticePlan };
   }
@@ -17817,6 +17820,10 @@ var enStrings = {
   "notice.provider.secretBlocked": "Cannot save API key because secure secret storage is unavailable.",
   "notice.provider.secretInvalidRef": "Secret reference must use lowercase letters, numbers, and dashes only.",
   "notice.provider.error": "Provider error: {message}",
+  "notice.v2.retry.success": "Refined Layer: generation succeeded after {attemptsUsed}/{maxAttempts} requests.",
+  "notice.v2.retry.failure": "Refined Layer: generation used {attemptsUsed}/{maxAttempts} requests and did not produce a reviewable proposal.",
+  "notice.v2.errorCache.saved": "Refined Layer: failed attempts were saved to cache records: {path}",
+  "notice.v2.errorCache.disabled": "Refined Layer: error cache is disabled, so failed sessions were not saved.",
   "sessionPicker.title": "Recoverable Proposal Sessions",
   "sessionPicker.freshness.fresh": "Fresh",
   "sessionPicker.freshness.stale-file": "File changed",
@@ -17920,6 +17927,10 @@ var zhCNStrings = {
   "notice.provider.secretBlocked": "\u5F53\u524D\u73AF\u5883\u4E0D\u652F\u6301\u5B89\u5168 secret \u5B58\u50A8\uFF0C\u65E0\u6CD5\u4FDD\u5B58 API key\u3002",
   "notice.provider.secretInvalidRef": "Secret reference \u53EA\u80FD\u5305\u542B\u5C0F\u5199\u5B57\u6BCD\u3001\u6570\u5B57\u548C\u8FDE\u5B57\u7B26\u3002",
   "notice.provider.error": "Provider \u9519\u8BEF\uFF1A{message}",
+  "notice.v2.retry.success": "Refined Layer\uFF1A\u672C\u6B21\u751F\u6210\u8BF7\u6C42\u4E86 {attemptsUsed}/{maxAttempts} \u6B21\u540E\u6210\u529F\u3002",
+  "notice.v2.retry.failure": "Refined Layer\uFF1A\u672C\u6B21\u751F\u6210\u5DF2\u8BF7\u6C42 {attemptsUsed}/{maxAttempts} \u6B21\uFF0C\u672A\u751F\u6210\u53EF\u5BA1\u6838 proposal\u3002",
+  "notice.v2.errorCache.saved": "Refined Layer\uFF1A\u5931\u8D25\u5C1D\u8BD5\u5DF2\u4FDD\u5B58\u5230\u7F13\u5B58\u8BB0\u5F55\uFF1A{path}",
+  "notice.v2.errorCache.disabled": "Refined Layer\uFF1A\u9519\u8BEF\u7F13\u5B58\u5DF2\u5173\u95ED\uFF0C\u5931\u8D25\u4F1A\u8BDD\u672A\u4FDD\u5B58\u3002",
   "sessionPicker.title": "\u53EF\u6062\u590D\u7684 Proposal Session",
   "sessionPicker.freshness.fresh": "\u6587\u4EF6\u672A\u53D8\u5316",
   "sessionPicker.freshness.stale-file": "\u6587\u4EF6\u5DF2\u53D8\u5316",
