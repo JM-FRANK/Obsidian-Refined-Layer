@@ -10,10 +10,11 @@ import type {
   ProposalSession,
 } from "../../runtime/ProposalSession";
 import type { SessionPersistenceStore } from "../../runtime/SessionPersistenceStore";
+import { redactSensitiveStrings } from "../../runtime/redaction";
 
-const SESSION_CACHE_PATH = ".obsidian/plugins/obsidian-refined-layer/session-cache";
+export const SESSION_CACHE_PATH = ".obsidian/plugins/obsidian-refined-layer/session-cache";
 const SESSION_FILE_NAME = "sessions.v1.json";
-const SESSION_FILE_PATH = `${SESSION_CACHE_PATH}/${SESSION_FILE_NAME}`;
+export const SESSION_FILE_PATH = `${SESSION_CACHE_PATH}/${SESSION_FILE_NAME}`;
 
 const VALID_STATUSES: Set<ProposalSession["status"]> = new Set([
   "generated",
@@ -54,11 +55,11 @@ export class ObsidianSessionStore implements SessionPersistenceStore {
       }
     }
 
-    const payload = {
+    const payload = redactSensitiveStrings({
       version: 1,
       updatedAt: new Date().toISOString(),
       sessionsByNotePath: data,
-    };
+    });
 
     const json = JSON.stringify(payload);
 

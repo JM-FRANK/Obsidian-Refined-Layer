@@ -1,4 +1,4 @@
-import { BlockExtractor } from "../core/markdown/BlockExtractor";
+import { BlockExtractor, type ExtractedBBlock } from "../core/markdown/BlockExtractor";
 import { BlockConfigValidator } from "../core/profile/BlockConfigValidator";
 import { parseFrontmatter } from "../core/profile/FrontmatterParser";
 import type { RefineProfile } from "../core/profile/RefineProfile";
@@ -51,6 +51,8 @@ export interface CheckEligibilityResult {
   rawContentLength?: number;
   extension?: string;
   status?: string;
+  note?: ActiveMarkdownNote;
+  bBlock?: ExtractedBBlock;
 }
 
 export class CheckEligibilityUseCase {
@@ -138,6 +140,8 @@ export class CheckEligibilityUseCase {
       noteTitle: activeNote.note.title,
       rawContentLength: activeNote.note.content.length,
       ...(statusValue ? { status: statusValue } : {}),
+      ...(failureReasons.length === 0 ? { note: activeNote.note } : {}),
+      ...(bBlockResult.ok && failureReasons.length === 0 ? { bBlock: bBlockResult.block } : {}),
     };
   }
 }

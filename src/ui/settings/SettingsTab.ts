@@ -52,10 +52,10 @@ export class SettingsTab extends PluginSettingTab {
         text
           .setPlaceholder("5")
           .setValue(String(settings.sessionCache.limit))
-          .onChange(async (value) => {
+          .onChange(this.debounceSettingsChange(async (value) => {
             const parsed = Number.parseInt(value, 10);
             await this.plugin.updateSessionCacheSettings({ limit: parsed });
-          });
+          }));
       });
 
     new Setting(containerEl)
@@ -93,10 +93,10 @@ export class SettingsTab extends PluginSettingTab {
         text
           .setPlaceholder(String(errorSessionCacheInfo.defaultLimit))
           .setValue(String(settings.errorSessionCache.limit))
-          .onChange(async (value) => {
+          .onChange(this.debounceSettingsChange(async (value) => {
             const parsed = Number.parseInt(value, 10);
             await this.plugin.updateErrorSessionCacheSettings({ limit: parsed });
-          });
+          }));
       });
 
     new Setting(containerEl)
@@ -126,9 +126,9 @@ export class SettingsTab extends PluginSettingTab {
       .addText((text) => {
         text
           .setValue(settings.draftFolder)
-          .onChange(async (value) => {
+          .onChange(this.debounceSettingsChange(async (value) => {
             await this.plugin.updateSettings({ draftFolder: value.trim() || settings.draftFolder });
-          });
+          }));
       });
 
     const providerSetting = new Setting(containerEl)
@@ -177,9 +177,9 @@ export class SettingsTab extends PluginSettingTab {
         text
           .setValue(provider?.model ?? "")
           .setPlaceholder(t(settings.language, `settings.placeholder.model.${providerType}` as never))
-          .onChange(async (value) => {
+          .onChange(this.debounceSettingsChange(async (value) => {
             await this.plugin.updateProviderSettings({ model: value.trim() });
-          });
+          }));
       });
     }
 
@@ -192,9 +192,9 @@ export class SettingsTab extends PluginSettingTab {
         text
           .setValue(provider?.baseUrl ?? "")
           .setPlaceholder(t(settings.language, `settings.placeholder.baseUrl.${providerType}` as never))
-          .onChange(async (value) => {
+          .onChange(this.debounceSettingsChange(async (value) => {
             await this.plugin.updateProviderSettings({ baseUrl: value.trim() });
-          });
+          }));
       });
     }
 
@@ -209,9 +209,9 @@ export class SettingsTab extends PluginSettingTab {
           .setValue(provider?.secretRef ?? "")
           .setPlaceholder(t(settings.language, `settings.placeholder.secretRef.${providerType}` as never))
           .setDisabled(!secretAvailable)
-          .onChange(async (value) => {
+          .onChange(this.debounceSettingsChange(async (value) => {
             await this.plugin.updateProviderSettings({ secretRef: value.trim() });
-          });
+          }));
       });
 
       const apiKeySetting = new Setting(containerEl)
@@ -299,12 +299,12 @@ export class SettingsTab extends PluginSettingTab {
       .addText((text) => {
         text
           .setValue(activeProfile.name)
-          .onChange(async (value) => {
+          .onChange(this.debounceSettingsChange(async (value) => {
             const result = await this.plugin.updateRawRefinedSettings({
               name: value.trim() || activeProfile.name,
             });
             this.handleBlockConfigResult(result);
-          });
+          }));
       });
 
     new Setting(section)
@@ -312,12 +312,12 @@ export class SettingsTab extends PluginSettingTab {
       .addText((text) => {
         text
           .setValue(activeProfile.description ?? "")
-          .onChange(async (value) => {
+          .onChange(this.debounceSettingsChange(async (value) => {
             const result = await this.plugin.updateRawRefinedSettings({
               description: value,
             });
             this.handleBlockConfigResult(result);
-          });
+          }));
       });
 
     const actions = section.createDiv({ cls: "obsidian-refined-layer-actions" });
@@ -443,12 +443,12 @@ export class SettingsTab extends PluginSettingTab {
     whitelistArea.inputEl.rows = 5;
     whitelistArea.inputEl.cols = 40;
     whitelistArea.setValue(profile.tagWhitelist.join("\n"));
-    whitelistArea.onChange(async (value) => {
+    whitelistArea.onChange(this.debounceSettingsChange(async (value) => {
       const result = await this.plugin.updateRawRefinedSettings({
         tagWhitelist: normalizeTagList(value),
       });
       this.handleBlockConfigResult(result);
-    });
+    }));
 
     const tagPromptSetting = new Setting(tagContainer)
       .setName(t(settings.language, "settings.title.tagPrompt"))
@@ -458,12 +458,12 @@ export class SettingsTab extends PluginSettingTab {
     tagPromptArea.inputEl.rows = 4;
     tagPromptArea.inputEl.cols = 40;
     tagPromptArea.setValue(profile.tagPrompt);
-    tagPromptArea.onChange(async (value) => {
+    tagPromptArea.onChange(this.debounceSettingsChange(async (value) => {
       const result = await this.plugin.updateRawRefinedSettings({
         tagPrompt: value,
       });
       this.handleBlockConfigResult(result);
-    });
+    }));
   }
 
   private addPromptObservationSettings(containerEl: HTMLElement, settings: PluginSettings): void {
@@ -550,10 +550,10 @@ export class SettingsTab extends PluginSettingTab {
       .addText((text) => {
         text
           .setValue(block.name)
-          .onChange(async (value) => {
+          .onChange(this.debounceSettingsChange(async (value) => {
             const name = value.trim() || block.name;
             await this.updateABlock(block.id, { name, heading: name });
-          });
+          }));
       });
 
     new Setting(blockEl)
@@ -562,11 +562,11 @@ export class SettingsTab extends PluginSettingTab {
         text
           .setPlaceholder("2")
           .setValue(String(block.headingLevel))
-          .onChange(async (value) => {
+          .onChange(this.debounceSettingsChange(async (value) => {
             await this.updateABlock(block.id, {
               headingLevel: parseHeadingLevel(value, block.headingLevel),
             });
-          });
+          }));
       });
 
     new Setting(blockEl)
@@ -575,12 +575,12 @@ export class SettingsTab extends PluginSettingTab {
         text
           .setPlaceholder(String(block.order))
           .setValue(String(block.order))
-          .onChange(async (value) => {
+          .onChange(this.debounceSettingsChange(async (value) => {
             const parsed = Number.parseInt(value, 10);
             await this.updateABlock(block.id, {
               order: Number.isFinite(parsed) ? parsed : block.order,
             });
-          });
+          }));
       });
 
     const promptSetting = new Setting(blockEl)
@@ -590,9 +590,9 @@ export class SettingsTab extends PluginSettingTab {
     promptArea.inputEl.rows = 4;
     promptArea.inputEl.cols = 40;
     promptArea.setValue(block.prompt);
-    promptArea.onChange(async (value) => {
+    promptArea.onChange(this.debounceSettingsChange(async (value) => {
       await this.updateABlock(block.id, { prompt: value });
-    });
+    }));
 
     new Setting(blockEl)
       .setName(t(settings.language, "settings.title.deleteABlock"))
@@ -616,10 +616,10 @@ export class SettingsTab extends PluginSettingTab {
       .addText((text) => {
         text
           .setValue(block.name)
-          .onChange(async (value) => {
+          .onChange(this.debounceSettingsChange(async (value) => {
             const name = value.trim() || block.name;
             await this.updateBBlock({ name, heading: name });
-          });
+          }));
       });
 
     new Setting(containerEl)
@@ -628,11 +628,11 @@ export class SettingsTab extends PluginSettingTab {
         text
           .setPlaceholder("2")
           .setValue(String(block.headingLevel))
-          .onChange(async (value) => {
+          .onChange(this.debounceSettingsChange(async (value) => {
             await this.updateBBlock({
               headingLevel: parseHeadingLevel(value, block.headingLevel),
             });
-          });
+          }));
       });
   }
 
@@ -667,6 +667,21 @@ export class SettingsTab extends PluginSettingTab {
     if (redisplay) {
       this.display();
     }
+  }
+
+  private debounceSettingsChange<T>(
+    handler: (value: T) => Promise<void> | void,
+    delayMs = 500,
+  ): (value: T) => void {
+    let timer: number | undefined;
+    return (value: T) => {
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+      timer = window.setTimeout(() => {
+        void handler(value);
+      }, delayMs);
+    };
   }
 }
 

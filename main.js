@@ -576,8 +576,11 @@ var ObsidianRefineRunLogger = class {
     if (!await adapter.exists(REFINE_RUN_LOG_PATH)) {
       await adapter.mkdir(REFINE_RUN_LOG_PATH);
     }
-    const current = await adapter.exists(this.filePath) ? await adapter.read(this.filePath).catch(() => "") : "";
-    await adapter.write(this.filePath, current + nextLine);
+    if (await adapter.exists(this.filePath)) {
+      await adapter.append(this.filePath, nextLine);
+      return;
+    }
+    await adapter.write(this.filePath, nextLine);
   }
 };
 function sanitizeFileName(value) {
@@ -839,11 +842,11 @@ var ObsidianSessionStore = class {
         data[notePath] = persisted;
       }
     }
-    const payload = {
+    const payload = redactSensitiveStrings({
       version: 1,
       updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
       sessionsByNotePath: data
-    };
+    });
     const json2 = JSON.stringify(payload);
     if (containsSecretPattern3(json2)) {
       throw new Error("Session persistence blocked: serialized data contains potential secret patterns.");
@@ -17762,7 +17765,9 @@ var CheckEligibilityUseCase = class {
       notePath: activeNote.note.path,
       noteTitle: activeNote.note.title,
       rawContentLength: activeNote.note.content.length,
-      ...statusValue ? { status: statusValue } : {}
+      ...statusValue ? { status: statusValue } : {},
+      ...failureReasons.length === 0 ? { note: activeNote.note } : {},
+      ...bBlockResult.ok && failureReasons.length === 0 ? { bBlock: bBlockResult.block } : {}
     };
   }
 };
@@ -17792,6 +17797,58 @@ var RetryAttemptRunner = class {
   }
 };
 
+// src/application/FailedAttemptFactory.ts
+function buildFailedAttemptRecord(input) {
+  const {
+    ctx,
+    attemptIndex,
+    errorSummary,
+    llmProvider,
+    settings,
+    llmResponse,
+    providerUsage,
+    validationSnapshotOverrides
+  } = input;
+  const responseSnapshot = llmResponse ? {
+    rawText: llmResponse.rawText,
+    extractedJsonText: void 0,
+    parsedJson: llmResponse.parsedJson,
+    usage: providerUsage != null ? providerUsage : llmResponse.usage
+  } : void 0;
+  return {
+    id: `${ctx.errorSessionId}-attempt-${attemptIndex}`,
+    errorSessionId: ctx.errorSessionId,
+    attemptIndex,
+    createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+    provider: llmProvider.providerId,
+    model: llmProvider.model,
+    workflowProfileId: "raw-refined",
+    schemaVersion: "0.2",
+    notePath: ctx.notePath,
+    noteTitle: ctx.noteTitle,
+    blockConfigSnapshot: {
+      protectH1: settings.protectH1,
+      aBlocks: settings.aBlocks,
+      bBlock: settings.bBlock,
+      tagWhitelist: settings.tagWhitelist
+    },
+    requestSnapshot: {
+      messages: ctx.request.messages,
+      schemaName: ctx.request.schemaName,
+      schemaVersion: ctx.request.schemaVersion,
+      metadata: ctx.request.metadata
+    },
+    responseSnapshot,
+    validationSnapshot: validationSnapshotOverrides ? {
+      jsonExtractionError: typeof validationSnapshotOverrides.jsonExtractionError === "string" ? validationSnapshotOverrides.jsonExtractionError : void 0,
+      zodError: validationSnapshotOverrides.zodError,
+      normalizationReport: validationSnapshotOverrides.normalizationReport,
+      policyErrors: validationSnapshotOverrides.policyErrors
+    } : void 0,
+    errorSummary
+  };
+}
+
 // src/application/CreateProposalUseCase.ts
 var ERROR_SESSION_CACHE_DISPLAY_PATH = ".obsidian/plugins/obsidian-refined-layer/error-session-cache/";
 var CreateProposalUseCase = class {
@@ -17806,7 +17863,6 @@ var CreateProposalUseCase = class {
     this.statusReporter = statusReporter;
     this.runLogger = runLogger;
     this.tokenUsageReporter = new TokenUsageReporter();
-    this.blockExtractor = new BlockExtractor();
     this.runStartedAt = Date.now();
     this.lastLogAt = this.runStartedAt;
     this.runId = runId != null ? runId : createSessionId().replace("proposal-session", "refine-run");
@@ -17941,41 +17997,22 @@ ${userPrompt}`,
       });
       return { kind: "eligibility-failed", eligibility: activeNote };
     }
-    const lookup = await this.noteRepository.getActiveNote();
-    if (lookup.kind !== "markdown") {
+    if (!activeNote.note || !activeNote.bBlock) {
       this.reportStatus("failed");
       await this.logEvent("run-end", {
         stage: "failed",
         resultKind: "eligibility-failed",
-        errorSummary: lookup.kind
+        errorSummary: "eligible note context was unavailable"
       });
       return { kind: "eligibility-failed", eligibility: activeNote };
     }
+    const note = activeNote.note;
+    const bBlock = activeNote.bBlock;
     await this.logEvent("stage", {
-      notePath: lookup.note.path,
-      noteTitle: lookup.note.title,
-      noteContentChars: lookup.note.content.length
+      notePath: note.path,
+      noteTitle: note.title,
+      noteContentChars: note.content.length
     });
-    const bBlockExtract = this.blockExtractor.extract(
-      lookup.note.content,
-      this.settings.bBlock
-    );
-    if (!bBlockExtract.ok) {
-      this.reportStatus("failed");
-      await this.logEvent("run-end", {
-        stage: "failed",
-        resultKind: "validation-failed",
-        errorSummary: `${bBlockExtract.error.code}: ${bBlockExtract.error.message}`
-      });
-      return {
-        kind: "validation-failed",
-        errors: [{
-          layer: "content",
-          code: bBlockExtract.error.code,
-          message: bBlockExtract.error.message
-        }]
-      };
-    }
     if (!this.llmProvider.generateProposalV2) {
       this.reportStatus("failed");
       await this.logEvent("run-end", {
@@ -17996,16 +18033,16 @@ ${userPrompt}`,
     this.reportStatus("building-prompt");
     await this.logEvent("stage", {
       stage: "building-prompt",
-      protectedBlockChars: bBlockExtract.block.text.length,
+      protectedBlockChars: bBlock.text.length,
       enabledABlockCount: this.settings.aBlocks.filter((b) => b.enabled).length,
       tagWhitelistCount: this.settings.tagWhitelist.length
     });
     const { request, debugSnapshot } = promptBuilder.build({
       provider: this.llmProvider.providerId,
       model: this.llmProvider.model,
-      notePath: lookup.note.path,
-      noteTitle: lookup.note.title,
-      noteContent: bBlockExtract.block.text,
+      notePath: note.path,
+      noteTitle: note.title,
+      noteContent: bBlock.text,
       aBlocks: this.settings.aBlocks.filter((b) => b.enabled),
       tagWhitelist: this.settings.tagWhitelist,
       tagPrompt: this.settings.tagPrompt
@@ -18014,10 +18051,10 @@ ${userPrompt}`,
     const ctx = {
       request,
       debugSnapshot,
-      noteContent: lookup.note.content,
-      notePath: lookup.note.path,
-      noteTitle: lookup.note.title,
-      bBlockText: bBlockExtract.block.text,
+      noteContent: note.content,
+      notePath: note.path,
+      noteTitle: note.title,
+      bBlockText: bBlock.text,
       errorSessionId
     };
     await this.logEvent("stage", {
@@ -18054,14 +18091,9 @@ ${userPrompt}`,
     try {
       llmResponse = await this.llmProvider.generateProposalV2(ctx.request);
     } catch (error51) {
-      const failedAttempt = this.buildFailedAttempt(
-        ctx,
-        attemptIndex,
-        `Provider call failed: ${toSafeErrorMessage(error51)}`,
-        void 0,
-        void 0,
-        {}
-      );
+      const failedAttempt = this.buildFailedAttempt(ctx, attemptIndex, `Provider call failed: ${toSafeErrorMessage(error51)}`, {
+        validationSnapshotOverrides: {}
+      });
       this.observePrompt(ctx, {
         validationSnapshot: {
           errorSummary: failedAttempt.errorSummary
@@ -18104,14 +18136,11 @@ ${userPrompt}`,
     });
     const zodValidation = this.proposalValidator.validateV2Output(llmResponse.rawText);
     if (!zodValidation.ok) {
-      const failedAttempt = this.buildFailedAttempt(
-        ctx,
-        attemptIndex,
-        "Zod validation failed: proposal does not match v0.2 schema.",
+      const failedAttempt = this.buildFailedAttempt(ctx, attemptIndex, "Zod validation failed: proposal does not match v0.2 schema.", {
         llmResponse,
-        llmResponse.usage,
-        { zodError: zodValidation.zodError }
-      );
+        providerUsage: llmResponse.usage,
+        validationSnapshotOverrides: { zodError: zodValidation.zodError }
+      });
       this.observePrompt(ctx, {
         responseSnapshot: {
           rawText: llmResponse.rawText,
@@ -18142,14 +18171,11 @@ ${userPrompt}`,
     const normalizer = new ProposalNormalizer();
     const normalized = normalizer.normalize(zodValidation.proposal, this.settings);
     if (normalized.validation.status === "invalid") {
-      const failedAttempt = this.buildFailedAttempt(
-        ctx,
-        attemptIndex,
-        "Normalization invalid: no acceptable blocks after filtering.",
+      const failedAttempt = this.buildFailedAttempt(ctx, attemptIndex, "Normalization invalid: no acceptable blocks after filtering.", {
         llmResponse,
-        llmResponse.usage,
-        { normalizationReport: normalized.validation }
-      );
+        providerUsage: llmResponse.usage,
+        validationSnapshotOverrides: { normalizationReport: normalized.validation }
+      });
       this.observePrompt(ctx, {
         responseSnapshot: {
           rawText: llmResponse.rawText,
@@ -18259,45 +18285,15 @@ ${userPrompt}`,
       validationSnapshot: snapshot.validationSnapshot
     });
   }
-  buildFailedAttempt(ctx, attemptIndex, errorSummary, llmResponse, providerUsage, validationSnapshotOverrides) {
-    const responseSnapshot = llmResponse ? {
-      rawText: llmResponse.rawText,
-      extractedJsonText: void 0,
-      parsedJson: llmResponse.parsedJson,
-      usage: providerUsage != null ? providerUsage : llmResponse.usage
-    } : void 0;
-    return {
-      id: `${ctx.errorSessionId}-attempt-${attemptIndex}`,
-      errorSessionId: ctx.errorSessionId,
+  buildFailedAttempt(ctx, attemptIndex, errorSummary, options) {
+    return buildFailedAttemptRecord({
+      ctx,
       attemptIndex,
-      createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-      provider: this.llmProvider.providerId,
-      model: this.llmProvider.model,
-      workflowProfileId: "raw-refined",
-      schemaVersion: "0.2",
-      notePath: ctx.notePath,
-      noteTitle: ctx.noteTitle,
-      blockConfigSnapshot: {
-        protectH1: this.settings.protectH1,
-        aBlocks: this.settings.aBlocks,
-        bBlock: this.settings.bBlock,
-        tagWhitelist: this.settings.tagWhitelist
-      },
-      requestSnapshot: {
-        messages: ctx.request.messages,
-        schemaName: ctx.request.schemaName,
-        schemaVersion: ctx.request.schemaVersion,
-        metadata: ctx.request.metadata
-      },
-      responseSnapshot,
-      validationSnapshot: validationSnapshotOverrides ? {
-        jsonExtractionError: typeof validationSnapshotOverrides.jsonExtractionError === "string" ? validationSnapshotOverrides.jsonExtractionError : void 0,
-        zodError: validationSnapshotOverrides.zodError,
-        normalizationReport: validationSnapshotOverrides.normalizationReport,
-        policyErrors: validationSnapshotOverrides.policyErrors
-      } : void 0,
-      errorSummary
-    };
+      errorSummary,
+      llmProvider: this.llmProvider,
+      settings: this.settings,
+      ...options
+    });
   }
   async handleRetrySuccess(session, failedAttempts, attemptsUsed) {
     let errorCacheWritten = false;
@@ -18637,7 +18633,7 @@ var SaveDraftUseCase = class {
     const fileName = `${sanitizeFileName2(session.noteTitle)}-${session.id}.md`;
     const draftPath = `${this.settings.draftFolder}/${fileName}`;
     const refinedSections = editedRefinedSections != null ? editedRefinedSections : session.proposal.refinedSections;
-    const content = [
+    const content = redactSensitiveText([
       `# Refined Layer Draft`,
       ``,
       `- source note path: ${session.notePath}`,
@@ -18653,7 +18649,7 @@ var SaveDraftUseCase = class {
       ``,
       ...((_c = session.proposal.warnings) == null ? void 0 : _c.length) ? session.proposal.warnings : ["none"],
       ``
-    ].join("\n");
+    ].join("\n"));
     await this.noteFilePort.writeDraft(draftPath, content);
     session.status = "saved_as_draft";
     session.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
@@ -20293,10 +20289,10 @@ var SettingsTab = class extends import_obsidian7.PluginSettingTab {
     });
     new import_obsidian7.Setting(containerEl).setName(t(settings.language, "settings.title.sessionCache")).setDesc(t(settings.language, "settings.desc.sessionCache"));
     new import_obsidian7.Setting(containerEl).setName(t(settings.language, "settings.title.sessionCacheLimit")).setDesc(t(settings.language, "settings.desc.sessionCacheLimit")).addText((text) => {
-      text.setPlaceholder("5").setValue(String(settings.sessionCache.limit)).onChange(async (value) => {
+      text.setPlaceholder("5").setValue(String(settings.sessionCache.limit)).onChange(this.debounceSettingsChange(async (value) => {
         const parsed = Number.parseInt(value, 10);
         await this.plugin.updateSessionCacheSettings({ limit: parsed });
-      });
+      }));
     });
     new import_obsidian7.Setting(containerEl).setName(t(settings.language, "settings.title.sessionCacheLocation")).setDesc(sessionCacheInfo.cachePath);
     new import_obsidian7.Setting(containerEl).setName(t(settings.language, "settings.title.openSessionCache")).setDesc(t(settings.language, "settings.desc.openSessionCache")).addButton((button) => {
@@ -20312,10 +20308,10 @@ var SettingsTab = class extends import_obsidian7.PluginSettingTab {
     new import_obsidian7.Setting(containerEl).setName(t(settings.language, "settings.title.errorSessionCacheLimit")).setDesc(t(settings.language, "settings.desc.errorSessionCacheLimit", {
       defaultLimit: errorSessionCacheInfo.defaultLimit
     })).addText((text) => {
-      text.setPlaceholder(String(errorSessionCacheInfo.defaultLimit)).setValue(String(settings.errorSessionCache.limit)).onChange(async (value) => {
+      text.setPlaceholder(String(errorSessionCacheInfo.defaultLimit)).setValue(String(settings.errorSessionCache.limit)).onChange(this.debounceSettingsChange(async (value) => {
         const parsed = Number.parseInt(value, 10);
         await this.plugin.updateErrorSessionCacheSettings({ limit: parsed });
-      });
+      }));
     });
     new import_obsidian7.Setting(containerEl).setName(t(settings.language, "settings.title.errorSessionCacheLocation")).setDesc(errorSessionCacheInfo.cachePath);
     containerEl.createEl("p", {
@@ -20334,9 +20330,9 @@ var SettingsTab = class extends import_obsidian7.PluginSettingTab {
     this.addTagConfigSettings(profileContainer, settings);
     this.addPromptObservationSettings(profileContainer, settings);
     new import_obsidian7.Setting(containerEl).setName(t(settings.language, "settings.title.draftFolder")).setDesc(t(settings.language, "settings.desc.draftFolder")).addText((text) => {
-      text.setValue(settings.draftFolder).onChange(async (value) => {
+      text.setValue(settings.draftFolder).onChange(this.debounceSettingsChange(async (value) => {
         await this.plugin.updateSettings({ draftFolder: value.trim() || settings.draftFolder });
-      });
+      }));
     });
     const providerSetting = new import_obsidian7.Setting(containerEl).setName(t(settings.language, "settings.title.providerType")).setDesc(secretAvailable ? t(settings.language, "settings.desc.providerType") : t(settings.language, "settings.warning.secretUnavailable"));
     providerSetting.addDropdown((dropdown) => {
@@ -20358,27 +20354,27 @@ var SettingsTab = class extends import_obsidian7.PluginSettingTab {
       const modelSetting = new import_obsidian7.Setting(containerEl).setName(t(settings.language, "settings.title.providerModel")).setDesc(t(settings.language, "settings.desc.providerModel"));
       modelSetting.addText((text) => {
         var _a6;
-        text.setValue((_a6 = provider == null ? void 0 : provider.model) != null ? _a6 : "").setPlaceholder(t(settings.language, `settings.placeholder.model.${providerType}`)).onChange(async (value) => {
+        text.setValue((_a6 = provider == null ? void 0 : provider.model) != null ? _a6 : "").setPlaceholder(t(settings.language, `settings.placeholder.model.${providerType}`)).onChange(this.debounceSettingsChange(async (value) => {
           await this.plugin.updateProviderSettings({ model: value.trim() });
-        });
+        }));
       });
     }
     if (providerPreset.allowsBaseUrlEdit) {
       const baseUrlSetting = new import_obsidian7.Setting(containerEl).setName(t(settings.language, "settings.title.baseUrl")).setDesc(t(settings.language, "settings.desc.baseUrl"));
       baseUrlSetting.addText((text) => {
         var _a6;
-        text.setValue((_a6 = provider == null ? void 0 : provider.baseUrl) != null ? _a6 : "").setPlaceholder(t(settings.language, `settings.placeholder.baseUrl.${providerType}`)).onChange(async (value) => {
+        text.setValue((_a6 = provider == null ? void 0 : provider.baseUrl) != null ? _a6 : "").setPlaceholder(t(settings.language, `settings.placeholder.baseUrl.${providerType}`)).onChange(this.debounceSettingsChange(async (value) => {
           await this.plugin.updateProviderSettings({ baseUrl: value.trim() });
-        });
+        }));
       });
     }
     if (providerPreset.requiresSecret) {
       const secretRefSetting = new import_obsidian7.Setting(containerEl).setName(t(settings.language, "settings.title.secretRef")).setDesc(t(settings.language, "settings.desc.secretRef")).setDisabled(!secretAvailable);
       secretRefSetting.addText((text) => {
         var _a6;
-        text.setValue((_a6 = provider == null ? void 0 : provider.secretRef) != null ? _a6 : "").setPlaceholder(t(settings.language, `settings.placeholder.secretRef.${providerType}`)).setDisabled(!secretAvailable).onChange(async (value) => {
+        text.setValue((_a6 = provider == null ? void 0 : provider.secretRef) != null ? _a6 : "").setPlaceholder(t(settings.language, `settings.placeholder.secretRef.${providerType}`)).setDisabled(!secretAvailable).onChange(this.debounceSettingsChange(async (value) => {
           await this.plugin.updateProviderSettings({ secretRef: value.trim() });
-        });
+        }));
       });
       const apiKeySetting = new import_obsidian7.Setting(containerEl).setName(t(settings.language, "settings.title.apiKey")).setDesc(t(settings.language, "settings.desc.apiKey")).setDisabled(!secretAvailable);
       if (secretAvailable) {
@@ -20446,21 +20442,21 @@ var SettingsTab = class extends import_obsidian7.PluginSettingTab {
       });
     });
     new import_obsidian7.Setting(section).setName(t(settings.language, "settings.title.profileName")).addText((text) => {
-      text.setValue(activeProfile.name).onChange(async (value) => {
+      text.setValue(activeProfile.name).onChange(this.debounceSettingsChange(async (value) => {
         const result = await this.plugin.updateRawRefinedSettings({
           name: value.trim() || activeProfile.name
         });
         this.handleBlockConfigResult(result);
-      });
+      }));
     });
     new import_obsidian7.Setting(section).setName(t(settings.language, "settings.title.profileDescription")).addText((text) => {
       var _a5;
-      text.setValue((_a5 = activeProfile.description) != null ? _a5 : "").onChange(async (value) => {
+      text.setValue((_a5 = activeProfile.description) != null ? _a5 : "").onChange(this.debounceSettingsChange(async (value) => {
         const result = await this.plugin.updateRawRefinedSettings({
           description: value
         });
         this.handleBlockConfigResult(result);
-      });
+      }));
     });
     const actions = section.createDiv({ cls: "obsidian-refined-layer-actions" });
     actions.createEl("button", { text: t(settings.language, "settings.button.addProfile") }).addEventListener("click", async () => {
@@ -20554,24 +20550,24 @@ var SettingsTab = class extends import_obsidian7.PluginSettingTab {
     whitelistArea.inputEl.rows = 5;
     whitelistArea.inputEl.cols = 40;
     whitelistArea.setValue(profile.tagWhitelist.join("\n"));
-    whitelistArea.onChange(async (value) => {
+    whitelistArea.onChange(this.debounceSettingsChange(async (value) => {
       const result = await this.plugin.updateRawRefinedSettings({
         tagWhitelist: normalizeTagList(value)
       });
       this.handleBlockConfigResult(result);
-    });
+    }));
     const tagPromptSetting = new import_obsidian7.Setting(tagContainer).setName(t(settings.language, "settings.title.tagPrompt")).setDesc(t(settings.language, "settings.desc.tagPrompt"));
     tagPromptSetting.controlEl.createDiv();
     const tagPromptArea = new import_obsidian7.TextAreaComponent(tagPromptSetting.controlEl);
     tagPromptArea.inputEl.rows = 4;
     tagPromptArea.inputEl.cols = 40;
     tagPromptArea.setValue(profile.tagPrompt);
-    tagPromptArea.onChange(async (value) => {
+    tagPromptArea.onChange(this.debounceSettingsChange(async (value) => {
       const result = await this.plugin.updateRawRefinedSettings({
         tagPrompt: value
       });
       this.handleBlockConfigResult(result);
-    });
+    }));
   }
   addPromptObservationSettings(containerEl, settings) {
     const profile = this.plugin.getActiveRefineProfile();
@@ -20626,25 +20622,25 @@ var SettingsTab = class extends import_obsidian7.PluginSettingTab {
       });
     });
     new import_obsidian7.Setting(blockEl).setName(t(settings.language, "settings.title.aBlockName")).addText((text) => {
-      text.setValue(block.name).onChange(async (value) => {
+      text.setValue(block.name).onChange(this.debounceSettingsChange(async (value) => {
         const name = value.trim() || block.name;
         await this.updateABlock(block.id, { name, heading: name });
-      });
+      }));
     });
     new import_obsidian7.Setting(blockEl).setName(t(settings.language, "settings.title.aBlockHeadingLevel")).addText((text) => {
-      text.setPlaceholder("2").setValue(String(block.headingLevel)).onChange(async (value) => {
+      text.setPlaceholder("2").setValue(String(block.headingLevel)).onChange(this.debounceSettingsChange(async (value) => {
         await this.updateABlock(block.id, {
           headingLevel: parseHeadingLevel(value, block.headingLevel)
         });
-      });
+      }));
     });
     new import_obsidian7.Setting(blockEl).setName(t(settings.language, "settings.title.aBlockOrder")).addText((text) => {
-      text.setPlaceholder(String(block.order)).setValue(String(block.order)).onChange(async (value) => {
+      text.setPlaceholder(String(block.order)).setValue(String(block.order)).onChange(this.debounceSettingsChange(async (value) => {
         const parsed = Number.parseInt(value, 10);
         await this.updateABlock(block.id, {
           order: Number.isFinite(parsed) ? parsed : block.order
         });
-      });
+      }));
     });
     const promptSetting = new import_obsidian7.Setting(blockEl).setName(t(settings.language, "settings.title.aBlockPrompt"));
     promptSetting.controlEl.createDiv();
@@ -20652,9 +20648,9 @@ var SettingsTab = class extends import_obsidian7.PluginSettingTab {
     promptArea.inputEl.rows = 4;
     promptArea.inputEl.cols = 40;
     promptArea.setValue(block.prompt);
-    promptArea.onChange(async (value) => {
+    promptArea.onChange(this.debounceSettingsChange(async (value) => {
       await this.updateABlock(block.id, { prompt: value });
-    });
+    }));
     new import_obsidian7.Setting(blockEl).setName(t(settings.language, "settings.title.deleteABlock")).setDesc(t(settings.language, "settings.desc.deleteABlock")).addButton((button) => {
       button.setButtonText(t(settings.language, "settings.button.deleteABlock")).onClick(async () => {
         const current = this.plugin.getActiveRefineProfile();
@@ -20667,17 +20663,17 @@ var SettingsTab = class extends import_obsidian7.PluginSettingTab {
   }
   addBBlockSettings(containerEl, settings, block) {
     new import_obsidian7.Setting(containerEl).setName(t(settings.language, "settings.title.bBlockName")).addText((text) => {
-      text.setValue(block.name).onChange(async (value) => {
+      text.setValue(block.name).onChange(this.debounceSettingsChange(async (value) => {
         const name = value.trim() || block.name;
         await this.updateBBlock({ name, heading: name });
-      });
+      }));
     });
     new import_obsidian7.Setting(containerEl).setName(t(settings.language, "settings.title.bBlockHeadingLevel")).addText((text) => {
-      text.setPlaceholder("2").setValue(String(block.headingLevel)).onChange(async (value) => {
+      text.setPlaceholder("2").setValue(String(block.headingLevel)).onChange(this.debounceSettingsChange(async (value) => {
         await this.updateBBlock({
           headingLevel: parseHeadingLevel(value, block.headingLevel)
         });
-      });
+      }));
     });
   }
   async updateABlock(id, partial2) {
@@ -20706,6 +20702,17 @@ var SettingsTab = class extends import_obsidian7.PluginSettingTab {
       this.display();
     }
   }
+  debounceSettingsChange(handler, delayMs = 500) {
+    let timer;
+    return (value) => {
+      if (timer !== void 0) {
+        window.clearTimeout(timer);
+      }
+      timer = window.setTimeout(() => {
+        void handler(value);
+      }, delayMs);
+    };
+  }
 };
 function parseHeadingLevel(value, fallback) {
   const parsed = Number.parseInt(value, 10);
@@ -20723,7 +20730,7 @@ var REFINE_COMMAND_ID = "refine-current-note";
 var REFINE_WITH_PROFILE_COMMAND_ID = "refine-current-note-with-profile";
 var REOPEN_LAST_PROPOSAL_COMMAND_ID = "reopen-last-proposal-for-current-note";
 var OPEN_CACHED_PROPOSAL_SESSION_COMMAND_ID = "open-cached-proposal-session";
-var ENABLE_REFINE_PERFORMANCE_LOGS = true;
+var ENABLE_REFINE_PERFORMANCE_LOGS = false;
 var ObsidianRefinedLayerPlugin = class extends import_obsidian8.Plugin {
   constructor() {
     super(...arguments);

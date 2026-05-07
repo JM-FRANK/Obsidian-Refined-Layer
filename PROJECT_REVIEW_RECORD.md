@@ -311,3 +311,348 @@ For the current D58 progress, the project is well structured and the automated e
 
 审查记录已写入：
 PROJECT_REVIEW_RECORD.md
+
+---
+
+## Review Run: 2026-05-07T02:05:59.0744597+09:00
+
+### 1. Review Scope
+
+- Reviewer: Codex
+- Project root: `D:\VibeCoding\Obsidian-Refined-Layer`
+- Review objective: 使用 `project-review-lifecycle` skill 审查从 D0/D1 到最新开发进度；执行全量代码审查，除安全、正确性、交付证据外，额外审查代码效率、非计划冗余代码、范围漂移。
+- Review mode: Full lifecycle review from D1/Day1 through latest progress and final-readiness posture
+- Included areas:
+  - Technical plan / architecture / design, including v0.1.0 archive, v0.2.0, and v0.2.1 documents where present
+  - Daily plan and dev-log from D1 through latest logged Dn
+  - agent-troubleshooting-log
+  - Full source-tree review by module, with targeted deep dives into security, persistence, UI wiring, provider, caches, apply path, run status/logging, and settings
+  - Tests / typecheck / declared checks that do not modify code files
+  - Efficiency, duplicate/dead/redundant code, scope creep, and maintainability
+  - Git-assisted investigation only when needed
+- Excluded areas:
+  - No source, test, config, lockfile, build output, vault note, dependency, or environment modification.
+  - `npm run build` intentionally skipped because it may rewrite `main.js`, and the user explicitly asked not to modify code files.
+  - No dependency installation, deployment, publishing, production service calls, migrations, or destructive Git commands.
+- Assumptions:
+  - The user requested a D0-to-latest full lifecycle review, so full-log/full-doc review is allowed despite normal sliding-window rules.
+  - `PROJECT_REVIEW_RECORD.md` is the only file this review may modify.
+  - "D0" maps to baseline sections (`## 0`) plus D1 onward because the project logs use D1+ rather than a separate D0 implementation entry.
+
+### 2. Project File Discovery
+
+Initial discovery found active v0.2.0/v0.2.1 architecture and daily-plan documents, archived v0.1.0 and v0.2.0 documents, active `docs/dev-log.md`, archived `docs/achieve/dev-log-achieve.md`, source modules under `src`, tests under `tests`, delivery/test-matrix docs, and the requested skill at `.agnets\skills\project-review-lifecycle\SKILL.md`.
+
+Further sections below are completed after deeper review.
+
+#### 2.1 Key Files Found
+
+| Category | File(s) | Notes |
+|---|---|---|
+| Technical plan / architecture | `docs/obsidian-refined-layer-architecture-v0.2.1-agent.md`; `docs/obsidian-refined-layer-architecture-v0.2.0-agent.md`; `docs/achieve/Obsidian Refined Layer 插件架构书 v0.1.0 Codex执行版.md` | v0.2.1 is active; v0.2.0 and v0.1.0 are retained as baseline/archive. |
+| Daily plan | `docs/obsidian-refined-layer-v0.2.1-daily-plan.md`; `docs/obsidian-refined-layer-v0.2.0-daily-plan.md`; archived v0.1.0 plan | Latest active plan is Phase 17 / v0.2.1. |
+| dev-log | `docs/dev-log.md`; `docs/achieve/dev-log-achieve.md` | Active log now reaches D79 / D79.1; archive covers D1-D35. |
+| Agent troubleshooting log | `agent-troubleshooting-log.md` | Covers D40.1, D42, D47. No new unresolved troubleshooting entries were found. |
+| Test config | `vitest.config.ts`; `tests/**` | 35 test files discovered. |
+| Build config | `package.json`; `esbuild.config.mjs`; `tsconfig.json` | Version now `0.2.1`; build script exists but was intentionally skipped this run. |
+| Acceptance evidence | `docs/delivery-checklist-v0.2.md`; `docs/delivery-checklist-v0.2.1.md`; `docs/test-matrix-v0.2.md`; `docs/test-matrix-v0.2.1.md`; README | v0.2.1 delivery checklist exists; real provider live smoke remains manual/deferred. |
+
+#### 2.2 Missing or Ambiguous Files
+
+| Expected Item | Status | Impact |
+|---|---|---|
+| Real provider live smoke evidence in this workspace | Missing by environment, documented in delivery checklist | Non-blocking if accepted as manual release smoke; remains evidence gap for final real-provider confidence. |
+| Lint command | No declared script | Non-blocking; typecheck/test are strong. |
+
+#### 2.3 Discovery Method
+
+- Standard file-name matches: `AGENTS.md`, `README.md`, `package.json`, `docs/dev-log.md`, `agent-troubleshooting-log.md`, delivery checklists, test matrices.
+- File-name/path scanning: `rg --files`; targeted `rg -n` for Dn markers, risks, redaction, cache, apply, performance, and scope keywords.
+- Candidate title/first-line reads: active/archived architecture and daily-plan headings, delivery/test matrix docs.
+- Full-content discovery avoided: No. User requested D0-to-latest full lifecycle plus full code review, so broader reads were required.
+
+---
+
+### 3. Technical Plan Review
+
+| Dimension | Result | Notes | Issue Reference |
+|---|---|---|---|
+| Goal alignment | Good | v0.2.1 remains a single-note review-first raw-refined workflow with profile templates and run status, not a workflow platform. |  |
+| Module boundary clarity | Acceptable | Core/Application/Adapters/UI boundaries mostly hold, but `main.ts` and `CreateProposalUseCase` are now large orchestration hubs. | ISSUE-004 |
+| Technology choice rationality | Good | TypeScript, Obsidian APIs, Zod, Vitest, esbuild remain appropriate. |  |
+| Complexity control | Acceptable | v1/v2 compatibility, profiles, status, logging, caches, and settings are controlled by tests, but complexity is accumulating. | ISSUE-004 |
+| Maintainability | Acceptable | Test coverage is good; Settings and composition-root growth should be contained soon. | ISSUE-003, ISSUE-004 |
+| Extensibility | Acceptable | RefineProfile gives template flexibility without adding multi-workflow platform behavior. |  |
+| Security | Acceptable | v2 cache redaction gap from the prior review is fixed; legacy v1 cache/draft path still lacks recursive string redaction. | ISSUE-001 |
+| Test and acceptance feasibility | Good | 325 automated tests pass; v0.2.1 delivery checklist and test matrix exist. Live real-provider smoke remains manual. | ISSUE-006 |
+
+#### Technical Plan Summary
+
+- Strengths: v0.2.0 delivery was completed and v0.2.1 adds profiles/run status without obvious scope explosion. ApplyPlan and validation boundaries remain tested.
+- Risks: legacy v1 paths and orchestration growth are the main remaining maintainability/security edges.
+- Delivery impact: Code-level delivery is credible; acceptance should be conditional on live real-provider smoke and follow-up cleanup of non-primary paths/performance ergonomics.
+
+---
+
+### 4. Daily Process Review
+
+| Day / Date | Planned Work | Logged Progress | Evidence | Gaps / Risks | Issue Reference |
+|---|---|---|---|---|---|
+| Baseline / D0 equivalent | Current state baseline sections | Present in v0.1/v0.2/v0.2.1 plans | `## 0` sections exist | No separate D0 implementation log; acceptable because project uses D1+ |  |
+| D1-D35 | v0.1.0 implementation and fixes | Completed/archive | Archived dev-log; v0.1 delivery checklist | Legacy v1 compatibility remains reachable | ISSUE-001 |
+| D36-D69 | v0.2.0 configurable A/B workflow | Completed | Active dev-log Phase 9-15; delivery checklist v0.2 | Real provider live smoke documented as manual gap | ISSUE-006 |
+| D70 Phase 16 | Real Obsidian/prompt fix | Completed | Schema allows empty A block content; focused tests logged | No material issue found |  |
+| D70-D76 v0.2.1 | docs, RefineProfile, Settings profile UI, command profile picker, run status, session/draft regression, docs/checklist | Completed | v0.2.1 daily plan/log/checklist/test matrix; current tests pass | Manual smoke still deferred | ISSUE-006 |
+| D77 | Settings grouping and tag UI de-dup | Completed | SettingsTab changed; i18n/build logged | SettingsTab still persists on every keystroke | ISSUE-003 |
+| D78 | Non-blocking Notice status + prompt input narrowing | Completed | Code uses protected block text in prompt; focused tests logged | README still says status window | ISSUE-005 |
+| D79 / D79.1 | Optional performance logs + runId alignment | Completed | Logger port/adapter; default off; runId tests logged | Logger append algorithm is inefficient if enabled for longer sessions | ISSUE-002 |
+
+#### Daily Process Summary
+
+- Clear progress evidence: D1-D79/D79.1 are traceable through plans, logs, tests, and source.
+- Missing or ambiguous days: D70 appears once as Phase 16 and once as v0.2.1 D70; this is understandable from logs but mildly confusing.
+- Claimed completion without evidence: No major unsupported code-completion claim found. Real provider live smoke remains explicitly deferred, not falsely claimed.
+- Scope changes: v0.2.1 profile/run-status scope is documented and bounded.
+- Delivery impact: Current code is in a conditional delivery state, with follow-up items but no observed build/type/test blocker.
+
+---
+
+### 5. Dev Log Review
+
+- Supports daily plan: Yes
+- Records important implementation changes: Yes
+- Records blockers and decisions: Yes
+- Consistent with code and tests: Yes, with minor documentation drift
+
+#### Findings
+
+| Finding | Evidence | Issue Reference |
+|---|---|---|
+| Prior ISSUE-001 was addressed in v2 cache stores. | `ObsidianSessionCacheV2Store` and `ObsidianErrorSessionCacheStore` now call `redactSensitiveStrings()`; tests cover redaction. |  |
+| D78 changed run status from modal/window to non-blocking Notice, but README still says "运行状态窗口". | README line 81 vs `RefineRunStatusNotice`. | ISSUE-005 |
+| D79 performance logging is default-off and safe by content, but append implementation reads and rewrites the full file per event. | `ObsidianRefineRunLogger.ts:34-36`. | ISSUE-002 |
+
+---
+
+### 6. Agent Troubleshooting Review
+
+- Troubleshooting issues recorded: Yes
+- Failed attempts explained: Yes
+- Root causes identified: Yes
+- Unresolved agent-related issues: No material unresolved item found
+
+#### Findings
+
+| Finding | Evidence | Issue Reference |
+|---|---|---|
+| D40.1 CRLF issue remains covered by tests. | Current tests pass. |  |
+| D47 type-union mistake was correctly resolved by separate v2 session-cache design. | Current code keeps v1 and v2 stores separate. |  |
+| No new D70-D79 troubleshooting entries were added; dev-log itself captures the real provider/prompt issue and D79.1 runId fix. | `agent-troubleshooting-log.md` stops at D47; `docs/dev-log.md` contains later operational fixes. |  |
+
+---
+
+### 7. Code Review
+
+#### 7.1 Areas Reviewed
+
+| Area / Module | Files | Review Focus | Result | Issue Reference |
+|---|---|---|---|---|
+| Refine pipeline | `src/application/CreateProposalUseCase.ts`; `src/application/RetryAttemptRunner.ts`; provider adapters | retry, prompt narrowing, status, observation, cache writing | Functional, but use case is large and double-reads active note | ISSUE-004, ISSUE-007 |
+| Apply path | `src/application/BuildApplyPlanUseCase.ts`; `src/application/ApplyDecisionUseCase.ts`; `src/core/apply/**`; `src/core/markdown/MarkdownAssembler.ts` | ApplyPlan-only write path, B block preservation, append-tags | v2 boundaries look correct; v1 compatibility remains separate |  |
+| Cache/redaction | `src/adapters/obsidian/*Session*Store.ts`; `src/runtime/redaction.ts`; `src/runtime/PromptObservationStore.ts` | secret storage boundaries, redaction, limits | v2 fixed; v1 legacy path still weaker | ISSUE-001 |
+| Settings UI | `src/ui/settings/SettingsTab.ts`; i18n | profile management, tag config, prompt observation, persistence | Feature-complete but high onChange write frequency and large single file | ISSUE-003, ISSUE-004 |
+| Performance logging | `src/application/RefineRunLogger.ts`; `src/adapters/obsidian/ObsidianRefineRunLogger.ts` | default-off logs, redaction, append efficiency | Safe content, inefficient append strategy if enabled | ISSUE-002 |
+| Docs/acceptance | README, delivery checklists, test matrices | user docs and release posture | Good overall; minor run-status wording drift and manual provider gap | ISSUE-005, ISSUE-006 |
+
+#### 7.2 Code Review Summary
+
+- Core functionality readiness: v0.2.1 code path is wired through `main.ts` using `executeV2()`, active profiles, v2 review/apply/draft/cache, and run status.
+- Architecture alignment: Mostly aligned, though `main.ts` and `CreateProposalUseCase.ts` are both over 800 lines and now combine several orchestration concerns.
+- Error handling and edge cases: Strong automated coverage; retry/exhaustion/cache/error paths pass tests.
+- Security-sensitive findings: v2 cache/draft/prompt-observation paths are redacted. Legacy v1 session/draft path still relies on key-name scans and unredacted draft content.
+- Efficiency findings: prompt content has been narrowed to B block text; remaining efficiency issues are settings write frequency, debug log append strategy, and duplicate note reads/parses.
+- Redundant/non-planned code findings: No evidence of non-planned external workflow platform, batch refine, MOC/link write, rename/move/archive/delete, or remove-tags in v2. Legacy v1 code remains by compatibility design, not accidental scope creep.
+
+---
+
+### 8. Test / Build / Lint / Typecheck Results
+
+| Command | Working Directory | Purpose | Result | Notes / Output Summary | Issue Reference |
+|---|---|---|---|---|---|
+| `Get-Content .agnets\skills\project-review-lifecycle\SKILL.md` | `D:\VibeCoding\Obsidian-Refined-Layer` | Load requested skill | Pass | Skill requires appending `PROJECT_REVIEW_RECORD.md` and final summary. |  |
+| `Get-Date -Format o` | same | Timestamp | Pass | `2026-05-07T02:05:59.0744597+09:00`. |  |
+| `git status --short` | same | Pre-review state | Pass | Initially clean. After review, only `PROJECT_REVIEW_RECORD.md` modified. |  |
+| `rg --files` | same | File discovery | Pass | Found active v0.2.1 docs, archived docs, 75 source files, 35 test files. |  |
+| `Get-Content package.json` | same | Command detection | Pass | Scripts: `build`, `dev`, `test`, `test:watch`, `typecheck`; version `0.2.1`. |  |
+| `npm run typecheck` | same | TypeScript verification | Pass | `tsc --noEmit` completed successfully. |  |
+| `npm test` | same | Automated tests | Pass | Vitest: 35 files, 325 tests passed. Expected `disk full` stderr from persistence-failure test. |  |
+| `npm run build` | same | Production build | Skipped | User required no code-file modification; build may rewrite `main.js`. Prior logs record D76/D79 build pass. |  |
+| Targeted `rg` / `Get-Content` reads | same | Full code/doc/log review | Pass | Reviewed latest logs, delivery docs, README, core application, UI, cache, apply, provider, settings, runtime utilities. |  |
+
+#### Command Detection Notes
+
+- Detected from: `package.json`.
+- Commands intentionally skipped: `npm run build`, `npm run dev`, watch commands.
+- Reason for skipped commands: `build` may modify `main.js`; dev/watch commands are long-running.
+
+---
+
+### 9. Git-Assisted Investigation
+
+| Reason Git Was Used | Command | Result Summary | Related Issue |
+|---|---|---|---|
+| Confirm review did not alter code files | `git status --short` | Only `PROJECT_REVIEW_RECORD.md` modified after this review. |  |
+
+- Git-assisted investigation used: Yes
+- Reason: Worktree hygiene and user no-code-modification constraint.
+
+---
+
+### 10. Issues Found
+
+### ISSUE-001: Legacy v1 session/draft path still lacks recursive string redaction
+
+- Severity: High
+- Type: Security
+- Location: `src/adapters/obsidian/ObsidianSessionStore.ts:65`; `src/application/SaveDraftUseCase.ts:40`; `src/application/SaveDraftUseCase.ts:58`; `src/application/SaveDraftUseCase.ts:83`
+- Found In: Code / Security
+- Description: v2 session-cache/error-cache/draft paths now redact string values before persistence, but the legacy v1 session store still only blocks sensitive key names, and v1 `SaveDraftUseCase.execute()` writes draft content without `redactSensitiveText()`. The v1 path remains reachable through legacy session recovery commands.
+- Impact: Primary v0.2.1 sessions are protected, but compatibility sessions can still violate the broad README/project claim that cache/draft outputs contain no API key, Authorization header, or provider secret.
+- Evidence: v1 store calls `containsSecretPattern(json)` at `ObsidianSessionStore.ts:65` but does not call `redactSensitiveStrings()`. v1 draft content is built at `SaveDraftUseCase.ts:40` and written at `SaveDraftUseCase.ts:58`; only v2 uses `redactSensitiveText()` at `SaveDraftUseCase.ts:83`.
+- Recommendation: Either apply the same recursive redaction to v1 persisted session/draft output, or clearly quarantine/disable legacy v1 draft export when old cached content contains secret-shaped values. Add tests mirroring v2 redaction tests.
+- Blocks Acceptance: No for primary v0.2.1 code delivery, but should be fixed before making an unconditional "all cache/draft paths are secret-safe" claim.
+- Status: Open
+
+### ISSUE-002: Optional performance logger appends by reading and rewriting the whole JSONL file per event
+
+- Severity: Medium
+- Type: Code Quality
+- Location: `src/adapters/obsidian/ObsidianRefineRunLogger.ts:34`; `src/adapters/obsidian/ObsidianRefineRunLogger.ts:36`; `src/main.ts:56`
+- Found In: Code / Performance
+- Description: The default-off performance logger is content-safe, but when enabled it reads the current log file and writes `current + nextLine` for every event. This is O(n²) over a run and will get worse if logs are left enabled for repeated real-provider investigations.
+- Impact: Not a normal runtime issue because `ENABLE_REFINE_PERFORMANCE_LOGS` is `false`, but it undermines the efficiency goal for the very diagnostic mode meant to investigate slow operations.
+- Evidence: `ObsidianRefineRunLogger.writeLine()` reads `this.filePath` at line 34 and rewrites the concatenated file at line 36.
+- Recommendation: Use adapter append support if available, or buffer events in memory and flush once at run-end. Add a simple max-file-size or per-run-only retention note if logs stay in the vault plugin directory.
+- Blocks Acceptance: No
+- Status: Open
+
+### ISSUE-003: Settings UI persists on every text change without debounce or explicit apply
+
+- Severity: Medium
+- Type: Code Quality
+- Location: `src/ui/settings/SettingsTab.ts:446`; `src/ui/settings/SettingsTab.ts:461`; `src/ui/settings/SettingsTab.ts:593`; plus many `onChange(async ...)` handlers
+- Found In: Code / Performance
+- Description: Settings text fields and textareas call plugin update methods directly on every change. For profile prompts, tag whitelist bulk editing, tag prompt, provider fields, block names/order, and cache limits, this means repeated validation and `data.json` writes while the user types.
+- Impact: Usually tolerable for small settings, but it is unnecessary churn and can make large prompt/tag edits feel laggy in Obsidian. It also increases the chance of transient invalid intermediate states producing notices while typing.
+- Evidence: `SettingsTab.ts` has more than 20 `onChange` handlers, including textarea handlers for tag whitelist, tag prompt, and A block prompt.
+- Recommendation: For text-heavy fields, use explicit Save/Apply buttons, debounce writes, or persist on blur. Keep immediate validation for simple toggles/dropdowns.
+- Blocks Acceptance: No
+- Status: Open
+
+### ISSUE-004: `main.ts` and `CreateProposalUseCase.ts` have grown into large orchestration hubs
+
+- Severity: Medium
+- Type: Code Quality
+- Location: `src/main.ts` (863 lines); `src/application/CreateProposalUseCase.ts` (804 lines); `src/main.ts:237`; `src/main.ts:270`; `src/main.ts:657`; `src/main.ts:727`
+- Found In: Code / Architecture
+- Description: The code still respects the most important write and validation boundaries, but `main.ts` now contains settings mutation, profile management, provider selection, v1/v2 review/apply/draft flows, and notice wiring. `CreateProposalUseCase` now handles eligibility, B block extraction, prompt building, retry, provider calls, observation snapshots, run status, performance logging, failed-attempt construction, session construction, and cache persistence.
+- Impact: This is not a current bug, but it raises maintenance cost and makes future changes more likely to cross boundaries accidentally.
+- Evidence: `main.ts` is 863 lines; `CreateProposalUseCase.ts` is 804 lines. Key orchestration methods include `updateRawRefinedSettings`, `refineCurrentNote`, `applySelectedChangesV2`, and `selectLlmProvider`.
+- Recommendation: In the next cleanup phase, split provider factory/model-connection wiring, profile settings service, v2 review/apply coordinator, and refine run logging/status decoration into smaller application/adapters helpers. Keep `main.ts` as command registration and dependency composition.
+- Blocks Acceptance: No
+- Status: Open
+
+### ISSUE-005: README run-status wording is stale after D78 Notice migration
+
+- Severity: Low
+- Type: Documentation Mismatch
+- Location: `README.md:81`; `src/ui/refine/RefineRunStatusModal.ts:8`; `docs/dev-log.md:1146`
+- Found In: Documentation / Code
+- Description: README says refine shows a "运行状态窗口" and that closing the status window only closes the display layer. D78 changed the implementation from a modal/window to a non-blocking persistent Notice.
+- Impact: Minor user-facing mismatch. It does not affect runtime correctness.
+- Evidence: README line 81 uses window wording; implementation exports `RefineRunStatusNotice`.
+- Recommendation: Update README to say "运行状态通知 / non-blocking Notice" and remove the "关闭窗口" phrasing.
+- Blocks Acceptance: No
+- Status: Open
+
+### ISSUE-006: Real provider smoke remains a documented manual evidence gap
+
+- Severity: Medium
+- Type: Missing Evidence
+- Location: `docs/test-matrix-v0.2.1.md`; `docs/delivery-checklist-v0.2.1.md`; `docs/delivery-checklist-v0.2.md`
+- Found In: Acceptance
+- Description: Automated tests cover OpenAI-compatible provider behavior, redaction, and v2 request/response shape, but no live real-provider proposal generation was run in this workspace because SecretStorage/API key are unavailable.
+- Impact: This is acceptable as a documented release-smoke requirement, but it prevents a fully unconditional PASS for real-provider delivery confidence.
+- Evidence: v0.2.1 test matrix and delivery checklist both state real provider smoke requires a true Obsidian vault, SecretStorage, and API key.
+- Recommendation: Before release, run the documented Obsidian smoke: Test model connection, Refine current note with a real provider, Review UI open, Apply preserving B block, selectedTags append only, and cache secret inspection.
+- Blocks Acceptance: No, if accepted as a release-smoke condition.
+- Status: Open
+
+### ISSUE-007: v2 proposal creation still reads and parses the active note twice
+
+- Severity: Low
+- Type: Code Quality
+- Location: `src/application/CheckEligibilityUseCase.ts:52`; `src/application/CreateProposalUseCase.ts:259`; `src/application/CreateProposalUseCase.ts:273`; `src/application/CreateProposalUseCase.ts:291`
+- Found In: Code / Performance
+- Description: `executeV2()` calls `eligibilityUseCase.execute()`, which reads the active note and parses/checks it, then immediately calls `noteRepository.getActiveNote()` again and re-extracts the B block. D78 optimized prompt size, but this duplicate read/parse remains.
+- Impact: Low for small notes, but avoidable overhead for large notes and real-provider debugging. It also creates a tiny race window where the active file could change between eligibility and proposal construction.
+- Evidence: `CheckEligibilityUseCase.execute()` reads active note at line 52. `CreateProposalUseCase.executeV2()` calls eligibility at line 259, reads active note again at line 273, and extracts B block again at line 291.
+- Recommendation: Return the validated active note and extracted B block from eligibility, or introduce a `PrepareRefineInputUseCase` that performs one read and returns note + eligibility + B block context.
+- Blocks Acceptance: No
+- Status: Open
+
+---
+
+### 11. Acceptance Decision
+
+- Final decision: CONDITIONAL_PASS
+- Blocker issues: 0
+- High severity issues: 1
+- Medium severity issues: 4
+- Low severity issues: 2
+- Evidence gaps: 1
+
+#### Decision Rationale
+
+The project is broadly acceptable at the current code-delivery level: `typecheck` passes, all 325 tests pass, v0.2.1 delivery docs exist, v2 real-provider API support is implemented and tested, the previous v2 cache redaction blocker has been fixed, and no out-of-scope workflow-platform features were found. The decision is conditional because a legacy v1 secret-safety gap remains reachable, real-provider smoke is still manual, and several maintainability/efficiency issues should be tracked.
+
+#### Required Follow-up Before Unconditional Acceptance
+
+1. Run real-provider release smoke in an actual Obsidian vault with SecretStorage/API key.
+2. Fix or explicitly quarantine legacy v1 session/draft redaction behavior.
+
+#### Recommended Follow-up After Acceptance
+
+1. Replace performance logger read+rewrite append with append/buffered writes.
+2. Debounce or apply-button Settings text persistence.
+3. Split `main.ts` and `CreateProposalUseCase.ts` before adding more v0.2.1+ features.
+4. Refresh README run-status wording.
+
+---
+
+### 12. Review Artifacts
+
+| Artifact | Purpose | Notes |
+|---|---|---|
+| `PROJECT_REVIEW_RECORD.md` | Required review record | Appended by this skill run. |
+
+- Review artifact directory used: None
+
+---
+
+### 13. Final Short Summary
+
+审查结论：CONDITIONAL_PASS
+
+阻塞问题：0 个
+高风险问题：1 个
+中低风险问题：6 个
+证据不足项：1 个
+
+关键发现：
+1. 最新进度已到 v0.2.1 D79/D79.1；`npm run typecheck` 通过，`npm test` 35 files / 325 tests 全部通过，且本次未修改代码文件。
+2. 上次审查指出的 v2 cache redaction 阻塞问题已修复，真实 provider v2 路径也已实现并有自动化覆盖。
+3. 仍需跟进 legacy v1 session/draft redaction、真实 provider 手动 smoke、性能日志 append 策略、Settings 高频写入和组合根/use case 膨胀。
+
+审查记录已写入：
+PROJECT_REVIEW_RECORD.md

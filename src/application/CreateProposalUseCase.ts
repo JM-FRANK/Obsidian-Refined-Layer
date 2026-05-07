@@ -1,5 +1,4 @@
 import type { LlmProvider, LlmResponse } from "../adapters/llm/LlmProvider";
-import { BlockExtractor } from "../core/markdown/BlockExtractor";
 import { parseFrontmatter } from "../core/profile/FrontmatterParser";
 import type { RefineProfile } from "../core/profile/RefineProfile";
 import type { WorkflowProfile } from "../core/profile/WorkflowProfile";
@@ -27,6 +26,7 @@ import type { TokenUsageReport } from "../core/proposal/TokenUsageReport";
 import type { PromptObservationStore } from "../runtime/PromptObservationStore";
 import type { RefineRunLogger } from "./RefineRunLogger";
 import type { RefineRunStatusReporter, RefineRunStage } from "./RefineRunStatus";
+import { buildFailedAttemptRecord } from "./FailedAttemptFactory";
 
 export interface V2NoticePlan {
   attemptsUsed: number;
@@ -97,7 +97,6 @@ export class CreateProposalUseCase {
   private readonly proposalValidator: ProposalValidator;
   private readonly protectedRegionExtractor: ProtectedRegionExtractor;
   private readonly tokenUsageReporter = new TokenUsageReporter();
-  private readonly blockExtractor = new BlockExtractor();
   private readonly retryRunner: RetryAttemptRunner;
   private readonly errorSessionCache?: ErrorSessionCacheStore;
   private readonly sessionCacheV2?: SessionCacheV2Store;
@@ -272,43 +271,25 @@ export class CreateProposalUseCase {
       return { kind: "eligibility-failed", eligibility: activeNote };
     }
 
-    const lookup = await this.noteRepository.getActiveNote();
-    if (lookup.kind !== "markdown") {
+    if (!activeNote.note || !activeNote.bBlock) {
       this.reportStatus("failed");
       await this.logEvent("run-end", {
         stage: "failed",
         resultKind: "eligibility-failed",
-        errorSummary: lookup.kind,
+        errorSummary: "eligible note context was unavailable",
       });
       return { kind: "eligibility-failed", eligibility: activeNote };
     }
 
-    // 2. B block extraction (not retried — configuration issue)
+    const note = activeNote.note;
+    const bBlock = activeNote.bBlock;
+
+    // 2. B block context (already extracted during eligibility; not retried)
     await this.logEvent("stage", {
-      notePath: lookup.note.path,
-      noteTitle: lookup.note.title,
-      noteContentChars: lookup.note.content.length,
+      notePath: note.path,
+      noteTitle: note.title,
+      noteContentChars: note.content.length,
     });
-    const bBlockExtract = this.blockExtractor.extract(
-      lookup.note.content,
-      this.settings.bBlock,
-    );
-    if (!bBlockExtract.ok) {
-      this.reportStatus("failed");
-      await this.logEvent("run-end", {
-        stage: "failed",
-        resultKind: "validation-failed",
-        errorSummary: `${bBlockExtract.error.code}: ${bBlockExtract.error.message}`,
-      });
-      return {
-        kind: "validation-failed",
-        errors: [{
-          layer: "content",
-          code: bBlockExtract.error.code,
-          message: bBlockExtract.error.message,
-        }],
-      };
-    }
 
     // 3. Build prompt (once — reused across retries)
     if (!this.llmProvider.generateProposalV2) {
@@ -332,16 +313,16 @@ export class CreateProposalUseCase {
     this.reportStatus("building-prompt");
     await this.logEvent("stage", {
       stage: "building-prompt",
-      protectedBlockChars: bBlockExtract.block.text.length,
+      protectedBlockChars: bBlock.text.length,
       enabledABlockCount: this.settings.aBlocks.filter((b) => b.enabled).length,
       tagWhitelistCount: this.settings.tagWhitelist.length,
     });
     const { request, debugSnapshot } = promptBuilder.build({
       provider: this.llmProvider.providerId,
       model: this.llmProvider.model,
-      notePath: lookup.note.path,
-      noteTitle: lookup.note.title,
-      noteContent: bBlockExtract.block.text,
+      notePath: note.path,
+      noteTitle: note.title,
+      noteContent: bBlock.text,
       aBlocks: this.settings.aBlocks.filter((b) => b.enabled),
       tagWhitelist: this.settings.tagWhitelist,
       tagPrompt: this.settings.tagPrompt,
@@ -353,10 +334,10 @@ export class CreateProposalUseCase {
     const ctx: AttemptContext = {
       request,
       debugSnapshot,
-      noteContent: lookup.note.content,
-      notePath: lookup.note.path,
-      noteTitle: lookup.note.title,
-      bBlockText: bBlockExtract.block.text,
+      noteContent: note.content,
+      notePath: note.path,
+      noteTitle: note.title,
+      bBlockText: bBlock.text,
       errorSessionId,
     };
     await this.logEvent("stage", {
@@ -403,13 +384,9 @@ export class CreateProposalUseCase {
     try {
       llmResponse = await this.llmProvider.generateProposalV2!(ctx.request);
     } catch (error) {
-      const failedAttempt = this.buildFailedAttempt(
-        ctx, attemptIndex,
-        `Provider call failed: ${toSafeErrorMessage(error)}`,
-        undefined,
-        undefined,
-        {},
-      );
+      const failedAttempt = this.buildFailedAttempt(ctx, attemptIndex, `Provider call failed: ${toSafeErrorMessage(error)}`, {
+        validationSnapshotOverrides: {},
+      });
       this.observePrompt(ctx, {
         validationSnapshot: {
           errorSummary: failedAttempt.errorSummary,
@@ -456,13 +433,11 @@ export class CreateProposalUseCase {
     });
     const zodValidation = this.proposalValidator.validateV2Output(llmResponse.rawText);
     if (!zodValidation.ok) {
-      const failedAttempt = this.buildFailedAttempt(
-        ctx, attemptIndex,
-        "Zod validation failed: proposal does not match v0.2 schema.",
+      const failedAttempt = this.buildFailedAttempt(ctx, attemptIndex, "Zod validation failed: proposal does not match v0.2 schema.", {
         llmResponse,
-        llmResponse.usage,
-        { zodError: zodValidation.zodError },
-      );
+        providerUsage: llmResponse.usage,
+        validationSnapshotOverrides: { zodError: zodValidation.zodError },
+      });
       this.observePrompt(ctx, {
         responseSnapshot: {
           rawText: llmResponse.rawText,
@@ -496,13 +471,11 @@ export class CreateProposalUseCase {
     const normalized = normalizer.normalize(zodValidation.proposal, this.settings);
 
     if (normalized.validation.status === "invalid") {
-      const failedAttempt = this.buildFailedAttempt(
-        ctx, attemptIndex,
-        "Normalization invalid: no acceptable blocks after filtering.",
+      const failedAttempt = this.buildFailedAttempt(ctx, attemptIndex, "Normalization invalid: no acceptable blocks after filtering.", {
         llmResponse,
-        llmResponse.usage,
-        { normalizationReport: normalized.validation },
-      );
+        providerUsage: llmResponse.usage,
+        validationSnapshotOverrides: { normalizationReport: normalized.validation },
+      });
       this.observePrompt(ctx, {
         responseSnapshot: {
           rawText: llmResponse.rawText,
@@ -640,55 +613,20 @@ export class CreateProposalUseCase {
     ctx: AttemptContext,
     attemptIndex: AttemptIndex,
     errorSummary: string,
-    llmResponse?: LlmResponse,
-    providerUsage?: TokenUsageReport,
-    validationSnapshotOverrides?: Record<string, unknown>,
+    options: {
+      llmResponse?: LlmResponse;
+      providerUsage?: TokenUsageReport;
+      validationSnapshotOverrides?: Record<string, unknown>;
+    },
   ): FailedAttemptRecord {
-    const responseSnapshot = llmResponse
-      ? {
-          rawText: llmResponse.rawText,
-          extractedJsonText: undefined as string | undefined,
-          parsedJson: llmResponse.parsedJson,
-          usage: providerUsage ?? llmResponse.usage,
-        }
-      : undefined;
-
-    return {
-      id: `${ctx.errorSessionId}-attempt-${attemptIndex}`,
-      errorSessionId: ctx.errorSessionId,
+    return buildFailedAttemptRecord({
+      ctx,
       attemptIndex,
-      createdAt: new Date().toISOString(),
-      provider: this.llmProvider.providerId,
-      model: this.llmProvider.model,
-      workflowProfileId: "raw-refined",
-      schemaVersion: "0.2",
-      notePath: ctx.notePath,
-      noteTitle: ctx.noteTitle,
-      blockConfigSnapshot: {
-        protectH1: this.settings.protectH1,
-        aBlocks: this.settings.aBlocks,
-        bBlock: this.settings.bBlock,
-        tagWhitelist: this.settings.tagWhitelist,
-      },
-      requestSnapshot: {
-        messages: ctx.request.messages,
-        schemaName: ctx.request.schemaName,
-        schemaVersion: ctx.request.schemaVersion,
-        metadata: ctx.request.metadata as Record<string, unknown>,
-      },
-      responseSnapshot,
-      validationSnapshot: validationSnapshotOverrides
-        ? {
-            jsonExtractionError: typeof validationSnapshotOverrides.jsonExtractionError === "string"
-              ? validationSnapshotOverrides.jsonExtractionError
-              : undefined,
-            zodError: validationSnapshotOverrides.zodError,
-            normalizationReport: validationSnapshotOverrides.normalizationReport,
-            policyErrors: validationSnapshotOverrides.policyErrors,
-          }
-        : undefined,
       errorSummary,
-    };
+      llmProvider: this.llmProvider,
+      settings: this.settings,
+      ...options,
+    });
   }
 
   private async handleRetrySuccess(

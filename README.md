@@ -78,7 +78,7 @@ v0.2.1 使用两类缓存：
 
 ## 运行状态
 
-执行 refine 后会立即显示运行状态窗口，覆盖 eligibility、prompt build、model request、parse、Zod validation、normalization、session save、review open 和 failed 等阶段。请求模型时会显示第 N/3 次。关闭状态窗口只关闭显示层，不会中断请求。
+执行 refine 后会立即显示非阻塞运行状态通知，覆盖 eligibility、prompt build、model request、parse、Zod validation、normalization、session save、review open 和 failed 等阶段。请求模型时会显示第 N/3 次；通知会从请求开始驻留到执行完成或失败，不会阻止你继续查看或编辑 Obsidian 中的其它内容。
 
 ## Provider 与密钥 ID
 

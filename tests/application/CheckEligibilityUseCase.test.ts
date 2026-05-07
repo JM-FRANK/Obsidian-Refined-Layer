@@ -64,13 +64,24 @@ describe("CheckEligibilityUseCase", () => {
 
     const useCase = new CheckEligibilityUseCase(repository, rawRefinedProfile, defaultSettings);
 
-    await expect(useCase.execute()).resolves.toEqual({
+    const result = await useCase.execute();
+
+    expect(result).toMatchObject({
       hasActiveMarkdownNote: true,
       eligible: true,
       notePath: "10_Raw/example.md",
       noteTitle: "example",
       rawContentLength: 42,
       status: "raw",
+    });
+    expect(result.note).toMatchObject({
+      path: "10_Raw/example.md",
+      title: "example",
+    });
+    expect(result.bBlock).toMatchObject({
+      heading: "原始内容",
+      headingLevel: 2,
+      text: "## 原始内容\nhello",
     });
   });
 

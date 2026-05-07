@@ -326,6 +326,31 @@ describe("CreateProposalUseCase v0.2 (executeV2)", () => {
     expect(userPrompt).not.toContain("old generated next step");
   });
 
+  it("reuses the eligibility note context instead of reading the active note twice", async () => {
+    const getActiveNote = vi.fn(async () => ({
+      kind: "markdown" as const,
+      note: {
+        path: "10_Raw/example.md",
+        title: "example",
+        content,
+      },
+    }));
+    const repository: ActiveNoteRepository = { getActiveNote };
+    const provider = new MockLlmProvider();
+    const useCase = new CreateProposalUseCase(
+      repository,
+      rawRefinedProfile,
+      provider,
+      new ProposalSessionStore(5),
+      mockV2Settings,
+    );
+
+    const result = await useCase.executeV2();
+
+    expect(result.kind).toBe("created-v2");
+    expect(getActiveNote).toHaveBeenCalledTimes(1);
+  });
+
   it("writes fine-grained run log events when a logger is injected", async () => {
     const repository = createMarkdownRepository(content);
     const provider = new MockLlmProvider();

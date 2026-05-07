@@ -6,7 +6,7 @@ import type { ProposalSession, ProposalSessionV2 } from "../../src/runtime/Propo
 import { ProposalSessionStore } from "../../src/runtime/ProposalSessionStore";
 import type { SessionCacheV2Store } from "../../src/runtime/SessionCacheV2Store";
 
-function createSession(): ProposalSession {
+function createSession(overrides: Partial<ProposalSession> = {}): ProposalSession {
   return {
     id: "session-1",
     workflowProfileId: "raw-refined",
@@ -35,6 +35,7 @@ function createSession(): ProposalSession {
       generatedAt: "2026-05-04T00:00:00.000Z",
     },
     status: "generated",
+    ...overrides,
   };
 }
 
@@ -145,6 +146,43 @@ describe("SaveDraftUseCase", () => {
     await expect(store.get("session-1")).resolves.toMatchObject({
       status: "saved_as_draft",
     });
+  });
+
+  it("redacts secret-like strings before writing a legacy v1 draft", async () => {
+    const store = new ProposalSessionStore(5);
+    await store.save(createSession({
+      proposal: {
+        workflowProfileId: "raw-refined",
+        refinedSections: {
+          summary: "Authorization: Bearer sk-draft-secret",
+          coreQuestion: "question",
+          currentConclusion: "conclusion",
+          reasoning: "reasoning",
+        },
+        warnings: ["api_key: 'sk-warning-secret'"],
+      },
+    }));
+    let draftContent = "";
+    const noteFilePort: NoteFilePort = {
+      async readNoteByPath() {
+        return null;
+      },
+      async writeNote() {
+        throw new Error("not used");
+      },
+      async writeDraft(_path, content) {
+        draftContent = content;
+      },
+    };
+
+    const useCase = new SaveDraftUseCase(store, noteFilePort, {
+      draftFolder: "80_Runtime/refine-drafts",
+    });
+
+    await expect(useCase.execute("session-1")).resolves.toMatchObject({ saved: true });
+    expect(draftContent).not.toContain("sk-draft-secret");
+    expect(draftContent).not.toContain("sk-warning-secret");
+    expect(draftContent).toContain("[REDACTED]");
   });
 
   it("writes a v2 draft with A blocks, tag suggestions, validation, and attemptsUsed", async () => {

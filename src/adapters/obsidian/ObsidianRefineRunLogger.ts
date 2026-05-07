@@ -30,10 +30,12 @@ export class ObsidianRefineRunLogger implements RefineRunLogger {
       await adapter.mkdir(REFINE_RUN_LOG_PATH);
     }
 
-    const current = await adapter.exists(this.filePath)
-      ? await adapter.read(this.filePath).catch(() => "")
-      : "";
-    await adapter.write(this.filePath, current + nextLine);
+    if (await adapter.exists(this.filePath)) {
+      await adapter.append(this.filePath, nextLine);
+      return;
+    }
+
+    await adapter.write(this.filePath, nextLine);
   }
 }
 

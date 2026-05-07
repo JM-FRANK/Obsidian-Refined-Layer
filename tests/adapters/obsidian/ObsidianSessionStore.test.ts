@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { ProposalSession } from "../../../src/runtime/ProposalSession";
-import { containsSecretPattern } from "../../../src/adapters/obsidian/ObsidianSessionStore";
+import {
+  containsSecretPattern,
+  ObsidianSessionStore,
+  SESSION_FILE_PATH,
+} from "../../../src/adapters/obsidian/ObsidianSessionStore";
 
 function makeSession(override: Partial<ProposalSession> = {}): ProposalSession {
   return {
@@ -54,7 +58,64 @@ function serializeSession(session: ProposalSession): string {
   });
 }
 
+class MemoryVaultAdapter {
+  files = new Map<string, string>();
+  directories = new Set<string>();
+
+  async exists(path: string): Promise<boolean> {
+    return this.files.has(path) || this.directories.has(path);
+  }
+
+  async mkdir(path: string): Promise<void> {
+    this.directories.add(path);
+  }
+
+  async write(path: string, content: string): Promise<void> {
+    this.files.set(path, content);
+  }
+
+  async read(path: string): Promise<string> {
+    const content = this.files.get(path);
+    if (content === undefined) throw new Error("File not found");
+    return content;
+  }
+}
+
+function makePlugin(adapter: MemoryVaultAdapter) {
+  return {
+    app: {
+      vault: { adapter },
+    },
+  } as never;
+}
+
 describe("ObsidianSessionStore secret scan", () => {
+  it("redacts secret-like string values before writing legacy v1 session-cache", async () => {
+    const adapter = new MemoryVaultAdapter();
+    const store = new ObsidianSessionStore(makePlugin(adapter));
+    const session = makeSession({
+      proposal: {
+        workflowProfileId: "raw-refined",
+        refinedSections: {
+          summary: "Authorization: Bearer sk-summary-secret",
+          coreQuestion: "question",
+          currentConclusion: "conclusion",
+          reasoning: "reasoning",
+        },
+        warnings: ["warning has api_key: 'sk-warning-secret'"],
+      },
+    });
+
+    await store.saveAll(new Map([[session.notePath, [session]]]));
+
+    const written = adapter.files.get(SESSION_FILE_PATH);
+    expect(written).toBeDefined();
+    expect(written).not.toContain("sk-summary-secret");
+    expect(written).not.toContain("sk-warning-secret");
+    expect(written).toContain("[REDACTED]");
+    expect(containsSecretPattern(written!)).toBe(false);
+  });
+
   it("rejects payload containing apiKey field", () => {
     const json = JSON.stringify({
       version: 1,

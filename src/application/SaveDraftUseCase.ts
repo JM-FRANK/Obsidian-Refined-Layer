@@ -37,7 +37,7 @@ export class SaveDraftUseCase {
     const fileName = `${sanitizeFileName(session.noteTitle)}-${session.id}.md`;
     const draftPath = `${this.settings.draftFolder}/${fileName}`;
     const refinedSections = editedRefinedSections ?? session.proposal.refinedSections;
-    const content = [
+    const content = redactSensitiveText([
       `# Refined Layer Draft`,
       ``,
       `- source note path: ${session.notePath}`,
@@ -53,7 +53,7 @@ export class SaveDraftUseCase {
       ``,
       ...(session.proposal.warnings?.length ? session.proposal.warnings : ["none"]),
       ``,
-    ].join("\n");
+    ].join("\n"));
 
     await this.noteFilePort.writeDraft(draftPath, content);
     session.status = "saved_as_draft";
