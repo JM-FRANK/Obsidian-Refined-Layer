@@ -1,5 +1,5 @@
 # Obsidian Refined Layer
-[![Watch the demo](https://img.youtube.com/vi/25Hahu-OG0w/maxresdefault.jpg)](https://youtu.be/25Hahu-OG0w)
+https://youtu.be/25Hahu-OG0w
 Obsidian Refined Layer 是一个 review-first 的 Obsidian 插件。它把当前 raw Markdown 笔记整理成可审核的 refined proposal，但不会让 LLM 直接写文件；所有修改都必须先进入 Review UI，由用户明确勾选后，再通过 ApplyPlan 写入。
 
 v0.2.1 使用可配置的单篇笔记 `raw-refined` workflow，并在 v0.2.0 主干之上加入 RefineProfile 模板和运行状态反馈：
